@@ -1,65 +1,43 @@
-import discord
-import re
+# filters.py
 
-def get_flag_score_for_bio(bio: str) -> int:
+from datetime import datetime, timezone
+
+def score_member(member):
     score = 0
-    if not bio:
-        return score
+    reasons = []
 
-    lowered = bio.lower()
-    if "twitter" in lowered:
-        score += 3
-    if "art" in lowered or "designer" in lowered:
+    # === Default avatar ===
+    if member.default_avatar == member.avatar:
         score += 2
-    if "crypto" in lowered or "invest" in lowered:
-        score += 3
-    if "dm" in lowered:
-        score += 2
-    if "promoter" in lowered or "artist" in lowered:
-        score += 2
-    if "nsfw" in lowered or "onlyfans" in lowered:
-        score += 4
+        reasons.append("Default avatar")
 
-    return score
+    # === Suspicious keywords in username ===
+    suspicious_keywords = ["twitter", "free", "nitro", "nsfw", "onlyfans", ".com"]
+    if any(word in member.name.lower() for word in suspicious_keywords):
+        score += 2
+        reasons.append("Suspicious username")
 
-def get_flag_score_for_account_age(member) -> int:
-    age_days = (discord.utils.utcnow() - member.created_at).days
+    # === Account age < 7 days ===
+    age_days = (datetime.now(timezone.utc) - member.created_at).days
     if age_days < 7:
-        return 3
-    elif age_days < 30:
-        return 2
-    return 0
+        score += 3
+        reasons.append(f"New account ({age_days} days old)")
 
-def get_flag_score_for_avatar(member: discord.Member) -> int:
-    return 2 if not member.avatar else 0
+    # === No roles besides @everyone ===
+    if len(member.roles) <= 1:
+        score += 1
+        reasons.append("No roles")
 
-async def get_severity_score(member, bot) -> int:
-    score = 0
+    # === Animated profile picture (negative signal) ===
+    if member.avatar and member.avatar.is_animated():
+        score -= 1
+        reasons.append("Animated profile (human signal)")
 
-    try:
-        user = await bot.fetch_user(member.id)
-        bio = getattr(user, "bio", "")
-    except Exception:
-        bio = ""
+    # === Bio contains 'twitter' ===
+    if hasattr(member, 'bio') and member.bio:
+        if 'twitter' in member.bio.lower():
+            score += 3
+            reasons.append("Bio contains 'twitter'")
 
-    score += get_flag_score_for_bio(bio)
-    score += get_flag_score_for_account_age(member)
-    score += get_flag_score_for_avatar(member)
-
-    return score
-
-def suggest_action(member) -> str:
-    return "Flag for Review"
-
-def get_flagged_users():
-    import json
-    try:
-        with open("shadow_flags.json", "r") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-def save_flagged_users(flags):
-    import json
-    with open("shadow_flags.json", "w") as f:
-        json.dump(flags, f, indent=4)
+    reason_str = ", ".join(reasons) if reasons else "No flags"
+    return score, reason_str
