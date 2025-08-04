@@ -3,7 +3,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from filters import score_member
+from filters import score_member, get_severity_score, suggest_action
 
 MOD_QUEUE_THREAD_ID = 1401792224500649994
 
@@ -19,9 +19,11 @@ class Scan(commands.Cog):
         guild = interaction.guild
         flagged = 0
 
-        mod_thread = guild.get_thread(MOD_QUEUE_THREAD_ID)
-        if not mod_thread:
-            await interaction.followup.send("❌ Mod queue thread not found.", ephemeral=True)
+        try:
+            mod_thread = await interaction.client.fetch_channel(MOD_QUEUE_THREAD_ID)
+        except Exception as e:
+            await interaction.followup.send("❌ Mod queue thread not found or inaccessible.", ephemeral=True)
+            print(f"[ERROR] Cannot fetch mod thread: {e}")
             return
 
         for index, member in enumerate(guild.members, start=1):
@@ -30,10 +32,10 @@ class Scan(commands.Cog):
                 if score >= 3:
                     flagged += 1
                     await mod_thread.send(
-                        f"\n🚨 **Flagged User:** {member.mention}"
-                        f"\nScore: {score}"
-                        f"\nReason: {reason}"
-                        f"\nSuggested Action: Kick or timeout"
+                        f"{get_severity_score(score)} **Flagged User:** {member.mention}\n"
+                        f"Score: {score}\n"
+                        f"Reason: {reason}\n"
+                        f"Suggested Action: {suggest_action(score)}"
                     )
 
                 if index % 25 == 0:
@@ -43,6 +45,14 @@ class Scan(commands.Cog):
                 print(f"[ERROR] Failed to scan {member.name}: {e}")
 
         await interaction.followup.send(f"✅ Scan complete. Total Flagged: **{flagged}**", ephemeral=True)
+
+    @app_commands.command(name="shadow", description="Open the Shadow moderation panel.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def shadow_panel(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            content="🧠 Opening the Shadow Moderation Panel...\nPlease check the Mod Queue for flagged users.",
+            ephemeral=True
+        )
 
 
 async def setup(bot):
