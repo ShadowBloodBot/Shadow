@@ -28,12 +28,14 @@ class EventHandlers(commands.Cog):
                 log_audit("auto_flag", member.id, member.guild.me, reason=reason)
                 log_action_with_webhook("auto_flag", member.id, member.guild.me, reason=reason)
 
-                # Optional mod-logs embed
-                modlog = discord.utils.get(member.guild.text_channels, name="mod-logs")
-                if modlog:
-                    embed = discord.Embed(title="🚨 Auto-Flagged User Joined", color=discord.Color.red())
+                # Post to thread
+                try:
+                    thread = await member.guild.fetch_channel(1401792224500649994)
+                    embed = discord.Embed(title="🚨 Auto-Flagged Member", color=discord.Color.red())
                     embed.add_field(name="User", value=f"{member.mention} (`{member.id}`)", inline=False)
                     embed.add_field(name="Severity Score", value=str(score))
                     embed.add_field(name="AI Suggestion", value=reason)
-                    embed.set_footer(text="ShadowBot AI Flagging")
-                    await modlog.send(embed=embed)
+                    embed.set_footer(text="Flagged by ShadowBot AI")
+                    await thread.send(embed=embed)
+                except Exception as e:
+                    print(f"[AI Flag] Failed to post to thread: {e}")
