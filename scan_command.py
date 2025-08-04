@@ -28,6 +28,9 @@ class Scan(commands.Cog):
 
         for index, member in enumerate(guild.members, start=1):
             try:
+                if member.bot:
+                    continue  # ✅ Skip bots
+
                 score, reason = score_member(member)
                 if score >= 3:
                     flagged += 1
@@ -35,9 +38,11 @@ class Scan(commands.Cog):
                         f"{get_severity_score(score)} **Flagged User:** {member.mention}\n"
                         f"Score: {score}\n"
                         f"Reason: {reason}\n"
-                        f"Suggested Action: {suggest_action(score)}"
+                        f"Suggested Action: {suggest_action(score)}\n"
+                        f"Account Created: <t:{int(member.created_at.timestamp())}:D>"
                     )
 
+                # Delay every 25 scans to avoid rate limits
                 if index % 25 == 0:
                     await discord.utils.sleep_until(discord.utils.utcnow() + discord.utils.timedelta(seconds=1))
 
