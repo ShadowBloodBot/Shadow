@@ -3,14 +3,21 @@
 from datetime import datetime, timezone
 import re
 
-# Updated patterns
-SUSPICIOUS_NAME_KEYWORDS = ["twitter", "free", "nitro", "nsfw", "onlyfans", ".com", "cashapp"]
-BIO_KEYWORDS = [
-    "dm for work", "open commissions", "commissions open", "my portfolio", "artist",
-    "click here", "hire me", "promo", "graphic designer", "fiverr", "insta", "bio", "selling", "discord.gg"
+# Suspicious username keywords (word boundary matched)
+SUSPICIOUS_NAME_KEYWORDS = [
+    "twitter", "free", "nitro", "nsfw", "onlyfans", ".com", "cashapp"
 ]
+
+# Bio intent phrases (not just "artist")
+BIO_KEYWORDS = [
+    "dm for work", "open commissions", "commissions open", "my portfolio",
+    "hire me", "promo", "graphic designer", "freelance", "looking for work"
+]
+
+# Regex pattern matchers for suspicious links
 URL_PATTERNS = [
-    r"twitter\.com", r"instagram\.com", r"discord\.gg", r"linktr\.ee", r"carrd\.co", r"fiverr\.com"
+    r"x\.com", r"twitter\.com", r"instagram\.com", r"discord\.gg",
+    r"linktr\.ee", r"carrd\.co", r"fiverr\.com", r"onlyfans\.com"
 ]
 
 def score_member(member):
@@ -25,7 +32,7 @@ def score_member(member):
         score += 2
         reasons.append("Default avatar")
 
-    # === Suspicious name (word-boundary match) ===
+    # === Suspicious username ===
     if any(re.search(rf"\\b{re.escape(kw)}\\b", member.name.lower()) for kw in SUSPICIOUS_NAME_KEYWORDS):
         score += 2
         reasons.append("Suspicious username")
@@ -42,14 +49,16 @@ def score_member(member):
         reasons.append("No roles")
 
     # === Bio scoring ===
-    bio = getattr(member, "bio", "")
+    bio = getattr(member, "bio", None)
     if bio:
         lower_bio = bio.lower()
 
-        if any(kw in lower_bio for kw in BIO_KEYWORDS):
+        # Phrase intent detection
+        if any(phrase in lower_bio for phrase in BIO_KEYWORDS):
             score += 3
             reasons.append("Suspicious bio keywords")
 
+        # Link pattern detection
         if any(re.search(pat, lower_bio) for pat in URL_PATTERNS):
             score += 3
             reasons.append("Suspicious bio links")
