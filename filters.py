@@ -3,24 +3,21 @@
 from datetime import datetime, timezone
 import re
 
-# Suspicious username keywords (word boundary matched)
 SUSPICIOUS_NAME_KEYWORDS = [
     "twitter", "free", "nitro", "nsfw", "onlyfans", ".com", "cashapp"
 ]
 
-# Bio intent phrases (not just "artist")
 BIO_KEYWORDS = [
     "dm for work", "open commissions", "commissions open", "my portfolio",
     "hire me", "promo", "graphic designer", "freelance", "looking for work"
 ]
 
-# Regex pattern matchers for suspicious links
 URL_PATTERNS = [
     r"x\.com", r"twitter\.com", r"instagram\.com", r"discord\.gg",
     r"linktr\.ee", r"carrd\.co", r"fiverr\.com", r"onlyfans\.com"
 ]
 
-def score_member(member):
+def score_member(member, user):
     score = 0
     reasons = []
 
@@ -33,7 +30,7 @@ def score_member(member):
         reasons.append("Default avatar")
 
     # === Suspicious username ===
-    if any(re.search(rf"\\b{re.escape(kw)}\\b", member.name.lower()) for kw in SUSPICIOUS_NAME_KEYWORDS):
+    if any(re.search(rf"\b{re.escape(kw)}\b", member.name.lower()) for kw in SUSPICIOUS_NAME_KEYWORDS):
         score += 2
         reasons.append("Suspicious username")
 
@@ -48,17 +45,15 @@ def score_member(member):
         score += 1
         reasons.append("No roles")
 
-    # === Bio scoring ===
-    bio = getattr(member, "bio", None)
+    # === Bio scoring from fetched user ===
+    bio = getattr(user, "bio", None)
     if bio:
         lower_bio = bio.lower()
 
-        # Phrase intent detection
         if any(phrase in lower_bio for phrase in BIO_KEYWORDS):
             score += 3
             reasons.append("Suspicious bio keywords")
 
-        # Link pattern detection
         if any(re.search(pat, lower_bio) for pat in URL_PATTERNS):
             score += 3
             reasons.append("Suspicious bio links")
@@ -74,7 +69,6 @@ def get_severity_score(score: int) -> str:
         return "⚠️"
     else:
         return "✅"
-
 
 def suggest_action(score: int) -> str:
     if score >= 7:
