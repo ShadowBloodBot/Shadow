@@ -18,6 +18,7 @@ class Scan(commands.Cog):
 
         guild = interaction.guild
         flagged = 0
+        total = len(guild.members)
 
         try:
             mod_thread = await interaction.client.fetch_channel(MOD_QUEUE_THREAD_ID)
@@ -26,10 +27,12 @@ class Scan(commands.Cog):
             print(f"[ERROR] Cannot fetch mod thread: {e}")
             return
 
+        await interaction.edit_original_response(content=f"🔍 Starting scan of {total} members...")
+
         for index, member in enumerate(guild.members, start=1):
             try:
                 if member.bot:
-                    continue  # ✅ Skip bots
+                    continue
 
                 score, reason = score_member(member)
                 if score >= 3:
@@ -42,14 +45,18 @@ class Scan(commands.Cog):
                         f"Account Created: <t:{int(member.created_at.timestamp())}:D>"
                     )
 
-                # Delay every 25 scans to avoid rate limits
-                if index % 25 == 0:
-                    await discord.utils.sleep_until(discord.utils.utcnow() + discord.utils.timedelta(seconds=1))
+                # Update progress every 100 scans or at the end
+                if index % 100 == 0 or index == total:
+                    await interaction.edit_original_response(
+                        content=f"🔍 Scanned {index}/{total} members... Flagged: {flagged}"
+                    )
 
             except Exception as e:
                 print(f"[ERROR] Failed to scan {member.name}: {e}")
 
-        await interaction.followup.send(f"✅ Scan complete. Total Flagged: **{flagged}**", ephemeral=True)
+        await interaction.edit_original_response(
+            content=f"✅ Scan complete. Scanned {total} members. Total Flagged: **{flagged}**"
+        )
 
     @app_commands.command(name="shadow", description="Open the Shadow moderation panel.")
     @app_commands.checks.has_permissions(administrator=True)
