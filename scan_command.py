@@ -18,7 +18,8 @@ class Scan(commands.Cog):
 
         guild = interaction.guild
         flagged = 0
-        total = len(guild.members)
+        members = await guild.fetch_members(limit=None).flatten()
+        total = len(members)
 
         try:
             mod_thread = await interaction.client.fetch_channel(MOD_QUEUE_THREAD_ID)
@@ -29,10 +30,17 @@ class Scan(commands.Cog):
 
         await interaction.edit_original_response(content=f"🔍 Starting scan of {total} members...")
 
-        for index, member in enumerate(guild.members, start=1):
+        for index, member in enumerate(members, start=1):
             try:
                 if member.bot:
                     continue
+
+                # Fetch full user object to access bio
+                try:
+                    user = await interaction.client.fetch_user(member.id)
+                    member.bio = getattr(user, "bio", None)
+                except Exception:
+                    member.bio = None
 
                 score, reason = score_member(member)
                 if score >= 3:
@@ -45,11 +53,12 @@ class Scan(commands.Cog):
                         f"Account Created: <t:{int(member.created_at.timestamp())}:D>"
                     )
 
-                # Update progress every 100 scans or at the end
-                if index % 100 == 0 or index == total:
+                # Throttle every 50 users
+                if index % 50 == 0:
                     await interaction.edit_original_response(
                         content=f"🔍 Scanned {index}/{total} members... Flagged: {flagged}"
                     )
+                    await discord.utils.sleep_until(discord.utils.utcnow() + discord.utils.timedelta(seconds=1))
 
             except Exception as e:
                 print(f"[ERROR] Failed to scan {member.name}: {e}")
