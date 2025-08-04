@@ -37,7 +37,7 @@ class ShadowControlPanel(View):
                     embed.add_field(name=key.capitalize(), value=str(val))
                 await interaction.response.send_message(embed=embed, ephemeral=True)
 
-            elif custom_id == "search":
+            elif custom_id == "search" or custom_id == "user_sheet":
                 await view_user_sheet(interaction)
 
             elif custom_id == "mod_queue":
@@ -46,9 +46,6 @@ class ShadowControlPanel(View):
 
             elif custom_id == "role_manager":
                 await launch_role_manager(interaction)
-
-            elif custom_id == "user_sheet":
-                await view_user_sheet(interaction)
 
             elif custom_id == "flagged_list":
                 users = load_flags()
@@ -59,7 +56,3 @@ class ShadowControlPanel(View):
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item):
         await interaction.response.send_message("❌ UI error occurred.", ephemeral=True)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        await self.on_button_click(interaction, interaction.data["custom_id"])
-        return False
