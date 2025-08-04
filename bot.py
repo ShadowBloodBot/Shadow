@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 from ui import ShadowControlPanel
 from events import EventHandlers
-from scan_command import ScanCommands
+from scan_command import ScanCommands  # ✅ Make sure scan_command.py exists in same dir
 
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -45,8 +45,8 @@ async def shadow_panel(interaction: discord.Interaction):
 
 async def main():
     async with bot:
-        await bot.add_cog(EventHandlers(bot))
-        await bot.add_cog(ScanCommands(bot))
+        await bot.add_cog(EventHandlers(bot))   # 🔁 Auto AI flag on member join
+        await bot.add_cog(ScanCommands(bot))    # 🔍 /scan command cog
         await bot.start(DISCORD_TOKEN)
 
 if __name__ == "__main__":
