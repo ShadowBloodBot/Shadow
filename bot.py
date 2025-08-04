@@ -13,7 +13,14 @@ from scan_command import ScanCommands
 
 load_dotenv()
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents)
+
+class ShadowBot(commands.Bot):
+    async def setup_hook(self):
+        await self.add_cog(EventHandlers(self))
+        await self.add_cog(ScanCommands(self))
+        print("✅ All Cogs loaded via setup_hook.")
+
+bot = ShadowBot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
@@ -24,7 +31,6 @@ async def on_ready():
     except Exception as e:
         print(f"❌ Sync failed: {e}")
 
-# /shadow command
 @bot.tree.command(name="shadow", description="Open the Shadow Moderation Panel")
 async def open_shadow_panel(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.manage_guild and "Mover & Shaker" not in [role.name for role in interaction.user.roles]:
@@ -37,13 +43,6 @@ async def open_shadow_panel(interaction: discord.Interaction):
         ephemeral=False
     )
 
-# Register handler Cogs
-async def setup_handlers():
-    await bot.add_cog(EventHandlers(bot))
-    await bot.add_cog(ScanCommands(bot))
-
-bot.loop.create_task(setup_handlers())
-
-# Run bot
+# Start bot
 if __name__ == "__main__":
     bot.run(os.getenv("DISCORD_TOKEN"))
