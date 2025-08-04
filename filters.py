@@ -28,7 +28,7 @@ def score_member(member):
         score += 1
         reasons.append("No roles")
 
-    # === Animated profile picture (negative signal) ===
+    # === Animated profile picture (negative score = more human) ===
     if member.avatar and member.avatar.is_animated():
         score -= 1
         reasons.append("Animated profile (human signal)")
@@ -41,3 +41,21 @@ def score_member(member):
 
     reason_str = ", ".join(reasons) if reasons else "No flags"
     return score, reason_str
+
+
+def get_severity_score(score: int) -> str:
+    if score >= 7:
+        return "🚨"
+    elif score >= 4:
+        return "⚠️"
+    else:
+        return "✅"
+
+
+def suggest_action(score: int) -> str:
+    if score >= 7:
+        return "Ban or timeout"
+    elif score >= 4:
+        return "Kick or verify"
+    else:
+        return "Review or ignore"
