@@ -5,9 +5,8 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 from ui import ShadowControlPanel
-from moderation import handle_mass_action, handle_shadowmute
-from filters import ai_flag_user, get_flagged_users
 from events import EventHandlers
+from scan_command import ScanCommands
 
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -47,6 +46,7 @@ async def shadow_panel(interaction: discord.Interaction):
 async def main():
     async with bot:
         await bot.add_cog(EventHandlers(bot))
+        await bot.add_cog(ScanCommands(bot))
         await bot.start(DISCORD_TOKEN)
 
 if __name__ == "__main__":
