@@ -3,11 +3,12 @@ from discord.ext import commands
 from discord import app_commands
 import os
 from ui import ShadowControlPanel
-from config import SHADOW_ROLE_ID
+
+SHADOW_ROLE_NAMES = ["Mover & Shaker"]  # ✅ Add your allowed roles here
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
-tree = bot.tree  # ✅ for slash command registration
+tree = bot.tree
 
 @bot.event
 async def on_ready():
@@ -16,7 +17,8 @@ async def on_ready():
 
 @tree.command(name="shadow", description="Open the Shadow Moderation Panel")
 async def shadow(interaction: discord.Interaction):
-    if SHADOW_ROLE_ID not in [role.id for role in interaction.user.roles]:
+    user_roles = [role.name for role in interaction.user.roles]
+    if not any(r in SHADOW_ROLE_NAMES for r in user_roles):
         await interaction.response.send_message("🚫 You do not have permission to use this command.", ephemeral=True)
         return
 
