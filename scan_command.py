@@ -1,64 +1,58 @@
 import discord
-from discord import app_commands
 from discord.ext import commands
-
-from filters import get_severity_score, suggest_action
-from storage import load_flags, save_flags, log_audit, log_action_with_webhook
+from discord import app_commands
+from filters import get_severity_score, suggest_action, save_flagged_users, get_flagged_users
+import asyncio
 
 class ScanCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="scan", description="Scan all members for suspicious behavior")
-    async def scan(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+    @app_commands.command(name="scan", description="Scan server for flagged members")
+    async def scan_server(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
 
-        flagged = load_flags()
-        count = 0
-        scanned = 0
-        batch = 250
+        guild = interaction.guild
+        members = guild.members
+        flagged = get_flagged_users()
+        updated = 0
 
-        try:
-            members = list(interaction.guild.members)
-            total = len(members)
+        for index, member in enumerate(members, 1):
+            if member.bot:
+                continue
 
-            for i, member in enumerate(members, start=1):
-                if member.bot:
-                    continue
-
-                scanned += 1
-                user_id = str(member.id)
-                if user_id in flagged:
-                    continue
-
-                score = get_severity_score(member)
+            try:
+                score = await get_severity_score(member, self.bot)  # ✅ fixed here
                 if score >= 3:
-                    reason = suggest_action(member)
-                    flagged[user_id] = {
+                    flagged[str(member.id)] = {
                         "username": member.name,
                         "score": score,
-                        "reason": reason
+                        "reason": suggest_action(member)
                     }
-                    save_flags(flagged)
-                    log_audit("scan_flag", member.id, interaction.user, reason)
-                    log_action_with_webhook("scan_flag", member.id, interaction.user, reason)
-                    count += 1
+                    updated += 1
+            except Exception as e:
+                print(f"Scan error for {member.name}: {e}")
+                continue
 
-                # Send progress updates
-                if scanned % batch == 0:
+            # Throttle and status update every 250 members
+            if index % 250 == 0:
+                try:
                     await interaction.followup.send(
-                        f"📊 Scanned {scanned}/{total} members... `{count}` flagged so far.",
+                        f"🔎 Scanned {index}/{len(members)} members...",
                         ephemeral=True
                     )
+                except:
+                    pass
 
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    title="✅ Scan Complete",
-                    description=f"Scanned `{scanned}` members.\nFlagged: `{count}` suspicious accounts.",
-                    color=discord.Color.green()
-                ),
-                ephemeral=True
-            )
+            await asyncio.sleep(0.01)
 
-        except Exception as e:
-            await interaction.followup.send(f"❌ Scan failed: `{e}`", ephemeral=True)
+        save_flagged_users(flagged)
+
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="✅ Scan Complete",
+                description=f"Scanned {len(members)} members.\nFlagged: {updated}",
+                color=discord.Color.green()
+            ),
+            ephemeral=True
+        )
