@@ -18,15 +18,15 @@ class ScanCommands(commands.Cog):
             members = guild.members
             flagged = get_flagged_users()
             updated = 0
-            total = len(members)
             scanned = 0
+            total = len(members)
 
-            progress_message = await interaction.followup.send(
+            progress_msg = await interaction.followup.send(
                 f"🔍 Starting scan of {total} members...",
                 ephemeral=True
             )
 
-            for index, member in enumerate(members, 1):
+            for i, member in enumerate(members, start=1):
                 if member.bot:
                     continue
 
@@ -39,25 +39,24 @@ class ScanCommands(commands.Cog):
                             "reason": suggest_action(member)
                         }
                         updated += 1
+
                 except Exception as e:
-                    print(f"[SCAN ERROR] {member.name} | {e}")
+                    print(f"[SCAN ERROR] {member.name} ({member.id}) — {e}")
                     traceback.print_exc()
-                    continue
 
                 scanned += 1
-                if scanned % 250 == 0 or scanned == total:
+
+                if scanned % 50 == 0 or scanned == total:
                     try:
-                        await progress_message.edit(
-                            content=f"🔎 Scanned {scanned}/{total} members...\nFlagged so far: {updated}"
-                        )
+                        await progress_msg.edit(content=f"🔎 Scanned {scanned}/{total} members... Flagged: {updated}")
                     except:
                         pass
 
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(0.005)
 
             save_flagged_users(flagged)
 
-            await progress_message.edit(
+            await progress_msg.edit(
                 content=None,
                 embed=discord.Embed(
                     title="✅ Scan Complete",
@@ -67,12 +66,12 @@ class ScanCommands(commands.Cog):
             )
 
         try:
-            await asyncio.wait_for(scan_logic(), timeout=300)  # ⏱ 5 min timeout
+            await asyncio.wait_for(scan_logic(), timeout=300)  # 5-minute timeout
         except asyncio.TimeoutError:
             await interaction.followup.send(
                 embed=discord.Embed(
                     title="❌ Scan Timed Out",
-                    description="The scan took too long and was stopped.",
+                    description="Scan exceeded 5 minutes and was cancelled.",
                     color=discord.Color.red()
                 ),
                 ephemeral=True
