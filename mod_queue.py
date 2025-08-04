@@ -23,7 +23,11 @@ class ModQueueView(discord.ui.View):
         super().__init__(timeout=120)
         self.flagged_members = sorted(flagged_members, key=get_severity_score, reverse=True)[:25]
         self.options = [
-            discord.SelectOption(label=f"{member.name} (S:{get_severity_score(member)})", value=str(member.id), description=suggest_action(member)) 
+            discord.SelectOption(
+                label=f"{member.name} (S:{get_severity_score(member)})",
+                value=str(member.id),
+                description=suggest_action(member)
+            )
             for member in self.flagged_members
         ]
         self.select = discord.ui.Select(placeholder="Review flagged users", options=self.options)
