@@ -1,29 +1,37 @@
 import discord
 import os
 from discord.ext import commands
+from dotenv import load_dotenv
+
 from events import EventHandlers
 from moderation import handle_mass_action, handle_shadowmute
 from storage import load_flags, save_flags
 from scan_command import ScanCommands
 from ui import ShadowControlPanel
-from dotenv import load_dotenv
 
 load_dotenv()
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Setup complete message
+# ✅ Modern async-safe startup hook
+class ShadowBot(commands.Bot):
+    async def setup_hook(self):
+        await self.add_cog(EventHandlers(self))
+        await self.add_cog(ScanCommands(self))
+        try:
+            synced = await self.tree.sync()
+            print(f"✅ Synced {len(synced)} global slash commands.")
+        except Exception as e:
+            print(f"❌ Slash sync failed: {e}")
+
+# Replace default bot with subclassed version
+bot = ShadowBot(command_prefix="!", intents=intents)
+
 @bot.event
 async def on_ready():
-    print(f"✅ Logged in as {bot.user.name}#{bot.user.discriminator}")
-    try:
-        synced = await bot.tree.sync()  # Global sync for slash commands
-        print(f"✅ Synced {len(synced)} slash commands.")
-    except Exception as e:
-        print(f"❌ Slash command sync failed: {e}")
+    print(f"✅ Logged in as {bot.user} (ID: {bot.user.id})")
 
-# Slash Command: /shadow
 @bot.tree.command(name="shadow", description="Open the Shadow moderation panel")
 async def open_shadow_panel(interaction: discord.Interaction):
     try:
@@ -32,19 +40,6 @@ async def open_shadow_panel(interaction: discord.Interaction):
     except Exception as e:
         await interaction.response.send_message(f"❌ Failed to open panel: {e}", ephemeral=True)
 
-# Manual test command (optional)
-@bot.command()
-async def ping(ctx):
-    await ctx.send("Pong!")
-
-# Load core logic
-async def setup_handlers():
-    await bot.add_cog(EventHandlers(bot))
-    await bot.add_cog(ScanCommands(bot))
-
-bot.loop.create_task(setup_handlers())
-
-# Run the bot
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
     if not token:
