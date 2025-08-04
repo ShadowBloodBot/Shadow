@@ -3,6 +3,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+from datetime import timedelta
 from filters import score_member, get_severity_score, suggest_action
 
 MOD_QUEUE_THREAD_ID = 1401792224500649994
@@ -55,7 +56,7 @@ class Scan(commands.Cog):
                     await interaction.edit_original_response(
                         content=f"🔍 Scanned {index}/{total} members... Flagged: {flagged}"
                     )
-                    await discord.utils.sleep_until(discord.utils.utcnow() + discord.utils.timedelta(seconds=1))
+                    await discord.utils.sleep_until(discord.utils.utcnow() + timedelta(seconds=1))
 
             except Exception as e:
                 print(f"[ERROR] Failed to scan {member.name}: {e}")
@@ -71,6 +72,7 @@ class Scan(commands.Cog):
             content="🧠 Opening the Shadow Moderation Panel...\nPlease check the Mod Queue for flagged users.",
             ephemeral=True
         )
+
 
 async def setup(bot):
     await bot.add_cog(Scan(bot))
