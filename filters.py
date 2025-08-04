@@ -61,3 +61,6 @@ def ai_flag_user(member):
         save_flags(flags)
 
     return score, reason
+
+def get_flagged_users():
+    return load_flags()
