@@ -1,66 +1,74 @@
-from datetime import datetime, timezone
-from storage import load_flags, save_flags
+import discord
+import re
 
-def get_severity_score(member):
+def get_flag_score_for_bio(bio: str) -> int:
     score = 0
-    name = member.name.lower()
-    bio = (member.bio or "").lower()
+    if not bio:
+        return score
 
-    if any(keyword in name for keyword in ["spam", "nitro", "free", "invite"]):
-        score += 4
-
-    if "twitter" in bio:
+    lowered = bio.lower()
+    if "twitter" in lowered:
         score += 3
-
-    if any(phrase in bio for phrase in ["art designer", "commission", "dm for work", "crypto", "nft", "telegram", "promote", "fiverr"]):
+    if "art" in lowered or "designer" in lowered:
+        score += 2
+    if "crypto" in lowered or "invest" in lowered:
         score += 3
-
-    if member.display_avatar.is_default():
-        score += 1
-
-    if len(member.roles) <= 1:
+    if "dm" in lowered:
         score += 2
-
-    if member.bot:
-        score += 1
-
-    account_age_days = (datetime.now(timezone.utc) - member.created_at).days
-    if account_age_days < 3:
-        score += 4
-    elif account_age_days < 14:
-        score += 2
-
-    if str(member.discriminator) in ["0001", "1234"]:
-        score += 1
 
     return score
 
-def suggest_action(member):
-    score = get_severity_score(member)
-    if score >= 7:
-        return "Ban Likely"
-    elif score >= 5:
-        return "ShadowMute Recommended"
-    elif score >= 3:
-        return "Monitor"
-    else:
-        return "Ignore"
+def get_flag_score_for_username(name: str) -> int:
+    suspicious_keywords = ["cheap", "promo", "boost", "follower", "nude", "xxx", "porn", "onlyfans", "free"]
+    return sum(2 for word in suspicious_keywords if word in name.lower())
 
-def ai_flag_user(member):
-    score = get_severity_score(member)
-    reason = suggest_action(member)
-    user_id = str(member.id)
+def get_flag_score_for_roles(roles) -> int:
+    score = 0
+    for role in roles:
+        role_name = role.name.lower()
+        if "promoter" in role_name or "artist" in role_name:
+            score += 2
+        if "nsfw" in role_name or "onlyfans" in role_name:
+            score += 4
+    return score
 
-    flags = load_flags()
-    if user_id not in flags:
-        flags[user_id] = {
-            "username": member.name,
-            "score": score,
-            "reason": reason
-        }
-        save_flags(flags)
+def get_flag_score_for_account_age(member) -> int:
+    age_days = (discord.utils.utcnow() - member.created_at).days
+    if age_days < 7:
+        return 3
+    elif age_days < 30:
+        return 2
+    return 0
 
-    return score, reason
+async def get_severity_score(member, bot) -> int:
+    score = 0
+
+    # ✅ Fetch bio from User object safely
+    try:
+        user = await bot.fetch_user(member.id)
+        bio = getattr(user, "bio", "")
+    except Exception:
+        bio = ""
+
+    score += get_flag_score_for_bio(bio)
+    score += get_flag_score_for_username(member.name)
+    score += get_flag_score_for_roles(member.roles)
+    score += get_flag_score_for_account_age(member)
+
+    return score
+
+def suggest_action(member) -> str:
+    return "Flag for Review"
 
 def get_flagged_users():
-    return load_flags()
+    import json
+    try:
+        with open("shadow_flags.json", "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_flagged_users(flags):
+    import json
+    with open("shadow_flags.json", "w") as f:
+        json.dump(flags, f, indent=4)
