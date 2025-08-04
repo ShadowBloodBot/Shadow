@@ -1,5 +1,6 @@
 import discord
 import re
+import json
 
 def get_flag_score_for_bio(bio: str) -> int:
     score = 0
@@ -32,7 +33,7 @@ def get_flag_score_for_roles(roles) -> int:
             score += 4
     return score
 
-def get_flag_score_for_account_age(member) -> int:
+def get_flag_score_for_account_age(member: discord.Member) -> int:
     age_days = (discord.utils.utcnow() - member.created_at).days
     if age_days < 7:
         return 3
@@ -40,10 +41,10 @@ def get_flag_score_for_account_age(member) -> int:
         return 2
     return 0
 
-async def get_severity_score(member, bot) -> int:
+async def get_severity_score(member: discord.Member, bot) -> int:
     score = 0
 
-    # ✅ Fetch bio from User object safely
+    # 🔍 Fetch user bio via REST (only available this way)
     try:
         user = await bot.fetch_user(member.id)
         bio = getattr(user, "bio", "")
@@ -57,11 +58,10 @@ async def get_severity_score(member, bot) -> int:
 
     return score
 
-def suggest_action(member) -> str:
+def suggest_action(member: discord.Member) -> str:
     return "Flag for Review"
 
 def get_flagged_users():
-    import json
     try:
         with open("shadow_flags.json", "r") as f:
             return json.load(f)
@@ -69,6 +69,5 @@ def get_flagged_users():
         return {}
 
 def save_flagged_users(flags):
-    import json
     with open("shadow_flags.json", "w") as f:
         json.dump(flags, f, indent=4)
