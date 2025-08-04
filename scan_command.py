@@ -18,7 +18,9 @@ class Scan(commands.Cog):
 
         guild = interaction.guild
         flagged = 0
-        members = await guild.fetch_members(limit=None).flatten()
+
+        # ✅ Fully fetch all members using async generator
+        members = [m async for m in guild.fetch_members(limit=None)]
         total = len(members)
 
         try:
@@ -35,7 +37,7 @@ class Scan(commands.Cog):
                 if member.bot:
                     continue
 
-                # Fetch full user object to access bio
+                # Fetch real user object for bio
                 try:
                     user = await interaction.client.fetch_user(member.id)
                     member.bio = getattr(user, "bio", None)
@@ -53,8 +55,7 @@ class Scan(commands.Cog):
                         f"Account Created: <t:{int(member.created_at.timestamp())}:D>"
                     )
 
-                # Throttle every 50 users
-                if index % 50 == 0:
+                if index % 50 == 0 or index == total:
                     await interaction.edit_original_response(
                         content=f"🔍 Scanned {index}/{total} members... Flagged: {flagged}"
                     )
