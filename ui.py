@@ -7,7 +7,6 @@ from filters import get_flagged_users
 from storage import load_flags
 from analytics import get_bot_stats
 from mod_queue import ModQueueView
-from user_panel import SearchUserModal
 
 class ShadowControlPanel(View):
     def __init__(self, bot, author):
@@ -26,7 +25,9 @@ class ShadowControlPanel(View):
         self.add_item(Button(label="Flagged Users", style=discord.ButtonStyle.success, custom_id="flagged_list"))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return interaction.user == self.author
+        await interaction.response.defer()
+        await self.on_button_click(interaction, interaction.data["custom_id"])
+        return False
 
     async def on_timeout(self):
         pass
@@ -44,8 +45,7 @@ class ShadowControlPanel(View):
                 embed.add_field(name=key.capitalize(), value=str(val))
             await interaction.response.send_message(embed=embed, ephemeral=True)
         elif custom_id == "search":
-            modal = SearchUserModal()
-            await interaction.response.send_modal(modal)
+            await view_user_sheet(interaction)  # ✅ Use view_user_sheet instead of modal
         elif custom_id == "mod_queue":
             flagged = [m for m in interaction.guild.members if not m.bot][:25]
             await interaction.response.send_message("📥 Reviewing Mod Queue", view=ModQueueView(flagged), ephemeral=True)
@@ -60,8 +60,3 @@ class ShadowControlPanel(View):
         elif custom_id == "flagged_list":
             users = load_flags()
             await interaction.response.send_message(f"🚩 Flagged Users:\n{', '.join(users.keys())}", ephemeral=True)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        await interaction.response.defer()
-        await self.on_button_click(interaction, interaction.data["custom_id"])
-        return False  # prevent default behavior
