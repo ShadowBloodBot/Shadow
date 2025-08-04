@@ -1,5 +1,6 @@
 import discord
-from discord.ui import View, Button, Select, SelectOption
+from discord.ui import View, Button, Select
+from discord import SelectOption  # ✅ FIXED
 from moderation import handle_mass_action, handle_shadowmute
 from role_manager import launch_role_manager
 from user_panel import view_user_sheet
@@ -28,7 +29,6 @@ class ShadowControlPanel(View):
     async def refresh(self, button: Button, interaction: discord.Interaction):
         await interaction.response.edit_message(content="🔄 Refreshed panel.", view=self)
 
-
     @discord.ui.button(label="Analytics", style=discord.ButtonStyle.blurple)
     async def analytics(self, button: Button, interaction: discord.Interaction):
         from analytics import get_bot_stats
@@ -43,7 +43,6 @@ class ShadowControlPanel(View):
         from user_panel import SearchUserModal
         modal = SearchUserModal()
         await interaction.response.send_modal(modal)
-
 
     @discord.ui.button(label="Mod Queue", style=discord.ButtonStyle.red)
     async def mod_queue(self, button: Button, interaction: discord.Interaction):
