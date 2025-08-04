@@ -18,6 +18,13 @@ class ScanCommands(commands.Cog):
             members = guild.members
             flagged = get_flagged_users()
             updated = 0
+            total = len(members)
+            scanned = 0
+
+            progress_message = await interaction.followup.send(
+                f"🔍 Starting scan of {total} members...",
+                ephemeral=True
+            )
 
             for index, member in enumerate(members, 1):
                 if member.bot:
@@ -37,11 +44,11 @@ class ScanCommands(commands.Cog):
                     traceback.print_exc()
                     continue
 
-                if index % 250 == 0:
+                scanned += 1
+                if scanned % 250 == 0 or scanned == total:
                     try:
-                        await interaction.followup.send(
-                            f"🔎 Scanned {index}/{len(members)} members...",
-                            ephemeral=True
+                        await progress_message.edit(
+                            content=f"🔎 Scanned {scanned}/{total} members...\nFlagged so far: {updated}"
                         )
                     except:
                         pass
@@ -50,17 +57,17 @@ class ScanCommands(commands.Cog):
 
             save_flagged_users(flagged)
 
-            await interaction.followup.send(
+            await progress_message.edit(
+                content=None,
                 embed=discord.Embed(
                     title="✅ Scan Complete",
-                    description=f"Scanned {len(members)} members.\nFlagged: {updated}",
+                    description=f"Scanned {scanned} members.\nFlagged: {updated}",
                     color=discord.Color.green()
-                ),
-                ephemeral=True
+                )
             )
 
         try:
-            await asyncio.wait_for(scan_logic(), timeout=120)  # ⏱ 2-min timeout
+            await asyncio.wait_for(scan_logic(), timeout=300)  # ⏱ 5 min timeout
         except asyncio.TimeoutError:
             await interaction.followup.send(
                 embed=discord.Embed(
