@@ -1,34 +1,25 @@
 import discord
-import platform
-from datetime import datetime
+import os
 
-# Attempt to import psutil, fallback if not installed
-try:
-    import psutil
-    USE_PSUTIL = True
-except ImportError:
-    USE_PSUTIL = False
+WEBHOOK_URL = os.getenv("MODERATION_WEBHOOK_URL")
 
-def get_bot_stats(bot):
-    stats = {
-        "users": sum(1 for _ in bot.get_all_members()),
-        "guilds": len(bot.guilds),
-        "uptime": datetime.utcnow().isoformat(),
-        "platform": platform.system(),
-    }
+async def log_action_with_webhook(action_type: str, user_id: int, guild_id: int, reason: str = None):
+    if not WEBHOOK_URL:
+        print("[⚠️] Webhook URL not set in environment.")
+        return
 
-    if USE_PSUTIL:
-        stats["cpu"] = psutil.cpu_percent()
-        stats["memory"] = psutil.virtual_memory().percent
-    else:
-        stats["cpu"] = "N/A"
-        stats["memory"] = "N/A"
-
-    return stats
-
-async def post_webhook_log(webhook_url, content):
     try:
-        webhook = discord.SyncWebhook.from_url(webhook_url)
-        webhook.send(content)
+        webhook = discord.SyncWebhook.from_url(WEBHOOK_URL)
+
+        embed = discord.Embed(
+            title=f"🛡️ Moderation Action: {action_type.upper()}",
+            color=discord.Color.red()
+        )
+        embed.add_field(name="User ID", value=str(user_id), inline=True)
+        embed.add_field(name="Guild ID", value=str(guild_id), inline=True)
+        if reason:
+            embed.add_field(name="Reason", value=reason, inline=False)
+
+        webhook.send(embed=embed, username="ShadowBot Logs")
     except Exception as e:
-        print(f"Webhook error: {e}")
+        print(f"[Webhook Logging Error] {e}")
