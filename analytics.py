@@ -1,25 +1,44 @@
-import discord
 import os
+import discord
+from datetime import datetime
 
-WEBHOOK_URL = os.getenv("MODERATION_WEBHOOK_URL")
+# ✅ Get the webhook URL from Railway environment variables
+webhook_url = os.getenv("WEBHOOK_URL")
+webhook = discord.SyncWebhook.from_url(webhook_url) if webhook_url else None
 
-async def log_action_with_webhook(action_type: str, user_id: int, guild_id: int, reason: str = None):
-    if not WEBHOOK_URL:
-        print("[⚠️] Webhook URL not set in environment.")
+# 📜 Save actions to log file
+def log_audit(action_type, user_id, actor=None, reason=None):
+    timestamp = datetime.utcnow().isoformat()
+    log_entry = f"[{timestamp}] ACTION: {action_type} | USER: {user_id}"
+    if actor:
+        log_entry += f" | BY: {actor}"
+    if reason:
+        log_entry += f" | REASON: {reason}"
+
+    try:
+        with open("audit.log", "a") as f:
+            f.write(log_entry + "\n")
+    except Exception as e:
+        print(f"Failed to write audit log: {e}")
+
+# 🧾 Send webhook log to Discord mod channel
+def log_action_with_webhook(action_type, user_id, guild, reason=None):
+    if not webhook:
+        print("Webhook URL not set.")
         return
 
     try:
-        webhook = discord.SyncWebhook.from_url(WEBHOOK_URL)
-
         embed = discord.Embed(
-            title=f"🛡️ Moderation Action: {action_type.upper()}",
-            color=discord.Color.red()
+            title=f"🛡️ Moderation Event: {action_type}",
+            color=discord.Color.red(),
+            timestamp=datetime.utcnow()
         )
-        embed.add_field(name="User ID", value=str(user_id), inline=True)
-        embed.add_field(name="Guild ID", value=str(guild_id), inline=True)
+        embed.add_field(name="User ID", value=str(user_id), inline=False)
+        embed.add_field(name="Server", value=guild.name, inline=False)
         if reason:
             embed.add_field(name="Reason", value=reason, inline=False)
 
-        webhook.send(embed=embed, username="ShadowBot Logs")
+        embed.set_footer(text="ShadowBot Logging System")
+        webhook.send(embed=embed)
     except Exception as e:
-        print(f"[Webhook Logging Error] {e}")
+        print(f"Failed to send webhook log: {e}")
