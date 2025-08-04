@@ -1,7 +1,10 @@
+# events.py
+
 import discord
 from discord.ext import commands
-from filters import get_severity_score, suggest_action
-from storage import load_flags, save_flags, log_audit, log_action_with_webhook
+from filters import score_member, get_severity_score, suggest_action
+
+MOD_QUEUE_THREAD_ID = 1401792224500649994
 
 class EventHandlers(commands.Cog):
     def __init__(self, bot):
@@ -12,30 +15,31 @@ class EventHandlers(commands.Cog):
         if member.bot:
             return
 
-        score = get_severity_score(member)
-        if score >= 5:
-            user_id = str(member.id)
-            reason = suggest_action(member)
-            flags = load_flags()
+        try:
+            user = await self.bot.fetch_user(member.id)
+        except Exception:
+            user = member  # fallback if API call fails
 
-            if user_id not in flags:
-                flags[user_id] = {
-                    "username": member.name,
-                    "score": score,
-                    "reason": reason
-                }
-                save_flags(flags)
-                log_audit("auto_flag", member.id, member.guild.me, reason=reason)
-                log_action_with_webhook("auto_flag", member.id, member.guild.me, reason=reason)
+        score, reason = score_member(member, user)
 
-                # Post to thread
-                try:
-                    thread = await member.guild.fetch_channel(1401792224500649994)
-                    embed = discord.Embed(title="🚨 Auto-Flagged Member", color=discord.Color.red())
-                    embed.add_field(name="User", value=f"{member.mention} (`{member.id}`)", inline=False)
-                    embed.add_field(name="Severity Score", value=str(score))
-                    embed.add_field(name="AI Suggestion", value=reason)
-                    embed.set_footer(text="Flagged by ShadowBot AI")
-                    await thread.send(embed=embed)
-                except Exception as e:
-                    print(f"[AI Flag] Failed to post to thread: {e}")
+        if score >= 3:
+            severity = get_severity_score(score)
+            suggested = suggest_action(score)
+
+            try:
+                mod_thread = await member.guild.fetch_channel(MOD_QUEUE_THREAD_ID)
+                await mod_thread.send(
+                    f"{severity} **New Member Flagged:** {member.mention}\n"
+                    f"Score: {score}\n"
+                    f"Reason: {reason}\n"
+                    f"Suggested Action: {suggested}\n"
+                    f"Account Created: <t:{int(member.created_at.timestamp())}:D>"
+                )
+            except Exception as e:
+                print(f"[ERROR] Failed to post to mod queue: {e}")
+
+        else:
+            print(f"[INFO] New member {member.name} scored clean ({score})")
+
+def register_events(bot):
+    bot.add_cog(EventHandlers(bot))
