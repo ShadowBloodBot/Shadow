@@ -1,20 +1,19 @@
 import discord
-from discord.ext import commands
 import os
 from ui import ShadowControlPanel
 from config import SHADOW_ROLE_ID
 
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = discord.Bot(intents=intents)  # ✅ Fixed: discord.Bot for slash commands
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user}.")
+    print(f"✅ Logged in as {bot.user}.")
 
 @bot.slash_command(name="shadow", description="Open the Shadow Moderation Panel")
 async def shadow(ctx: discord.ApplicationContext):
     if SHADOW_ROLE_ID not in [role.id for role in ctx.author.roles]:
-        await ctx.respond("You do not have permission to use this command.", ephemeral=True)
+        await ctx.respond("🚫 You do not have permission to use this command.", ephemeral=True)
         return
 
     view = ShadowControlPanel(bot, ctx.author)
