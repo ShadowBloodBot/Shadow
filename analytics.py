@@ -2,11 +2,9 @@ import os
 import discord
 from datetime import datetime
 
-# ✅ Get the webhook URL from Railway environment variables
 webhook_url = os.getenv("WEBHOOK_URL")
 webhook = discord.SyncWebhook.from_url(webhook_url) if webhook_url else None
 
-# 📜 Save actions to log file
 def log_audit(action_type, user_id, actor=None, reason=None):
     timestamp = datetime.utcnow().isoformat()
     log_entry = f"[{timestamp}] ACTION: {action_type} | USER: {user_id}"
@@ -21,7 +19,6 @@ def log_audit(action_type, user_id, actor=None, reason=None):
     except Exception as e:
         print(f"Failed to write audit log: {e}")
 
-# 🧾 Send webhook log to Discord mod channel
 def log_action_with_webhook(action_type, user_id, guild, reason=None):
     if not webhook:
         print("Webhook URL not set.")
@@ -42,3 +39,6 @@ def log_action_with_webhook(action_type, user_id, guild, reason=None):
         webhook.send(embed=embed)
     except Exception as e:
         print(f"Failed to send webhook log: {e}")
+
+# ✅ Alias for compatibility
+post_webhook_log = log_action_with_webhook
