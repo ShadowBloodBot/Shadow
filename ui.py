@@ -27,6 +27,11 @@ class ShadowControlPanel(View):
 
     async def on_button_click(self, interaction: discord.Interaction, custom_id: str):
         try:
+            # If launching a modal, skip defer
+            if custom_id in ["search", "user_sheet"]:
+                await view_user_sheet(interaction)
+                return
+
             await interaction.response.defer(ephemeral=True)
 
             if custom_id == "refresh":
@@ -38,9 +43,6 @@ class ShadowControlPanel(View):
                 for key, val in stats.items():
                     embed.add_field(name=key.capitalize(), value=str(val))
                 await interaction.followup.send(embed=embed, ephemeral=True)
-
-            elif custom_id == "search" or custom_id == "user_sheet":
-                await view_user_sheet(interaction)
 
             elif custom_id == "mod_queue":
                 flagged = [m for m in interaction.guild.members if not m.bot][:25]
