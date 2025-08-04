@@ -1,7 +1,13 @@
 import discord
 import platform
-import psutil
 from datetime import datetime
+
+# Attempt to import psutil, fallback if not installed
+try:
+    import psutil
+    USE_PSUTIL = True
+except ImportError:
+    USE_PSUTIL = False
 
 def get_bot_stats(bot):
     stats = {
@@ -9,9 +15,15 @@ def get_bot_stats(bot):
         "guilds": len(bot.guilds),
         "uptime": datetime.utcnow().isoformat(),
         "platform": platform.system(),
-        "cpu": psutil.cpu_percent(),
-        "memory": psutil.virtual_memory().percent
     }
+
+    if USE_PSUTIL:
+        stats["cpu"] = psutil.cpu_percent()
+        stats["memory"] = psutil.virtual_memory().percent
+    else:
+        stats["cpu"] = "N/A"
+        stats["memory"] = "N/A"
+
     return stats
 
 async def post_webhook_log(webhook_url, content):
