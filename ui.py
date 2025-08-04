@@ -27,32 +27,40 @@ class ShadowControlPanel(View):
 
     async def on_button_click(self, interaction: discord.Interaction, custom_id: str):
         try:
+            await interaction.response.defer(ephemeral=True)
+
             if custom_id == "refresh":
-                await interaction.response.edit_message(content="🔄 Refreshed panel.", view=self)
+                await interaction.edit_original_response(content="🔄 Refreshed panel.", view=self)
 
             elif custom_id == "analytics":
                 stats = get_bot_stats(self.bot)
                 embed = discord.Embed(title="📊 Bot Analytics")
                 for key, val in stats.items():
                     embed.add_field(name=key.capitalize(), value=str(val))
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+                await interaction.followup.send(embed=embed, ephemeral=True)
 
             elif custom_id == "search" or custom_id == "user_sheet":
                 await view_user_sheet(interaction)
 
             elif custom_id == "mod_queue":
                 flagged = [m for m in interaction.guild.members if not m.bot][:25]
-                await interaction.response.send_message("📥 Reviewing Mod Queue", view=ModQueueView(flagged), ephemeral=True)
+                await interaction.followup.send("📥 Reviewing Mod Queue", view=ModQueueView(flagged), ephemeral=True)
 
             elif custom_id == "role_manager":
                 await launch_role_manager(interaction)
 
             elif custom_id == "flagged_list":
                 users = load_flags()
-                await interaction.response.send_message(f"🚩 Flagged Users:\n{', '.join(users.keys())}", ephemeral=True)
+                await interaction.followup.send(f"🚩 Flagged Users:\n{', '.join(users.keys())}", ephemeral=True)
 
         except Exception as e:
-            await interaction.response.send_message(f"⚠️ Error: {e}", ephemeral=True)
+            try:
+                await interaction.followup.send(f"⚠️ Error: {e}", ephemeral=True)
+            except:
+                pass
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item):
-        await interaction.response.send_message("❌ UI error occurred.", ephemeral=True)
+        try:
+            await interaction.followup.send("❌ UI error occurred.", ephemeral=True)
+        except:
+            pass
