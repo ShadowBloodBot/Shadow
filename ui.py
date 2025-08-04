@@ -1,6 +1,6 @@
 import discord
 from discord.ui import View, Button
-from moderation import handle_shadowmute
+from moderation import handle_shadowmute  # still imported in case you use elsewhere
 from role_manager import launch_role_manager
 from user_panel import view_user_sheet
 from filters import get_flagged_users
@@ -18,7 +18,6 @@ class ShadowControlPanel(View):
         self.add_item(Button(label="Analytics", style=discord.ButtonStyle.blurple, custom_id="analytics"))
         self.add_item(Button(label="Search Users", style=discord.ButtonStyle.secondary, custom_id="search"))
         self.add_item(Button(label="Mod Queue", style=discord.ButtonStyle.red, custom_id="mod_queue"))
-        self.add_item(Button(label="ShadowMute", style=discord.ButtonStyle.secondary, custom_id="shadow_mute"))
         self.add_item(Button(label="Role Manager", style=discord.ButtonStyle.primary, custom_id="role_manager"))
         self.add_item(Button(label="User Panel", style=discord.ButtonStyle.secondary, custom_id="user_sheet"))
         self.add_item(Button(label="Flagged Users", style=discord.ButtonStyle.success, custom_id="flagged_list"))
@@ -45,9 +44,6 @@ class ShadowControlPanel(View):
         elif custom_id == "mod_queue":
             flagged = [m for m in interaction.guild.members if not m.bot][:25]
             await interaction.response.send_message("📥 Reviewing Mod Queue", view=ModQueueView(flagged), ephemeral=True)
-
-        elif custom_id == "shadow_mute":
-            await handle_shadowmute(interaction)
 
         elif custom_id == "role_manager":
             await launch_role_manager(interaction)
