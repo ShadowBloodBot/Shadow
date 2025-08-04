@@ -18,8 +18,6 @@ class Scan(commands.Cog):
 
         guild = interaction.guild
         flagged = 0
-
-        # ✅ Fully fetch all members using async generator
         members = [m async for m in guild.fetch_members(limit=None)]
         total = len(members)
 
@@ -37,14 +35,12 @@ class Scan(commands.Cog):
                 if member.bot:
                     continue
 
-                # Fetch real user object for bio
                 try:
                     user = await interaction.client.fetch_user(member.id)
-                    member.bio = getattr(user, "bio", None)
                 except Exception:
-                    member.bio = None
+                    user = member  # fallback
 
-                score, reason = score_member(member)
+                score, reason = score_member(member, user)
                 if score >= 3:
                     flagged += 1
                     await mod_thread.send(
@@ -75,7 +71,6 @@ class Scan(commands.Cog):
             content="🧠 Opening the Shadow Moderation Panel...\nPlease check the Mod Queue for flagged users.",
             ephemeral=True
         )
-
 
 async def setup(bot):
     await bot.add_cog(Scan(bot))
