@@ -1,48 +1,52 @@
 import os
 import discord
 from discord.ext import commands
+from discord import app_commands
+from ui import ShadowControlPanel
+from moderation import handle_mass_action, handle_shadowmute
+from scan_command import ScanCommands
+from events import EventHandlers
+from storage import load_flags
 from dotenv import load_dotenv
 
-from ui import ShadowControlPanel
-from role_manager import RoleManagerView
-from moderation import handle_mass_action, handle_shadowmute
-from analytics import post_webhook_log
-from storage import log_audit
-from events import EventHandlers
-from scan_command import ScanCommands
-
 load_dotenv()
+
 intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents)
+tree = bot.tree
 
-class ShadowBot(commands.Bot):
-    async def setup_hook(self):
-        await self.add_cog(EventHandlers(self))
-        await self.add_cog(ScanCommands(self))
-        print("✅ All Cogs loaded via setup_hook.")
-
-bot = ShadowBot(command_prefix="!", intents=intents)
+GUILD_ID = discord.Object(id=YOUR_GUILD_ID_HERE)  # Optional: restrict slash command registration
 
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
-    try:
-        synced = await bot.tree.sync()
-        print(f"🔧 Synced {len(synced)} slash commands.")
-    except Exception as e:
-        print(f"❌ Sync failed: {e}")
+    await tree.sync()
+    print("🌐 Slash commands synced.")
 
-@bot.tree.command(name="shadow", description="Open the Shadow Moderation Panel")
+# Fix: /shadow command now passes `bot` and `interaction.user`
+@tree.command(name="shadow", description="Open the moderation panel")
+@app_commands.checks.has_role("Mover & Shaker")
 async def open_shadow_panel(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.manage_guild and "Mover & Shaker" not in [role.name for role in interaction.user.roles]:
-        await interaction.response.send_message("🚫 You do not have permission to use this command.", ephemeral=True)
-        return
-
     await interaction.response.send_message(
         f"🛡️ {interaction.user.mention} activated the `/shadow` panel",
-        view=ShadowControlPanel(),
-        ephemeral=False
+        view=ShadowControlPanel(bot, interaction.user),
+        ephemeral=True
     )
 
-# Start bot
+# Attach all slash command groups
+async def setup_handlers():
+    await bot.add_cog(EventHandlers(bot))
+    await bot.add_cog(ScanCommands(bot))
+
+# Run async setup using setup_hook
+class ShadowBot(commands.Bot):
+    async def setup_hook(self):
+        await setup_handlers()
+
 if __name__ == "__main__":
-    bot.run(os.getenv("DISCORD_TOKEN"))
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        raise ValueError("DISCORD_TOKEN not set in environment variables.")
+    bot = ShadowBot(command_prefix="!", intents=intents)
+    tree = bot.tree
+    bot.run(token)
