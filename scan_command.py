@@ -29,7 +29,10 @@ class Scan(commands.Cog):
             print(f"[ERROR] Cannot fetch mod thread: {e}")
             return
 
-        await interaction.edit_original_response(content=f"🔍 Starting scan of {total} members...")
+        try:
+            await interaction.edit_original_response(content=f"🔍 Starting scan of {total} members...")
+        except Exception as e:
+            print(f"[WARN] Failed to send initial scan update: {e}")
 
         for index, member in enumerate(members, start=1):
             try:
@@ -39,7 +42,7 @@ class Scan(commands.Cog):
                 try:
                     user = await interaction.client.fetch_user(member.id)
                 except Exception:
-                    user = member  # fallback
+                    user = member
 
                 score, reason = score_member(member, user)
                 if score >= 3:
@@ -53,17 +56,24 @@ class Scan(commands.Cog):
                     )
 
                 if index % 50 == 0 or index == total:
-                    await interaction.edit_original_response(
-                        content=f"🔍 Scanned {index}/{total} members... Flagged: {flagged}"
-                    )
+                    try:
+                        await interaction.edit_original_response(
+                            content=f"🔍 Scanned {index}/{total} members... Flagged: {flagged}"
+                        )
+                    except Exception as e:
+                        print(f"[WARN] Failed to update scan progress: {e}")
+
                     await discord.utils.sleep_until(discord.utils.utcnow() + timedelta(seconds=1))
 
             except Exception as e:
                 print(f"[ERROR] Failed to scan {member.name}: {e}")
 
-        await interaction.edit_original_response(
-            content=f"✅ Scan complete. Scanned {total} members. Total Flagged: **{flagged}**"
-        )
+        try:
+            await interaction.edit_original_response(
+                content=f"✅ Scan complete. Scanned {total} members. Total Flagged: **{flagged}**"
+            )
+        except Exception as e:
+            print(f"[WARN] Failed to send final scan message: {e}")
 
     @app_commands.command(name="shadow", description="Open the Shadow moderation panel.")
     @app_commands.checks.has_permissions(administrator=True)
@@ -72,7 +82,6 @@ class Scan(commands.Cog):
             content="🧠 Opening the Shadow Moderation Panel...\nPlease check the Mod Queue for flagged users.",
             ephemeral=True
         )
-
 
 async def setup(bot):
     await bot.add_cog(Scan(bot))
