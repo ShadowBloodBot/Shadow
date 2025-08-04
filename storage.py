@@ -1,9 +1,12 @@
 import json
 import os
 from datetime import datetime
+from config import WEBHOOK_URL
+from analytics import post_webhook_log
 
 FLAG_FILE = "shadow_flags.json"
 AUDIT_LOG = "audit_log.json"
+PROBATION_FILE = "probation.json"
 
 def load_flags():
     if not os.path.exists(FLAG_FILE):
@@ -15,12 +18,13 @@ def save_flags(data):
     with open(FLAG_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-def log_audit(action, user_id, moderator):
+def log_audit(action, user_id, moderator, reason=None):
     log_entry = {
         "timestamp": datetime.utcnow().isoformat(),
         "action": action,
-        "target_user": user_id,
-        "moderator": moderator.name
+        "target_user": str(user_id),
+        "moderator": moderator.name,
+        "reason": reason or "No reason provided"
     }
     data = []
     if os.path.exists(AUDIT_LOG):
@@ -33,11 +37,15 @@ def log_audit(action, user_id, moderator):
     with open(AUDIT_LOG, "w") as f:
         json.dump(data, f, indent=2)
 
-from config import WEBHOOK_URL
-from analytics import post_webhook_log
-
-def log_action_with_webhook(action, user_id, moderator):
-    content = f"[{datetime.utcnow().isoformat()}] Action: {action} | Target: {user_id} | By: {moderator.name}"
+def log_action_with_webhook(action, user_id, moderator, reason=None):
+    content = (
+        f"🛡️ **Moderation Action**\n"
+        f"• **Action:** {action}\n"
+        f"• **User ID:** {user_id}\n"
+        f"• **By:** {moderator.name}\n"
+        f"• **Reason:** {reason or 'No reason provided'}\n"
+        f"• **Time:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+    )
     try:
         import asyncio
         loop = asyncio.get_event_loop()
@@ -47,8 +55,6 @@ def log_action_with_webhook(action, user_id, moderator):
             loop.run_until_complete(post_webhook_log(WEBHOOK_URL, content))
     except Exception as e:
         print(f"Failed to send webhook: {e}")
-
-PROBATION_FILE = "probation.json"
 
 def add_probation(user_id, reason):
     data = {}
