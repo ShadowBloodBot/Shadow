@@ -1,6 +1,7 @@
 import discord
-from storage import log_audit, log_action_with_webhook
+from storage import log_audit, log_action_with_webhook, load_flags, save_flags
 from filters import get_severity_score
+
 
 async def handle_mass_action(interaction, action="ban"):
     guild = interaction.guild
@@ -52,9 +53,22 @@ async def handle_shadowmute(interaction):
 
 async def auto_flag_new_members(guild, bot):
     flagged = []
+    flags = load_flags()
+
     for member in guild.members:
-        if not member.bot:
-            score = get_severity_score(bot, member)
-            if score >= 3:
+        if member.bot:
+            continue
+
+        score = get_severity_score(bot, member)
+        if score >= 3:
+            user_id = str(member.id)
+            if user_id not in flags:
+                flags[user_id] = {
+                    "username": member.name,
+                    "score": score,
+                    "reason": "Flagged via scan"
+                }
                 flagged.append(member.id)
+
+    save_flags(flags)
     return flagged
