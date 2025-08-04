@@ -1,19 +1,32 @@
 # filters.py
 
 from datetime import datetime, timezone
+import re
+
+# Keywords and patterns
+SUSPICIOUS_NAME_KEYWORDS = ["twitter", "free", "nitro", "nsfw", "onlyfans", ".com", "join my", "cashapp"]
+BIO_KEYWORDS = [
+    "dm for work", "open commissions", "commissions open", "my portfolio",
+    "artist", "click here", "hire me", "promo", "graphic designer", "fiverr", "insta", "instagram", "bio"
+]
+URL_PATTERNS = [r"twitter\.com", r"instagram\.com", r"discord\.gg", r"linktr\.ee", r"carrd\.co"]
+
 
 def score_member(member):
     score = 0
     reasons = []
+
+    # === Skip if bot ===
+    if member.bot:
+        return -1, "Bot account"
 
     # === Default avatar ===
     if member.default_avatar == member.avatar:
         score += 2
         reasons.append("Default avatar")
 
-    # === Suspicious keywords in username ===
-    suspicious_keywords = ["twitter", "free", "nitro", "nsfw", "onlyfans", ".com"]
-    if any(word in member.name.lower() for word in suspicious_keywords):
+    # === Suspicious username ===
+    if any(kw in member.name.lower() for kw in SUSPICIOUS_NAME_KEYWORDS):
         score += 2
         reasons.append("Suspicious username")
 
@@ -28,16 +41,20 @@ def score_member(member):
         score += 1
         reasons.append("No roles")
 
-    # === Animated profile picture (negative score = more human) ===
-    if member.avatar and member.avatar.is_animated():
-        score -= 1
-        reasons.append("Animated profile (human signal)")
+    # === Bio scoring ===
+    bio = getattr(member, "bio", "")
+    if bio:
+        lower_bio = bio.lower()
 
-    # === Bio contains 'twitter' ===
-    if hasattr(member, 'bio') and member.bio:
-        if 'twitter' in member.bio.lower():
+        # Keyword matches
+        if any(kw in lower_bio for kw in BIO_KEYWORDS):
             score += 3
-            reasons.append("Bio contains 'twitter'")
+            reasons.append("Suspicious bio keywords")
+
+        # Link pattern matches
+        if any(re.search(pat, lower_bio) for pat in URL_PATTERNS):
+            score += 3
+            reasons.append("Suspicious bio links")
 
     reason_str = ", ".join(reasons) if reasons else "No flags"
     return score, reason_str
