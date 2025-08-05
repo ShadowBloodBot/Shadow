@@ -1,4 +1,5 @@
 import re
+import discord  # ✅ Required for type hints
 
 def score_member(member: discord.Member) -> int:
     score = 0
