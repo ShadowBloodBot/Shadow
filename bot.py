@@ -8,7 +8,7 @@ from mod_queue import ModQueueView
 
 load_dotenv()
 
-GUILD_ID = 908659586536468540  # ✅ Your confirmed server
+GUILD_ID = 908659586536468540  # ✅ Your confirmed guild/server ID
 
 class ShadowBot(discord.Client):
     def __init__(self):
@@ -17,6 +17,9 @@ class ShadowBot(discord.Client):
         self.tree = discord.app_commands.CommandTree(self)
 
     async def setup_hook(self):
+        # ===== 🧹 CLEAR OLD COMMANDS (Fix Unknown Integration) =====
+        await self.tree.clear_commands(guild=discord.Object(id=GUILD_ID))
+        print("[SYNC] Cleared old slash commands from guild.")
 
         # ===== /shadow =====
         @self.tree.command(name="shadow", description="Open the Shadow Moderation Panel")
@@ -75,9 +78,9 @@ class ShadowBot(discord.Client):
                 except Exception as e:
                     print(f"[THREAD ERROR] {e}")
 
-        # 🔥 Force sync to your guild only
+        # ✅ Force re-sync only to your guild
         await self.tree.sync(guild=discord.Object(id=GUILD_ID))
-        print("[SYNC] Slash commands registered to your guild.")
+        print("[SYNC] Slash commands re-registered to your guild.")
 
 bot = ShadowBot()
 
