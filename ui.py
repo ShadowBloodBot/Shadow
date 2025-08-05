@@ -7,57 +7,65 @@ from log_utils import send_log
 
 class ModerationControlView(View):
     def __init__(self):
-        super().__init__(timeout=None)  # Persistent View
-
+        super().__init__(timeout=None)
         self.refresh_button = Button(
             label="🔄 Refresh Mod Queue",
             style=discord.ButtonStyle.primary,
             custom_id="refresh_queue"
         )
         self.refresh_button.callback = self.refresh_mod_queue
-
         self.add_item(self.refresh_button)
         self.render_flagged_users()
 
     def render_flagged_users(self):
+        # Clear everything and re-add refresh
         self.clear_items()
         self.add_item(self.refresh_button)
 
         flagged = get_flagged_users()
         if not flagged:
-            empty_btn = Button(label="✅ No flagged users", disabled=True)
-            self.add_item(empty_btn)
+            self.add_item(Button(label="✅ No flagged users", disabled=True))
             return
 
         for user_data in flagged:
-            uid = user_data["user_id"]
-            sev = user_data.get("severity", 0)
+            user_id = user_data.get("user_id")
+            severity = user_data.get("severity", 0)
             reason = user_data.get("reason", "Unknown")
-            label = f"⚠️ {uid} | Severity: {sev}"
+            label = f"⚠️ {user_id} | Severity: {severity}"
 
-            action_btn = Button(
-                label=label,
-                style=discord.ButtonStyle.danger if sev >= 3 else discord.ButtonStyle.secondary,
-                custom_id=f"mod_action_{uid}"
-            )
+            style = discord.ButtonStyle.danger if severity >= 3 else discord.ButtonStyle.secondary
+            button = Button(label=label, style=style, custom_id=f"mod_action_{user_id}")
 
-            async def action_callback(interaction: discord.Interaction, user_id=uid):
+            async def callback(interaction: discord.Interaction, uid=user_id, sev=severity):
+                if not interaction.guild:
+                    await interaction.response.send_message("❌ Error: Guild context missing.", ephemeral=True)
+                    return
+
+                member = interaction.guild.get_member(uid)
                 try:
-                    member = interaction.guild.get_member(user_id)
                     if member:
                         await member.kick(reason="Auto-flagged by AI system")
-                        await send_log(f"👢 Kicked flagged user <@{user_id}> (Severity {sev})", channel=None)
+                        await send_log(f"👢 {interaction.user.mention} kicked <@{uid}> (Severity {sev})")
                     else:
-                        await send_log(f"⚠️ Tried to kick <@{user_id}> but they are no longer in the server", channel=None)
+                        await send_log(f"⚠️ <@{uid}> was flagged but is no longer in the server.")
 
-                    clear_flag(user_id)
-                    await interaction.response.edit_message(content="✅ User processed and removed from queue.", view=ModerationControlView())
+                    clear_flag(uid)
+                    await interaction.response.edit_message(
+                        content="✅ User processed and removed from queue.",
+                        view=ModerationControlView()
+                    )
+                except discord.Forbidden:
+                    await interaction.response.send_message("🚫 I don't have permission to kick that user.", ephemeral=True)
                 except Exception as e:
                     await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
 
-            action_btn.callback = action_callback
-            self.add_item(action_btn)
+            button.callback = callback
+            self.add_item(button)
 
     async def refresh_mod_queue(self, interaction: discord.Interaction):
-        self.render_flagged_users()
-        await interaction.response.edit_message(view=self)
+        try:
+            self.render_flagged_users()
+            await interaction.response.edit_message(view=self)
+        except Exception as e:
+            print(f"[UI] Refresh error: {e}")
+            await interaction.response.send_message("❌ Failed to refresh view.", ephemeral=True)
