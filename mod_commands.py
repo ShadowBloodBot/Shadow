@@ -15,6 +15,7 @@ class ModCommands(commands.Cog):
             await member.kick(reason=reason)
             await interaction.response.send_message(f"✅ {member} has been kicked.", ephemeral=True)
             await log_case("kick", member, interaction.user, reason)
+            await send_log(f"👢 {interaction.user.mention} kicked {member.mention} – `{reason}`")
         except Exception as e:
             await interaction.response.send_message("❌ Failed to kick member.", ephemeral=True)
             print(e)
@@ -26,6 +27,7 @@ class ModCommands(commands.Cog):
             await member.ban(reason=reason)
             await interaction.response.send_message(f"✅ {member} has been banned.", ephemeral=True)
             await log_case("ban", member, interaction.user, reason)
+            await send_log(f"🔨 {interaction.user.mention} banned {member.mention} – `{reason}`")
         except Exception as e:
             await interaction.response.send_message("❌ Failed to ban member.", ephemeral=True)
             print(e)
@@ -38,6 +40,7 @@ class ModCommands(commands.Cog):
             await member.timeout(until, reason=reason)
             await interaction.response.send_message(f"🕓 {member} has been timed out for {minutes} minutes.", ephemeral=True)
             await log_case("timeout", member, interaction.user, f"{reason} ({minutes}m)")
+            await send_log(f"🕓 {interaction.user.mention} timed out {member.mention} for {minutes}m – `{reason}`")
         except Exception as e:
             await interaction.response.send_message("❌ Failed to timeout member.", ephemeral=True)
             print(e)
@@ -48,6 +51,32 @@ class ModCommands(commands.Cog):
         try:
             await interaction.response.send_message(f"⚠️ {member.mention} has been warned: {reason}", ephemeral=True)
             await log_case("warn", member, interaction.user, reason)
+            await send_log(f"⚠️ {interaction.user.mention} warned {member.mention} – `{reason}`")
         except Exception as e:
             await interaction.response.send_message("❌ Failed to warn member.", ephemeral=True)
+            print(e)
+
+    @app_commands.command(name="purge", description="Delete messages in bulk from a channel.")
+    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.describe(limit="Number of messages to delete (max 100)", user="Optional: Only purge messages from this user")
+    async def purge(self, interaction: discord.Interaction, limit: int, user: discord.User = None):
+        await interaction.response.defer(ephemeral=True)
+
+        if limit > 100:
+            await interaction.followup.send("❌ Cannot delete more than 100 messages at once.", ephemeral=True)
+            return
+
+        def check(msg):
+            return not user or msg.author.id == user.id
+
+        try:
+            deleted = await interaction.channel.purge(limit=limit, check=check, bulk=True)
+            await interaction.followup.send(f"✅ Deleted {len(deleted)} messages.", ephemeral=True)
+
+            if user:
+                await send_log(f"🧹 {interaction.user.mention} purged {len(deleted)} messages from {user.mention} in <#{interaction.channel.id}>.")
+            else:
+                await send_log(f"🧹 {interaction.user.mention} purged {len(deleted)} messages in <#{interaction.channel.id}>.")
+        except Exception as e:
+            await interaction.followup.send("❌ Failed to purge messages.", ephemeral=True)
             print(e)
