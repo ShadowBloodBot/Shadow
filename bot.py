@@ -1,22 +1,23 @@
-import os
 import discord
+import os
+import asyncio
 from discord.ext import commands
 from dotenv import load_dotenv
-
+from log_utils import send_log  # ✅ Fixed
+from ui import ShadowControlPanel
 from mod_commands import ModCommands
 from scan_command import Scan
 from events import EventHandlers
-from ui import ShadowControlPanel
 
 load_dotenv()
-
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-APPLICATION_ID = os.getenv("APPLICATION_ID")
-
-intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents)
 
 class ShadowBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.all()
+        super().__init__(command_prefix="!", intents=intents)
+        self.tree = discord.app_commands.CommandTree(self)
+
     async def setup_hook(self):
         await self.add_cog(ModCommands(self))
         await self.add_cog(Scan(self))
@@ -30,10 +31,14 @@ async def shadow_panel(interaction: discord.Interaction):
         await interaction.response.send_message("❌ You don't have permission to use this.", ephemeral=True)
         return
 
-    embed, view = await ShadowControlPanel(interaction.client).build(interaction)
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    panel = ShadowControlPanel(interaction.client)
+    embed, view = await panel.build(interaction.channel)
+    try:
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+    except Exception as e:
+        await send_log(f"[SHADOW PANEL ERROR] {e}")
+        await interaction.followup.send("❌ Failed to load panel.", ephemeral=True)
 
 if __name__ == "__main__":
-    bot = ShadowBot(command_prefix="!", intents=intents, application_id=APPLICATION_ID)
-    import asyncio
+    bot = ShadowBot()
     asyncio.run(bot.start(DISCORD_TOKEN))
