@@ -1,5 +1,4 @@
 import discord
-from discord.ext import commands
 import os
 from dotenv import load_dotenv
 from ui import ShadowControlPanel
@@ -8,7 +7,7 @@ from config import SHADOW_ROLE_ID
 load_dotenv()
 
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = discord.Bot(intents=intents)
 
 @bot.event
 async def on_ready():
@@ -21,7 +20,6 @@ async def shadow(ctx: discord.ApplicationContext):
         return
 
     view = ShadowControlPanel(bot, ctx.author)
-
     try:
         await ctx.respond("🧠 Opening the Shadow Moderation Panel...\nPlease check the Mod Queue for flagged users.", ephemeral=True)
         await ctx.send(f"🛡️ {ctx.author.mention} activated the `/shadow` panel.", view=view)
