@@ -1,5 +1,6 @@
 import discord
-from discord.ui import View, Button, Select, SelectOption
+from discord.ui import View, Button, Select
+from discord import SelectOption
 from moderation import handle_mass_action, handle_shadowmute
 from role_manager import launch_role_manager
 from user_panel import view_user_sheet
