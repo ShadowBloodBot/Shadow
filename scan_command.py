@@ -4,15 +4,9 @@ from filters import ai_flag_user
 from mod_queue import ModQueueView
 from config import MOD_QUEUE_THREAD_ID
 
-# Slash command object to be added manually
-scan_command = app_commands.Command(
-    name="scan",
-    description="Scan all members and flag suspicious ones.",
-    callback=None  # We'll set this below
-)
-
+@app_commands.command(name="scan", description="Scan all members and flag suspicious ones.")
 @app_commands.checks.has_permissions(administrator=True)
-async def scan_callback(interaction: discord.Interaction):
+async def scan_command(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
     members = [m async for m in guild.fetch_members(limit=None)]
@@ -47,6 +41,3 @@ async def scan_callback(interaction: discord.Interaction):
             await mod_thread.send("📥 Auto-Scan Flagged Members", view=ModQueueView(flagged))
         except Exception as e:
             print(f"[THREAD ERROR] {e}")
-
-# Set callback manually (avoids decorator issues with re-register)
-scan_command.callback = scan_callback
