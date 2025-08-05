@@ -1,56 +1,36 @@
-# bot.py
-
 import discord
 import os
 from discord.ext import commands
-from discord import app_commands
 from dotenv import load_dotenv
 from ui import ModerationControlView
 from scan import Scan
 from events import EventHandlers
+from mod_commands import ModCommands
+from storage import init_db
 
-MOD_ROLE_ID = 955600547266822174  # Role allowed to access /shadow
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-class ShadowBot(commands.Bot):
-    def __init__(self):
-        super().__init__(command_prefix="!", intents=intents)
-        self.tree = app_commands.CommandTree(self)
-
-    async def setup_hook(self):
-        self.add_view(ModerationControlView())  # Persistent control panel
-        self.tree.add_command(shadow_panel)     # Register slash command
-
-        await self.add_cog(Scan(self))
-        await self.add_cog(EventHandlers(self))
-
-        try:
-            await self.tree.sync()
-            print("[SYNC] Slash commands synced.")
-        except Exception as e:
-            print(f"[SYNC ERROR] {e}")
-
-# Slash command to open the Shadow moderation panel
-@app_commands.command(name="shadow", description="Open the Shadow moderation panel.")
-async def shadow_panel(interaction: discord.Interaction):
-    if not any(role.id == MOD_ROLE_ID for role in interaction.user.roles):
-        await interaction.response.send_message("🚫 You don't have permission to use this.", ephemeral=True)
-        return
-
+@bot.event
+async def on_ready():
+    print(f"[READY] Logged in as {bot.user}")
     try:
-        await interaction.response.send_message("🛡️ Shadow Moderation Panel", view=ModerationControlView(), ephemeral=True)
+        synced = await bot.tree.sync()
+        print(f"[SYNC] Synced {len(synced)} commands.")
     except Exception as e:
-        print(f"[SHADOW CMD ERROR] {e}")
-        await interaction.response.send_message("❌ Failed to open moderation panel.", ephemeral=True)
+        print(f"[ERROR] Sync failed: {e}")
+    bot.add_view(ModerationControlView())
+    init_db()
 
-# Load .env and run
+async def setup_hook():
+    await bot.add_cog(Scan(bot))
+    await bot.add_cog(EventHandlers(bot))
+    await bot.add_cog(ModCommands(bot))
+
+bot.setup_hook = setup_hook
+
 if __name__ == "__main__":
-    load_dotenv()
-    token = os.getenv("DISCORD_TOKEN")
-
-    if not token:
-        raise ValueError("DISCORD_TOKEN not found in environment.")
-
-    bot = ShadowBot()
-    bot.run(token)
+    bot.run(TOKEN)
