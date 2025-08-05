@@ -13,7 +13,6 @@ def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
-    # Table for flagged users
     c.execute("""
         CREATE TABLE IF NOT EXISTS flagged_users (
             user_id TEXT PRIMARY KEY,
@@ -51,7 +50,6 @@ def save_flagged_user(user: discord.User, severity_score: int, suggested_action:
 
 
 def get_flagged_users(min_score: int = 0) -> List[Tuple[str, str, str, int, str, str]]:
-    """Returns a list of flagged users with optional minimum score filtering."""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
@@ -67,18 +65,7 @@ def get_flagged_users(min_score: int = 0) -> List[Tuple[str, str, str, int, str,
     return results
 
 
-async def send_log(message: str, channel: Optional[discord.TextChannel] = None):
-    """Sends a message to a specified log channel and prints to console."""
-    print(f"[LOG] {message}")
-    if channel:
-        try:
-            await channel.send(f"📋 {message}")
-        except Exception as e:
-            print(f"[ERROR] Failed to send log to channel: {e}")
-
-
 def get_flagged_user_by_id(user_id: int) -> Optional[Tuple[str, str, str, int, str, str]]:
-    """Returns a single flagged user by Discord ID."""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
@@ -91,3 +78,26 @@ def get_flagged_user_by_id(user_id: int) -> Optional[Tuple[str, str, str, int, s
     result = c.fetchone()
     conn.close()
     return result
+
+
+def clear_flag(user_id: int):
+    """Remove a flagged user from the database."""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+
+    c.execute("""
+        DELETE FROM flagged_users
+        WHERE user_id = ?
+    """, (str(user_id),))
+
+    conn.commit()
+    conn.close()
+
+
+async def send_log(message: str, channel: Optional[discord.TextChannel] = None):
+    print(f"[LOG] {message}")
+    if channel:
+        try:
+            await channel.send(f"📋 {message}")
+        except Exception as e:
+            print(f"[ERROR] Failed to send log to channel: {e}")
