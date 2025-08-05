@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from filters import score_member
 from storage import add_flagged_user
+from log_utils import send_log
 
 class EventHandlers(commands.Cog):
     def __init__(self, bot):
@@ -24,7 +25,6 @@ class EventHandlers(commands.Cog):
     async def on_message_delete(self, message: discord.Message):
         if message.author.bot:
             return
-        from logging import send_log
         content = message.content or "*[embed or attachment]*"
         log = f"🗑️ Message deleted in <#{message.channel.id}> by {message.author.mention}:\n```{content}```"
         await send_log(log)
@@ -33,7 +33,6 @@ class EventHandlers(commands.Cog):
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
         if before.content == after.content or before.author.bot:
             return
-        from logging import send_log
         log = (
             f"✏️ Message edited in <#{before.channel.id}> by {before.author.mention}:\n"
             f"**Before:** ```{before.content}```\n**After:** ```{after.content}```"
