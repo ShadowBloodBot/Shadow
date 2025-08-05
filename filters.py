@@ -44,13 +44,14 @@ def suggest_action(member: discord.Member, bio_text: str = "") -> str:
         return "Monitor"
     return "Low Risk"
 
-async def ai_flag_user(member: discord.Member) -> bool:
+async def ai_flag_user(member: discord.Member, client: discord.Client) -> bool:
     try:
-        user = member._user if hasattr(member, "_user") else await member.guild.fetch_member(member.id)
+        user = await client.fetch_user(member.id)
         profile = await user.fetch_profile()
         bio = profile.bio or ""
     except Exception as e:
         print(f"[BIO FETCH FAIL] {member}: {e}")
         bio = ""
     score = get_severity_score(member, bio)
+    print(f"[AI SCORE] {member.name}: {score} | Bio: {bio[:100]}")
     return score >= 4
