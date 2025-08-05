@@ -36,6 +36,23 @@ class ShadowBot(discord.Client):
                 print(f"[ERROR] Could not send control panel: {e}")
                 await interaction.followup.send("❌ Could not send panel.", ephemeral=True)
 
+        # === Async scan worker runner ===
+        async def asyncio_chunked_executor(tasks, max_concurrent=8):
+            semaphore = asyncio.Semaphore(max_concurrent)
+            results = []
+
+            async def run_task(task_fn):
+                async with semaphore:
+                    try:
+                        return await task_fn()
+                    except Exception as e:
+                        print(f"[SCAN ERROR] {e}")
+                        return None
+
+            await interaction.edit_original_response(content="🔄 Preparing scan...")
+            chunks = [run_task(fn) for fn in tasks]
+            return await asyncio.gather(*chunks, return_exceptions=False)
+
         # === /scan ===
         @self.tree.command(name="scan", description="Scan all members and flag suspicious ones.")
         @discord.app_commands.checks.has_permissions(administrator=True)
@@ -44,34 +61,37 @@ class ShadowBot(discord.Client):
             guild = interaction.guild
             members = [m async for m in guild.fetch_members(limit=None)]
             total = len(members)
-            flagged = []
 
             await interaction.edit_original_response(content=f"🔍 Scanning {total} members...")
             print(f"[SCAN] Starting scan of {total} members...")
 
-            for i, member in enumerate(members):
+            tasks = []
+
+            for member in members:
                 if member.bot:
                     continue
-                try:
-                    flagged_bool = await ai_flag_user(member, self)  # ✅ fixed
-                    score = get_severity_score(member)
-                    print(f"[SCAN] {member.name}#{member.discriminator} - Score: {score} | Flagged: {flagged_bool}")
 
-                    if flagged_bool:
-                        flagged.append(member)
+                async def scan_one(m=member):
+                    try:
+                        flagged = await ai_flag_user(m, self)
+                        score = get_severity_score(m)
+                        print(f"[SCAN] {m.name}#{m.discriminator} - Score: {score} | Flagged: {flagged}")
+                        return m if flagged else None
+                    except Exception as e:
+                        print(f"[SCAN FAIL] {m}: {e}")
+                        return None
 
-                except Exception as e:
-                    print(f"[SCAN ERROR] {member}: {e}")
+                tasks.append(scan_one)
 
-                if i % 25 == 0:
-                    await interaction.edit_original_response(content=f"🔎 Scanned {i}/{total} members...")
-                    await asyncio.sleep(0.2)
+            results = await asyncio_chunked_executor(tasks, max_concurrent=8)
+            flagged = [r for r in results if r is not None]
 
             if not flagged:
                 await interaction.edit_original_response(content="✅ Scan complete. No suspicious users flagged.")
             else:
-                await interaction.edit_original_response(content=f"⚠️ Scan complete. {len(flagged)} users flagged.")
-
+                await interaction.edit_original_response(
+                    content=f"⚠️ Scan complete. {len(flagged)} users flagged."
+                )
                 try:
                     mod_thread = await interaction.client.fetch_channel(MOD_QUEUE_THREAD_ID)
                     await mod_thread.send("📥 Auto-Scan Flagged Members", view=ModQueueView(flagged))
