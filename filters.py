@@ -1,13 +1,11 @@
 import re
 import discord
 
-# === Suspicious keywords for bios ===
 SUSPICIOUS_TERMS = [
     "onlyfans", "artist", "cashapp", "crypto", "promo", "twitter", "dm me", "adult",
     "discount", "deal", "free", "follow me", "link in bio", "snapchat", "👅", "💦"
 ]
 
-# === Regex to detect links
 LINK_PATTERN = re.compile(r"https?://|discord\.gg|\.com|\.xyz|\.link|\.bio|\.site")
 
 def get_flag_score_for_bio(bio: str) -> int:
@@ -15,7 +13,6 @@ def get_flag_score_for_bio(bio: str) -> int:
     if not bio:
         return 0
     bio = bio.lower()
-
     if any(term in bio for term in SUSPICIOUS_TERMS):
         score += 3
     if LINK_PATTERN.search(bio):
@@ -24,30 +21,17 @@ def get_flag_score_for_bio(bio: str) -> int:
 
 def get_severity_score(member: discord.Member, bio_text: str = "") -> int:
     score = 0
-
-    # === Bot tag
     if member.bot:
         score += 1
-
-    # === Username spam traits
     if "spam" in member.name.lower() or "nitro" in member.name.lower():
         score += 4
-
-    # === Low role count
     if len(member.roles) <= 1:
         score += 2
-
-    # === No profile picture
     if not member.avatar:
         score += 1
-
-    # === Account is very new (≤ 7 days)
     if (discord.utils.utcnow() - member.created_at).days <= 7:
         score += 1
-
-    # === Bio-based analysis
     score += get_flag_score_for_bio(bio_text)
-
     return score
 
 def suggest_action(member: discord.Member, bio_text: str = "") -> str:
@@ -62,9 +46,11 @@ def suggest_action(member: discord.Member, bio_text: str = "") -> str:
 
 async def ai_flag_user(member: discord.Member) -> bool:
     try:
-        profile = await member.user.fetch_profile()
+        user = member._user if hasattr(member, "_user") else await member.guild.fetch_member(member.id)
+        profile = await user.fetch_profile()
         bio = profile.bio or ""
-    except:
+    except Exception as e:
+        print(f"[BIO FETCH FAIL] {member}: {e}")
         bio = ""
     score = get_severity_score(member, bio)
     return score >= 4
