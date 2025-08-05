@@ -1,8 +1,8 @@
 import discord
 from discord.ext import commands
-from filters import score_member
-from storage import add_flagged_user
+from storage import init_db
 from log_utils import send_log
+
 
 class EventHandlers(commands.Cog):
     def __init__(self, bot):
@@ -10,31 +10,34 @@ class EventHandlers(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        print(f"✅ Logged in as {self.bot.user}")
-        from storage import init_db
-        await init_db()
+        try:
+            await init_db()
+            print("🗃️ Database initialized successfully.")
+        except Exception as e:
+            print(f"[ERROR] Failed to initialize database: {e}")
+            await send_log(f"❌ Failed to initialize database: `{e}`")
+
+        print(f"✅ Bot is ready: {self.bot.user} (ID: {self.bot.user.id})")
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        score = score_member(member)
-        if score >= 3:
-            await add_flagged_user(member.guild.id, member.id, score)
-            print(f"[FLAG] {member} auto-flagged on join (score={score})")
+        from filters import score_member, get_severity_score, suggest_action
+        from config import MOD_QUEUE_THREAD_ID
 
-    @commands.Cog.listener()
-    async def on_message_delete(self, message: discord.Message):
-        if message.author.bot:
-            return
-        content = message.content or "*[embed or attachment]*"
-        log = f"🗑️ Message deleted in <#{message.channel.id}> by {message.author.mention}:\n```{content}```"
-        await send_log(log)
+        score = await score_member(member)
+        severity = get_severity_score(score)
+        suggestion = suggest_action(severity)
 
-    @commands.Cog.listener()
-    async def on_message_edit(self, before: discord.Message, after: discord.Message):
-        if before.content == after.content or before.author.bot:
-            return
-        log = (
-            f"✏️ Message edited in <#{before.channel.id}> by {before.author.mention}:\n"
-            f"**Before:** ```{before.content}```\n**After:** ```{after.content}```"
-        )
-        await send_log(log)
+        if severity > 0:
+            try:
+                thread = await member.guild.fetch_channel(MOD_QUEUE_THREAD_ID)
+                await thread.send(
+                    f"🚨 **New member flagged:** {member.mention}\n"
+                    f"**Severity:** `{severity}`\n"
+                    f"**Suggested Action:** {suggestion}"
+                )
+                await send_log(f"⚠️ Member `{member}` auto-scanned and flagged with severity {severity}.")
+            except Exception as e:
+                print(f"[ERROR] Could not post to mod queue: {e}")
+                await send_log(f"❌ Could not post flagged member to mod queue: `{e}`")
+
