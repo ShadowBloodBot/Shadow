@@ -1,131 +1,63 @@
+# ui.py
+
 import discord
-from discord import ui
-from filters import get_severity_score
-from storage import get_flagged_users
+from discord.ui import View, Button
+from storage import get_flagged_users, clear_flag
 from log_utils import send_log
 
-MOD_ROLE_ID = 955600547266822174
-
-
-class ModerationDropdown(ui.Select):
+class ModerationControlView(View):
     def __init__(self):
-        options = [
-            discord.SelectOption(label="View Mod Queue", value="queue", emoji="🔍", description="See all auto-flagged users"),
-            discord.SelectOption(label="Active Timeouts", value="timeouts", emoji="👥", description="View all currently timed-out users"),
-            discord.SelectOption(label="Case Logs", value="logs", emoji="🧾", description="Browse moderation history"),
-            discord.SelectOption(label="Live Joins", value="live", emoji="🚨", description="Watch join events in real time"),
-        ]
-        super().__init__(placeholder="Select Moderation View", options=options, min_values=1, max_values=1, custom_id="moderation_dropdown")
+        super().__init__(timeout=None)  # Persistent View
 
-    async def callback(self, interaction: discord.Interaction):
-        if not any(role.id == MOD_ROLE_ID for role in interaction.user.roles):
-            await interaction.response.send_message("🚫 You don't have permission to use this.", ephemeral=True)
-            return
-
-        selection = self.values[0]
-
-        if selection == "queue":
-            users = get_flagged_users()
-            if not users:
-                await interaction.response.send_message("✅ No users in the Mod Queue.", ephemeral=True)
-                return
-
-            embed = discord.Embed(title="🚨 Mod Queue", color=discord.Color.red())
-            for user_id, data in users.items():
-                embed.add_field(name=f"<@{user_id}>", value=f"Score: `{data['score']}`\nReason: {data['reason']}", inline=False)
-
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-
-        elif selection == "timeouts":
-            members = [m for m in interaction.guild.members if m.timed_out_until]
-            embed = discord.Embed(title="⏳ Active Timeouts", color=discord.Color.orange())
-            if not members:
-                embed.description = "There are no members currently timed out."
-            else:
-                for m in members:
-                    until = discord.utils.format_dt(m.timed_out_until, style='R')
-                    embed.add_field(name=m.display_name, value=f"Until: {until}", inline=False)
-
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-
-        elif selection == "logs":
-            await interaction.response.send_message("🧾 Coming soon: Case Log Viewer.", ephemeral=True)
-
-        elif selection == "live":
-            await interaction.response.send_message("🚨 Live Join Feed coming soon.", ephemeral=True)
-
-
-class ModerationControlView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(ModerationDropdown())
-        self.add_item(RefreshPanelButton())
-        self.add_item(ScanNowButton())
-        self.add_item(CaseReviewButton())
-        self.add_item(SettingsButton())
-
-
-class RefreshPanelButton(ui.Button):
-    def __init__(self):
-        super().__init__(label="Refresh Panel", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id="refresh_button")
-
-    async def callback(self, interaction: discord.Interaction):
-        if not any(role.id == MOD_ROLE_ID for role in interaction.user.roles):
-            await interaction.response.send_message("🚫 You don't have permission.", ephemeral=True)
-            return
-
-        await send_shadow_panel(interaction.channel, force=True)
-        await interaction.response.send_message("🔁 Panel refreshed.", ephemeral=True)
-
-
-class ScanNowButton(ui.Button):
-    def __init__(self):
-        super().__init__(label="Scan Now", style=discord.ButtonStyle.danger, emoji="👥", custom_id="scan_now")
-
-    async def callback(self, interaction: discord.Interaction):
-        if not any(role.id == MOD_ROLE_ID for role in interaction.user.roles):
-            await interaction.response.send_message("🚫 You can't do this.", ephemeral=True)
-            return
-
-        await interaction.response.send_message("🛰️ Scan initiated...", ephemeral=True)
-        await send_log(f"🛰️ {interaction.user.mention} triggered a manual scan.")
-
-
-class CaseReviewButton(ui.Button):
-    def __init__(self):
-        super().__init__(label="Case Review", style=discord.ButtonStyle.primary, emoji="📋", custom_id="case_review")
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message("📋 Coming soon: Case review panel.", ephemeral=True)
-
-
-class SettingsButton(ui.Button):
-    def __init__(self):
-        super().__init__(label="Settings", style=discord.ButtonStyle.success, emoji="⚙️", custom_id="settings_button")
-
-    async def callback(self, interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("⚠️ Only admins can access settings.", ephemeral=True)
-            return
-
-        await interaction.response.send_message("⚙️ Settings modal coming soon.", ephemeral=True)
-
-
-async def send_shadow_panel(channel: discord.TextChannel, force=False):
-    try:
-        flagged = len(get_flagged_users())
-        timeouts = len([m for m in channel.guild.members if m.timed_out_until])
-        embed = discord.Embed(
-            title="🛡️ Shadow Moderation Panel",
-            description="Manage flagged users and automate moderation actions.\nUse the dropdown below to view Mod Queue or other tools.",
-            color=discord.Color.from_rgb(138, 43, 226),
-            timestamp=discord.utils.utcnow()
+        self.refresh_button = Button(
+            label="🔄 Refresh Mod Queue",
+            style=discord.ButtonStyle.primary,
+            custom_id="refresh_queue"
         )
-        embed.set_footer(text="Moderation Powered by ShadowBot • Elite Tier")
-        embed.add_field(name="👤 Flagged Users", value=f"`{flagged}` in queue", inline=True)
-        embed.add_field(name="⏳ Active Timeouts", value=f"`{timeouts}` users", inline=True)
-        embed.add_field(name="🕵️ Auto-Scan", value="`ON`", inline=True)
+        self.refresh_button.callback = self.refresh_mod_queue
 
-        await channel.send(embed=embed, view=ModerationControlView())
-    except Exception as e:
-        print("[ERROR] Failed to send control panel:", e)
+        self.add_item(self.refresh_button)
+        self.render_flagged_users()
+
+    def render_flagged_users(self):
+        self.clear_items()
+        self.add_item(self.refresh_button)
+
+        flagged = get_flagged_users()
+        if not flagged:
+            empty_btn = Button(label="✅ No flagged users", disabled=True)
+            self.add_item(empty_btn)
+            return
+
+        for user_data in flagged:
+            uid = user_data["user_id"]
+            sev = user_data.get("severity", 0)
+            reason = user_data.get("reason", "Unknown")
+            label = f"⚠️ {uid} | Severity: {sev}"
+
+            action_btn = Button(
+                label=label,
+                style=discord.ButtonStyle.danger if sev >= 3 else discord.ButtonStyle.secondary,
+                custom_id=f"mod_action_{uid}"
+            )
+
+            async def action_callback(interaction: discord.Interaction, user_id=uid):
+                try:
+                    member = interaction.guild.get_member(user_id)
+                    if member:
+                        await member.kick(reason="Auto-flagged by AI system")
+                        await send_log(f"👢 Kicked flagged user <@{user_id}> (Severity {sev})", channel=None)
+                    else:
+                        await send_log(f"⚠️ Tried to kick <@{user_id}> but they are no longer in the server", channel=None)
+
+                    clear_flag(user_id)
+                    await interaction.response.edit_message(content="✅ User processed and removed from queue.", view=ModerationControlView())
+                except Exception as e:
+                    await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+
+            action_btn.callback = action_callback
+            self.add_item(action_btn)
+
+    async def refresh_mod_queue(self, interaction: discord.Interaction):
+        self.render_flagged_users()
+        await interaction.response.edit_message(view=self)
