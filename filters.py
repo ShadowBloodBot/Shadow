@@ -1,83 +1,54 @@
-# filters.py
-
-from datetime import datetime, timezone
 import re
 
-# Keywords to detect in usernames
-SUSPICIOUS_NAME_KEYWORDS = [
-    "twitter", "free", "nitro", "nsfw", "onlyfans", ".com", "cashapp"
+# Suspicious keywords to look for in bios
+SUSPICIOUS_TERMS = [
+    "onlyfans", "artist", "cashapp", "crypto", "promo", "twitter", "dm me", "adult",
+    "discount", "deal", "free", "follow me", "link in bio", "snapchat", "👅", "💦"
 ]
 
-# Phrases typically found in spam/advertising bios
-BIO_KEYWORDS = [
-    "dm for work", "open commissions", "commissions open", "my portfolio",
-    "hire me", "promo", "graphic designer", "freelance", "looking for work"
-]
+# Pattern to catch links
+LINK_PATTERN = re.compile(r"https?://|discord\.gg|\.com|\.xyz|\.link|\.bio|\.site")
 
-# Patterns representing links or risky domains
-LINK_PATTERNS = [
-    r"http[s]?://", r"\.com\b", r"discord\.gg", r"x\.com", r"linktr\.ee",
-    r"instagram\.com", r"fiverr\.com", r"onlyfans\.com", r"carrd\.co"
-]
-
-def score_member(member, user):
+def get_flag_score_for_bio(bio: str) -> int:
     score = 0
-    reasons = []
+    if not bio:
+        return 0
+    bio = bio.lower()
 
-    if member.bot:
-        return -1, "Bot account"
-
-    # === Default avatar ===
-    if member.default_avatar == member.avatar:
-        score += 2
-        reasons.append("Default avatar")
-
-    # === Suspicious username ===
-    if any(re.search(rf"\b{re.escape(kw)}\b", member.name.lower()) for kw in SUSPICIOUS_NAME_KEYWORDS):
-        score += 2
-        reasons.append("Suspicious username")
-
-    # === Account age ===
-    age_days = (datetime.now(timezone.utc) - member.created_at).days
-    if age_days < 7:
+    if any(term in bio for term in SUSPICIOUS_TERMS):
         score += 3
-        reasons.append(f"New account ({age_days} days old)")
+    if LINK_PATTERN.search(bio):
+        score += 2
+    return score
 
-    # === Bio scoring ===
-    bio = getattr(user, "bio", None)
-    if bio:
-        lower_bio = bio.lower()
+def get_severity_score(member, bio_text=""):
+    score = 0
+    if member.bot:
+        score += 1
+    if "spam" in member.name.lower() or "nitro" in member.name.lower():
+        score += 4
+    if len(member.roles) <= 1:
+        score += 2
+    if not member.avatar:
+        score += 1
+    score += get_flag_score_for_bio(bio_text)
+    return score
 
-        if any(phrase in lower_bio for phrase in BIO_KEYWORDS):
-            score += 3
-            reasons.append("Bio keyword(s)")
-
-        if any(re.search(pat, lower_bio) for pat in LINK_PATTERNS):
-            score += 2
-            reasons.append("Link in bio")
-
-    reason_str = ", ".join(reasons) if reasons else "No flags"
-
-    # ✅ DEBUG LOGGING (to Railway logs)
-    if score >= 1:
-        print(f"[SCAN FLAG] {member.name} → Score: {score} | Reason: {reason_str}")
-    else:
-        print(f"[SCAN PASS] {member.name} → Score: {score}")
-
-    return score, reason_str
-
-def get_severity_score(score: int) -> str:
-    if score >= 7:
-        return "🚨"
+def suggest_action(member, bio_text=""):
+    score = get_severity_score(member, bio_text)
+    if score >= 6:
+        return "Ban Likely"
     elif score >= 4:
-        return "⚠️"
-    else:
-        return "✅"
+        return "ShadowMute Recommended"
+    elif score >= 2:
+        return "Monitor"
+    return "Low Risk"
 
-def suggest_action(score: int) -> str:
-    if score >= 7:
-        return "Ban or timeout"
-    elif score >= 4:
-        return "Kick or verify"
-    else:
-        return "Review or ignore"
+async def ai_flag_user(member):
+    try:
+        profile = await member.user.fetch_profile()
+        bio = profile.bio or ""
+    except:
+        bio = ""
+    score = get_severity_score(member, bio)
+    return score >= 4
