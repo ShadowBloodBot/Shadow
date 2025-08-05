@@ -1,51 +1,67 @@
-import aiosqlite
-import discord  # ✅ Required for type annotations
+import json
+import os
+from datetime import datetime
 
-DB_NAME = "shadowbot.db"
+DATA_FILE = "flagged_users.json"
+LOG_FILE = "mod_logs.json"
 
-async def init_db():
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS flagged_users (
-            guild_id INTEGER,
-            user_id INTEGER,
-            score INTEGER,
-            PRIMARY KEY (guild_id, user_id)
-        )
-        """)
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS cases (
-            case_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id INTEGER,
-            user_id INTEGER,
-            mod_id INTEGER,
-            action TEXT,
-            reason TEXT,
-            timestamp TEXT
-        )
-        """)
-        await db.commit()
+def ensure_file_exists(path, default_data):
+    if not os.path.exists(path):
+        with open(path, "w") as f:
+            json.dump(default_data, f, indent=4)
 
-async def add_flagged_user(guild_id: int, user_id: int, score: int):
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("REPLACE INTO flagged_users (guild_id, user_id, score) VALUES (?, ?, ?)", (guild_id, user_id, score))
-        await db.commit()
+# Ensure storage files exist
+ensure_file_exists(DATA_FILE, {})
+ensure_file_exists(LOG_FILE, [])
 
-async def fetch_flagged_users(guild_id: int):
-    async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute("SELECT user_id, score FROM flagged_users WHERE guild_id = ?", (guild_id,))
-        rows = await cursor.fetchall()
-        return [{"user_id": row[0], "score": row[1]} for row in rows]
+def get_flagged_users() -> dict:
+    """Return all currently flagged users from the mod queue."""
+    try:
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    except Exception as e:
+        print("[ERROR] Failed to load flagged users:", e)
+        return {}
 
-async def clear_flag(guild_id: int, user_id: int):
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("DELETE FROM flagged_users WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
-        await db.commit()
+def add_flagged_user(user_id: int, score: int, reason: str):
+    """Add a user to the flagged list."""
+    flagged = get_flagged_users()
+    flagged[str(user_id)] = {
+        "score": score,
+        "reason": reason,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    with open(DATA_FILE, "w") as f:
+        json.dump(flagged, f, indent=4)
 
-async def log_case(action: str, user: discord.Member, mod: discord.Member, reason: str):
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute(
-            "INSERT INTO cases (guild_id, user_id, mod_id, action, reason, timestamp) VALUES (?, ?, ?, ?, ?, datetime('now'))",
-            (user.guild.id, user.id, mod.id, action, reason)
-        )
-        await db.commit()
+def remove_flagged_user(user_id: int):
+    """Remove a user from the flagged list."""
+    flagged = get_flagged_users()
+    if str(user_id) in flagged:
+        del flagged[str(user_id)]
+        with open(DATA_FILE, "w") as f:
+            json.dump(flagged, f, indent=4)
+
+async def log_case(action: str, user, mod, reason: str):
+    """Append a moderation case log entry."""
+    try:
+        case = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "action": action,
+            "user_id": user.id,
+            "user_tag": str(user),
+            "mod_id": mod.id,
+            "mod_tag": str(mod),
+            "reason": reason
+        }
+        logs = []
+        with open(LOG_FILE, "r") as f:
+            logs = json.load(f)
+
+        logs.append(case)
+
+        with open(LOG_FILE, "w") as f:
+            json.dump(logs, f, indent=4)
+
+    except Exception as e:
+        print("[ERROR] Failed to log moderation case:", e)
