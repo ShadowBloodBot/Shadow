@@ -1,75 +1,48 @@
 # scan.py
 
 import discord
-from discord.ext import commands
 from discord import app_commands
-from filters import get_severity_score, suggest_action
+from discord.ext import commands
+from filters import score_member, suggest_action
 from storage import add_flagged_user
-import asyncio
+from log_utils import send_log
 
 MOD_QUEUE_THREAD_ID = 1401792224500649994
-
+MOD_ROLE_ID = 955600547266822174
 
 class Scan(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
     @app_commands.command(name="scan", description="Scan all members and flag suspicious ones.")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def scan_members(self, interaction: discord.Interaction):
+    async def scan_command(self, interaction: discord.Interaction):
+        if not any(role.id == MOD_ROLE_ID for role in interaction.user.roles):
+            await interaction.response.send_message("🚫 You don't have permission to use this.", ephemeral=True)
+            return
+
         await interaction.response.defer(ephemeral=True)
 
         guild = interaction.guild
+        members = [m async for m in guild.fetch_members(limit=None)]
+        total = len(members)
         flagged = 0
 
-        try:
-            members = [m async for m in guild.fetch_members(limit=None)]
-        except Exception as e:
-            await interaction.followup.send("❌ Failed to fetch members.", ephemeral=True)
-            print(f"[ERROR] Fetching members failed: {e}")
-            return
+        await interaction.followup.send(f"🛰️ Starting scan of {total} members...", ephemeral=True)
 
-        total = len(members)
-
-        try:
-            mod_thread = await self.bot.fetch_channel(MOD_QUEUE_THREAD_ID)
-        except Exception as e:
-            await interaction.followup.send("❌ Mod queue thread not found or inaccessible.", ephemeral=True)
-            print(f"[ERROR] Cannot fetch mod thread: {e}")
-            return
-
-        try:
-            await interaction.edit_original_response(content=f"🔍 Starting scan of {total} members...")
-        except Exception as e:
-            print(f"[ERROR] Cannot edit original scan response: {e}")
-
-        for idx, member in enumerate(members):
+        for i, member in enumerate(members):
             try:
-                score = await get_severity_score(member)
+                score, reason = score_member(member)
                 if score >= 3:
-                    reason = suggest_action(score)
                     add_flagged_user(member.id, score, reason)
-                    await mod_thread.send(
-                        f"🚨 **Flagged:** {member.mention} (Score: `{score}`)\nReason: `{reason}`"
-                    )
                     flagged += 1
+
+                # Progress every 250 members
+                if i % 250 == 0 and i > 0:
+                    await interaction.followup.send(f"🔍 Scanned {i}/{total} members...", ephemeral=True)
+
             except Exception as e:
-                print(f"[ERROR] Scanning member {member.id}: {e}")
+                print(f"[SCAN ERROR] Member: {member} | {e}")
 
-            if idx % 50 == 0:
-                try:
-                    await interaction.edit_original_response(
-                        content=f"📊 Scanned {idx}/{total} members...\n🚩 Flagged so far: {flagged}"
-                    )
-                except:
-                    pass
+        await interaction.followup.send(f"✅ Scan complete. Flagged {flagged} member(s).", ephemeral=True)
+        await send_log(f"🛰️ {interaction.user.mention} triggered a scan.\nFlagged: `{flagged}` members.")
 
-            await asyncio.sleep(0.1)
-
-        await interaction.edit_original_response(
-            content=f"✅ Scan complete: `{flagged}` members flagged out of `{total}`."
-        )
-
-
-async def setup(bot):
-    await bot.add_cog(Scan(bot))
