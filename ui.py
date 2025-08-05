@@ -3,8 +3,8 @@ from discord.ui import View, Button, Select
 from discord import SelectOption
 from moderation import handle_mass_action, handle_shadowmute
 from user_panel import view_user_sheet
-from filters import get_flagged_users
-from storage import load_flags
+from ai_suggestions import get_severity_score
+from analytics import get_bot_stats
 
 class ShadowControlPanel(View):
     def __init__(self, bot, author):
@@ -31,7 +31,6 @@ class ShadowControlPanel(View):
 
     @discord.ui.button(label="Analytics", style=discord.ButtonStyle.blurple)
     async def analytics(self, button: Button, interaction: discord.Interaction):
-        from analytics import get_bot_stats
         stats = get_bot_stats(self.bot)
         embed = discord.Embed(title="📊 Bot Analytics")
         for key, val in stats.items():
@@ -47,7 +46,7 @@ class ShadowControlPanel(View):
     @discord.ui.button(label="Mod Queue", style=discord.ButtonStyle.red)
     async def mod_queue(self, button: Button, interaction: discord.Interaction):
         from mod_queue import ModQueueView
-        flagged = [m for m in interaction.guild.members if not m.bot and m.id in get_flagged_users()]
+        flagged = [m for m in interaction.guild.members if not m.bot and get_severity_score(m) >= 3]
         if not flagged:
             await interaction.response.send_message("✅ No users currently in the mod queue.", ephemeral=True)
             return
