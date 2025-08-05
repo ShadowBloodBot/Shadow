@@ -9,7 +9,7 @@ from mod_queue import ModQueueView
 
 load_dotenv()
 
-GUILD_ID = 908659586536468540  # ✅ Your confirmed server
+GUILD_ID = 908659586536468540
 
 class ShadowBot(discord.Client):
     def __init__(self):
@@ -22,8 +22,6 @@ class ShadowBot(discord.Client):
         @self.tree.command(name="shadow", description="Open the Shadow Moderation Panel")
         async def shadow(interaction: discord.Interaction):
             user_roles = [role.id for role in interaction.user.roles]
-            print(f"[DEBUG] ALLOWED_ROLE_IDS: {ALLOWED_ROLE_IDS}")
-            print(f"[DEBUG] USER ROLES: {user_roles}")
             if not any(role_id in user_roles for role_id in ALLOWED_ROLE_IDS):
                 await interaction.response.send_message("🚫 You do not have permission to use this command.", ephemeral=True)
                 return
@@ -32,26 +30,8 @@ class ShadowBot(discord.Client):
             await interaction.response.send_message("🛡️ Launching Shadow Control Panel...", ephemeral=True)
             try:
                 await interaction.channel.send(f"🛡️ {interaction.user.mention} activated the `/shadow` panel", view=view)
-            except Exception as e:
-                print(f"[ERROR] Could not send control panel: {e}")
+            except:
                 await interaction.followup.send("❌ Could not send panel.", ephemeral=True)
-
-        # === Async scan worker runner ===
-        async def asyncio_chunked_executor(tasks, max_concurrent=8):
-            semaphore = asyncio.Semaphore(max_concurrent)
-            results = []
-
-            async def run_task(task_fn):
-                async with semaphore:
-                    try:
-                        return await task_fn()
-                    except Exception as e:
-                        print(f"[SCAN ERROR] {e}")
-                        return None
-
-            await interaction.edit_original_response(content="🔄 Preparing scan...")
-            chunks = [run_task(fn) for fn in tasks]
-            return await asyncio.gather(*chunks, return_exceptions=False)
 
         # === /scan ===
         @self.tree.command(name="scan", description="Scan all members and flag suspicious ones.")
@@ -61,46 +41,56 @@ class ShadowBot(discord.Client):
             guild = interaction.guild
             members = [m async for m in guild.fetch_members(limit=None)]
             total = len(members)
+            flagged = []
+            scanned = 0
 
             await interaction.edit_original_response(content=f"🔍 Scanning {total} members...")
-            print(f"[SCAN] Starting scan of {total} members...")
 
+            semaphore = asyncio.Semaphore(8)
             tasks = []
 
-            for member in members:
-                if member.bot:
-                    continue
-
-                async def scan_one(m=member):
+            async def scan_member(member):
+                nonlocal scanned
+                async with semaphore:
+                    if member.bot:
+                        return
                     try:
-                        flagged = await ai_flag_user(m, self)
-                        score = get_severity_score(m)
-                        print(f"[SCAN] {m.name}#{m.discriminator} - Score: {score} | Flagged: {flagged}")
-                        return m if flagged else None
+                        flagged_result = await ai_flag_user(member, self)
+                        score = get_severity_score(member)
+                        print(f"[SCAN] {member.name} - Score: {score} - Flagged: {flagged_result}")
+                        if flagged_result:
+                            flagged.append(member)
                     except Exception as e:
-                        print(f"[SCAN FAIL] {m}: {e}")
-                        return None
+                        print(f"[ERROR] Scanning {member}: {e}")
+                    finally:
+                        scanned += 1
 
-                tasks.append(scan_one)
+            for member in members:
+                tasks.append(scan_member(member))
 
-            results = await asyncio_chunked_executor(tasks, max_concurrent=8)
-            flagged = [r for r in results if r is not None]
+            progress_message = f"🔎 Scanned 0/{total} members..."
+            await interaction.edit_original_response(content=progress_message)
+
+            # Progress updater
+            async def update_progress():
+                while scanned < total:
+                    await asyncio.sleep(5)
+                    await interaction.edit_original_response(content=f"🔎 Scanned {scanned}/{total} members...")
+
+            progress_task = asyncio.create_task(update_progress())
+            await asyncio.gather(*tasks)
+            progress_task.cancel()
 
             if not flagged:
                 await interaction.edit_original_response(content="✅ Scan complete. No suspicious users flagged.")
             else:
-                await interaction.edit_original_response(
-                    content=f"⚠️ Scan complete. {len(flagged)} users flagged."
-                )
+                await interaction.edit_original_response(content=f"⚠️ Scan complete. {len(flagged)} users flagged.")
                 try:
                     mod_thread = await interaction.client.fetch_channel(MOD_QUEUE_THREAD_ID)
                     await mod_thread.send("📥 Auto-Scan Flagged Members", view=ModQueueView(flagged))
                 except Exception as e:
-                    print(f"[FALLBACK] Could not post to MOD_QUEUE_THREAD_ID: {e}")
-                    await interaction.followup.send(
-                        "⚠️ Members flagged, but mod queue thread not found. Check `MOD_QUEUE_THREAD_ID` in your config.",
-                        ephemeral=True
-                    )
+                    print(f"[MOD THREAD FAIL] {e}")
+                    await interaction.followup.send("⚠️ Flagged users found, but mod thread could not be posted to.", ephemeral=True)
 
         await self.tree.sync(guild=discord.Object(id=GUILD_ID))
         print("[SYNC] Slash commands registered.")
