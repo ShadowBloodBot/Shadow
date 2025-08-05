@@ -4,7 +4,7 @@ import aiohttp
 from dotenv import load_dotenv
 load_dotenv()
 
-MOD_LOG_WEBHOOK = os.getenv("MOD_LOG_WEBHOOK")  # Optional: add to .env
+MOD_LOG_WEBHOOK = os.getenv("MOD_LOG_WEBHOOK")  # Optional
 
 async def send_log(message: str):
     if not MOD_LOG_WEBHOOK:
