@@ -1,7 +1,8 @@
+# ui.py
+
 import discord
 from discord import ui
 from discord.ext import tasks
-from discord.app_commands import CheckFailure
 from filters import get_severity_score
 from storage import get_flagged_users
 from log_utils import send_log
@@ -52,20 +53,10 @@ class ModerationDropdown(ui.Select):
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
         elif selection == "logs":
-            await interaction.response.send_message("🧾 Coming soon: Case Log Viewer.", ephemeral=True)
+            await interaction.response.send_message("🧾 Case Log Viewer coming soon.", ephemeral=True)
 
         elif selection == "live":
             await interaction.response.send_message("🚨 Live Join Feed coming soon.", ephemeral=True)
-
-
-class ModerationControlView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(ModerationDropdown())
-        self.add_item(RefreshPanelButton())
-        self.add_item(ScanNowButton())
-        self.add_item(CaseReviewButton())
-        self.add_item(SettingsButton())
 
 
 class RefreshPanelButton(ui.Button):
@@ -92,7 +83,7 @@ class ScanNowButton(ui.Button):
 
         await interaction.response.send_message("🛰️ Scan initiated...", ephemeral=True)
         await send_log(f"🛰️ {interaction.user.mention} triggered a manual scan.")
-        # Scan logic not embedded here
+        # Note: actual scan logic is handled in scan_command.py
 
 
 class CaseReviewButton(ui.Button):
@@ -100,7 +91,7 @@ class CaseReviewButton(ui.Button):
         super().__init__(label="Case Review", style=discord.ButtonStyle.primary, emoji="📋")
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message("📋 Coming soon: Case review panel.", ephemeral=True)
+        await interaction.response.send_message("📋 Case review panel coming soon.", ephemeral=True)
 
 
 class SettingsButton(ui.Button):
@@ -113,6 +104,16 @@ class SettingsButton(ui.Button):
             return
 
         await interaction.response.send_message("⚙️ Settings modal coming soon.", ephemeral=True)
+
+
+class ModerationControlView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(ModerationDropdown())
+        self.add_item(RefreshPanelButton())
+        self.add_item(ScanNowButton())
+        self.add_item(CaseReviewButton())
+        self.add_item(SettingsButton())
 
 
 async def send_shadow_panel(channel: discord.TextChannel, force=False):
