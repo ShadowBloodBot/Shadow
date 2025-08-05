@@ -1,5 +1,3 @@
-# scan.py
-
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -21,7 +19,6 @@ class Scan(commands.Cog):
             return
 
         await interaction.response.defer(ephemeral=True)
-
         guild = interaction.guild
         members = [m async for m in guild.fetch_members(limit=None)]
         total = len(members)
@@ -36,13 +33,11 @@ class Scan(commands.Cog):
                     add_flagged_user(member.id, score, reason)
                     flagged += 1
 
-                # Progress every 250 members
                 if i % 250 == 0 and i > 0:
                     await interaction.followup.send(f"🔍 Scanned {i}/{total} members...", ephemeral=True)
 
             except Exception as e:
-                print(f"[SCAN ERROR] Member: {member} | {e}")
+                print(f"[SCAN ERROR] {member} | {e}")
 
         await interaction.followup.send(f"✅ Scan complete. Flagged {flagged} member(s).", ephemeral=True)
         await send_log(f"🛰️ {interaction.user.mention} triggered a scan.\nFlagged: `{flagged}` members.")
-
