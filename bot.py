@@ -1,47 +1,65 @@
-# bot.py
-
 import os
 import discord
+import asyncio
 from discord.ext import commands
+from discord import app_commands
 from dotenv import load_dotenv
 
+# 🔧 Internal imports (ensure these files exist in same folder)
 from ui import ModerationControlView
+from events import EventHandlers
+from scan import Scan
+from storage import init_db
 from log_utils import setup_logging
 
-from storage import init_db
-from events import EventHandlers
-from scan_command import Scan
+# 🧠 Discord intents
+intents = discord.Intents.all()
 
+# 🎮 Define the ShadowBot class
+class ShadowBot(commands.Bot):
+    def __init__(self):
+        super().__init__(command_prefix="!", intents=intents)
+        self.logger = setup_logging()
+        init_db()  # 📦 Initialize persistent storage
+        self.synced = False  # Slash command sync tracker
+
+    async def setup_hook(self):
+        # 🎮 Load persistent views
+        try:
+            self.add_view(ModerationControlView())
+        except Exception as e:
+            print(f"[ERROR] Loading ModerationControlView: {e}")
+
+        # 🧠 Register event handler
+        self.add_listener(EventHandlers(self).on_ready, name="on_ready")
+
+        # ⚙️ Register application slash command
+        try:
+            self.tree.add_command(Scan().scan_members)
+        except Exception as e:
+            print(f"[ERROR] Registering /scan: {e}")
+
+        # 🔁 Sync commands globally once
+        if not self.synced:
+            try:
+                await self.tree.sync()
+                self.synced = True
+                print("✅ Slash commands synced globally.")
+            except Exception as e:
+                print(f"[SYNC ERROR] Could not sync commands: {e}")
+
+# 🧪 Load environment and token
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = os.getenv("GUILD_ID")
-APPLICATION_ID = os.getenv("APPLICATION_ID")
 
-intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents, application_id=APPLICATION_ID)
+# 🔐 Entry point
+if __name__ == "__main__":
+    if not TOKEN:
+        raise RuntimeError("❌ DISCORD_TOKEN not set in environment variables.")
 
-@bot.event
-async def on_ready():
-    print(f"[✅] Logged in as {bot.user} ({bot.user.id})")
+    bot = ShadowBot()
 
-async def setup_hook():
-    setup_logging()
-    init_db()
-    await bot.add_cog(EventHandlers(bot))
-    await bot.add_cog(Scan(bot))
-    bot.add_view(ModerationControlView())  # Persistent View
-
-bot.setup_hook = setup_hook
-
-@bot.tree.command(name="shadow", description="Open the moderation panel")
-async def shadow(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
-
-    await interaction.response.send_message(
-        content=f"👮 Moderation Panel for <@{interaction.user.id}>",
-        view=ModerationControlView(),
-        ephemeral=True
-    )
-
-bot.run(TOKEN)
+    try:
+        bot.run(TOKEN)
+    except Exception as e:
+        print(f"[FATAL ERROR] Bot failed to start: {e}")
