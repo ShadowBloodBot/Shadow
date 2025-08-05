@@ -1,12 +1,13 @@
 import re
+import discord
 
-# Suspicious keywords to look for in bios
+# === Suspicious keywords for bios ===
 SUSPICIOUS_TERMS = [
     "onlyfans", "artist", "cashapp", "crypto", "promo", "twitter", "dm me", "adult",
     "discount", "deal", "free", "follow me", "link in bio", "snapchat", "👅", "💦"
 ]
 
-# Pattern to catch links
+# === Regex to detect links
 LINK_PATTERN = re.compile(r"https?://|discord\.gg|\.com|\.xyz|\.link|\.bio|\.site")
 
 def get_flag_score_for_bio(bio: str) -> int:
@@ -21,20 +22,35 @@ def get_flag_score_for_bio(bio: str) -> int:
         score += 2
     return score
 
-def get_severity_score(member, bio_text=""):
+def get_severity_score(member: discord.Member, bio_text: str = "") -> int:
     score = 0
+
+    # === Bot tag
     if member.bot:
         score += 1
+
+    # === Username spam traits
     if "spam" in member.name.lower() or "nitro" in member.name.lower():
         score += 4
+
+    # === Low role count
     if len(member.roles) <= 1:
         score += 2
+
+    # === No profile picture
     if not member.avatar:
         score += 1
+
+    # === Account is very new (≤ 7 days)
+    if (discord.utils.utcnow() - member.created_at).days <= 7:
+        score += 1
+
+    # === Bio-based analysis
     score += get_flag_score_for_bio(bio_text)
+
     return score
 
-def suggest_action(member, bio_text=""):
+def suggest_action(member: discord.Member, bio_text: str = "") -> str:
     score = get_severity_score(member, bio_text)
     if score >= 6:
         return "Ban Likely"
@@ -44,7 +60,7 @@ def suggest_action(member, bio_text=""):
         return "Monitor"
     return "Low Risk"
 
-async def ai_flag_user(member):
+async def ai_flag_user(member: discord.Member) -> bool:
     try:
         profile = await member.user.fetch_profile()
         bio = profile.bio or ""
