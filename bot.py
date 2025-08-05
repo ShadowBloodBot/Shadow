@@ -1,14 +1,15 @@
 import discord
 import os
+import asyncio
 from dotenv import load_dotenv
 from config import ALLOWED_ROLE_IDS, MOD_QUEUE_THREAD_ID
 from ui import ShadowControlPanel
-from filters import ai_flag_user
+from filters import ai_flag_user, get_severity_score
 from mod_queue import ModQueueView
 
 load_dotenv()
 
-GUILD_ID = 908659586536468540  # ✅ Your server ID
+GUILD_ID = 908659586536468540  # ✅ Your confirmed server
 
 class ShadowBot(discord.Client):
     def __init__(self):
@@ -46,24 +47,31 @@ class ShadowBot(discord.Client):
             flagged = []
 
             await interaction.edit_original_response(content=f"🔍 Scanning {total} members...")
+            print(f"[SCAN] Starting scan of {total} members...")
 
             for i, member in enumerate(members):
                 if member.bot:
                     continue
                 try:
-                    if await ai_flag_user(member):
+                    flagged_bool = await ai_flag_user(member)
+                    score = get_severity_score(member)
+                    print(f"[SCAN] {member.name}#{member.discriminator} - Score: {score} | Flagged: {flagged_bool}")
+
+                    if flagged_bool:
                         flagged.append(member)
+
                 except Exception as e:
                     print(f"[SCAN ERROR] {member}: {e}")
-                if i % 100 == 0:
-                    await interaction.edit_original_response(content=f"🔎 Scanned {i}/{total}...")
+
+                if i % 25 == 0:
+                    await interaction.edit_original_response(content=f"🔎 Scanned {i}/{total} members...")
+                    await asyncio.sleep(0.2)  # Slow down to avoid ratelimit & simulate real processing
 
             if not flagged:
                 await interaction.edit_original_response(content="✅ Scan complete. No suspicious users flagged.")
             else:
                 await interaction.edit_original_response(content=f"⚠️ Scan complete. {len(flagged)} users flagged.")
 
-                # ✅ Fallback safe mod thread posting
                 try:
                     mod_thread = await interaction.client.fetch_channel(MOD_QUEUE_THREAD_ID)
                     await mod_thread.send("📥 Auto-Scan Flagged Members", view=ModQueueView(flagged))
