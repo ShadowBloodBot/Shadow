@@ -4,7 +4,7 @@ from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
 
-from ui import send_shadow_panel
+from ui import send_shadow_panel, ModerationControlView
 from scan_command import Scan
 from mod_commands import ModCommands
 from events import EventHandlers
@@ -26,22 +26,22 @@ class ShadowBot(commands.Bot):
         self.synced = False
 
     async def setup_hook(self):
-        self.add_view(ModerationControlView())  # Ensure persistent view registration
+        self.add_view(ModerationControlView())  # Persistent UI view
         await self.add_cog(EventHandlers(self))
         await self.add_cog(Scan(self))
         await self.add_cog(ModCommands(self))
+
+        # Role-based global check for slash commands
+        async def role_check(interaction: discord.Interaction) -> bool:
+            return any(role.id == MOD_ROLE_ID for role in interaction.user.roles)
+
+        self.tree.on_check(role_check)
 
 
 bot = ShadowBot()
 
 
-# Global check for role locking all slash commands
-@bot.tree.check
-async def global_role_check(interaction: discord.Interaction) -> bool:
-    return any(role.id == MOD_ROLE_ID for role in interaction.user.roles)
-
-
-# Global command to open the panel
+# /shadow command to open the elite panel
 @bot.tree.command(name="shadow", description="Open the Shadow Moderation Panel.")
 async def shadow(interaction: discord.Interaction):
     if not any(role.id == MOD_ROLE_ID for role in interaction.user.roles):
