@@ -1,10 +1,9 @@
-# scan_command.py
-
 import discord
 from discord import app_commands
 from discord.ext import commands
 from datetime import timedelta
 from filters import score_member, get_severity_score, suggest_action
+from storage import load_flags, save_flags
 
 MOD_QUEUE_THREAD_ID = 1401792224500649994
 
@@ -18,8 +17,14 @@ class Scan(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         guild = interaction.guild
-        flagged = 0
-        members = [m async for m in guild.fetch_members(limit=None)]
+        flagged_ids = []
+        flags = load_flags()
+
+        try:
+            members = [m async for m in guild.fetch_members(limit=None)]
+        except Exception:
+            members = [m for m in guild.members if not m.bot]
+
         total = len(members)
 
         try:
@@ -31,8 +36,8 @@ class Scan(commands.Cog):
 
         try:
             await interaction.edit_original_response(content=f"🔍 Starting scan of {total} members...")
-        except Exception as e:
-            print(f"[WARN] Failed to send initial scan update: {e}")
+        except:
+            pass
 
         for index, member in enumerate(members, start=1):
             try:
@@ -41,39 +46,50 @@ class Scan(commands.Cog):
 
                 try:
                     user = await interaction.client.fetch_user(member.id)
-                except Exception:
+                except:
                     user = member
 
                 score, reason = score_member(member, user)
-                if score >= 3:
-                    flagged += 1
-                    await mod_thread.send(
-                        f"{get_severity_score(score)} **Flagged User:** {member.mention}\n"
-                        f"Score: {score}\n"
-                        f"Reason: {reason}\n"
-                        f"Suggested Action: {suggest_action(score)}\n"
-                        f"Account Created: <t:{int(member.created_at.timestamp())}:D>"
-                    )
 
-                if index % 50 == 0 or index == total:
+                if score >= 1:
+                    user_id = str(member.id)
+                    if user_id not in flags:
+                        flags[user_id] = {
+                            "username": member.name,
+                            "score": score,
+                            "reason": reason
+                        }
+                        flagged_ids.append(user.id)
+
+                        await mod_thread.send(
+                            f"{get_severity_score(score)} **Flagged User:** {member.mention}\n"
+                            f"Score: {score}\n"
+                            f"Reason: {reason}\n"
+                            f"Suggested Action: {suggest_action(score)}\n"
+                            f"Account Created: <t:{int(member.created_at.timestamp())}:D>"
+                        )
+
+                if index % 10 == 0 or index == total:
                     try:
                         await interaction.edit_original_response(
-                            content=f"🔍 Scanned {index}/{total} members... Flagged: {flagged}"
+                            content=f"🔄 Scanned `{index}/{total}` members — `{len(flagged_ids)}` flagged."
                         )
-                    except Exception as e:
-                        print(f"[WARN] Failed to update scan progress: {e}")
+                    except:
+                        pass
 
                     await discord.utils.sleep_until(discord.utils.utcnow() + timedelta(seconds=1))
 
             except Exception as e:
                 print(f"[ERROR] Failed to scan {member.name}: {e}")
 
+        save_flags(flags)
+
         try:
             await interaction.edit_original_response(
-                content=f"✅ Scan complete. Scanned {total} members. Total Flagged: **{flagged}**"
+                content=f"✅ Scan complete. `{total}` members scanned. Total Flagged: **{len(flagged_ids)}**"
             )
-        except Exception as e:
-            print(f"[WARN] Failed to send final scan message: {e}")
+        except:
+            pass
 
     @app_commands.command(name="shadow", description="Open the Shadow moderation panel.")
     @app_commands.checks.has_permissions(administrator=True)
