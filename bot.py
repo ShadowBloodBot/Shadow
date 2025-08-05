@@ -4,72 +4,63 @@ from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
 
-from ui import send_shadow_panel, ModerationControlView
-from scan_command import Scan
-from mod_commands import ModCommands
+from ui import ModerationControlView
+from scan import Scan
 from events import EventHandlers
+from filters import get_severity_score
+from storage import get_flagged_users
 
-MOD_ROLE_ID = 955600547266822174
-
+# Load environment variables
 load_dotenv()
-
-intents = discord.Intents.all()
-
+TOKEN = os.getenv("DISCORD_TOKEN")
+APPLICATION_ID = os.getenv("APPLICATION_ID")
+MOD_ROLE_ID = 955600547266822174
 
 class ShadowBot(commands.Bot):
     def __init__(self):
         super().__init__(
             command_prefix="!",
-            intents=intents,
-            application_id=os.getenv("APPLICATION_ID"),
+            intents=discord.Intents.all(),
+            application_id=APPLICATION_ID
         )
         self.synced = False
 
     async def setup_hook(self):
-        self.add_view(ModerationControlView())  # Persistent UI view
+        # Register persistent UI view (MUST have custom_ids and no timeout)
+        self.add_view(ModerationControlView())
+
+        # Register command Cogs
         await self.add_cog(EventHandlers(self))
         await self.add_cog(Scan(self))
-        await self.add_cog(ModCommands(self))
 
-        # Role-based global check for slash commands
-        async def role_check(interaction: discord.Interaction) -> bool:
-            return any(role.id == MOD_ROLE_ID for role in interaction.user.roles)
-
-        self.tree.on_check(role_check)
-
+        # Sync commands on startup
+        if not self.synced:
+            self.tree.copy_global_to(guild=None)  # Use global if you want server-wide
+            await self.tree.sync()
+            self.synced = True
 
 bot = ShadowBot()
 
-
-# /shadow command to open the elite panel
-@bot.tree.command(name="shadow", description="Open the Shadow Moderation Panel.")
+# Slash command: /shadow
+@bot.tree.command(name="shadow", description="Open the Shadow Moderation Panel")
+@app_commands.checks.has_role(MOD_ROLE_ID)
 async def shadow(interaction: discord.Interaction):
-    if not any(role.id == MOD_ROLE_ID for role in interaction.user.roles):
-        await interaction.response.send_message("🚫 You don't have access to this panel.", ephemeral=True)
-        return
+    from ui import send_shadow_panel
+    await interaction.response.defer(ephemeral=True)
+    await send_shadow_panel(interaction.channel)
+    await interaction.followup.send("🛡️ Shadow Panel sent to this channel.", ephemeral=True)
 
-    try:
-        await send_shadow_panel(interaction.channel)
-        await interaction.response.send_message("✅ Shadow panel deployed.", ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message("❌ Failed to deploy panel.", ephemeral=True)
-        print("[ERROR] Panel deployment failed:", e)
+# Global error handler for all command check failures
+@shadow.error
+async def shadow_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.errors.MissingRole):
+        await interaction.response.send_message("🚫 You don't have permission to use this.", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ An error occurred.", ephemeral=True)
+        print(f"[ERROR] /shadow: {error}")
 
-
-@bot.event
-async def on_ready():
-    if not bot.synced:
-        try:
-            await bot.tree.sync()
-            bot.synced = True
-            print(f"[SYNC] Synced commands for: {bot.user}")
-        except Exception as e:
-            print(f"[ERROR] Sync failed: {e}")
-    print(f"[READY] Logged in as {bot.user}")
-
-
+# Run bot
 if __name__ == "__main__":
-    token = os.getenv("DISCORD_TOKEN")
-    if not token:
-        raise EnvironmentError("DISCORD_TOKEN not found in environment.")
-    bot.run(token)
+    if not TOKEN:
+        raise ValueError("DISCORD_TOKEN not set in .env")
+    bot.run(TOKEN)
