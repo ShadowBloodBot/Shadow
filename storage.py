@@ -1,103 +1,38 @@
-# storage.py
-
-import sqlite3
-from typing import List, Optional, Tuple
-import discord
+import json
 import os
-import datetime
 
-DB_FILE = "shadow.db"
+FLAGGED_USERS_FILE = "flagged_users.json"
 
+def _load_data():
+    if not os.path.exists(FLAGGED_USERS_FILE):
+        with open(FLAGGED_USERS_FILE, "w") as f:
+            json.dump({}, f)
+    with open(FLAGGED_USERS_FILE, "r") as f:
+        return json.load(f)
 
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+def _save_data(data):
+    with open(FLAGGED_USERS_FILE, "w") as f:
+        json.dump(data, f, indent=4)
 
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS flagged_users (
-            user_id TEXT PRIMARY KEY,
-            username TEXT,
-            discriminator TEXT,
-            severity_score INTEGER,
-            suggested_action TEXT,
-            flagged_at TEXT
-        )
-    """)
+def add_flagged_user(guild_id: int, user_id: int, reason: str, severity: int):
+    data = _load_data()
+    guild_id = str(guild_id)
+    user_id = str(user_id)
+    if guild_id not in data:
+        data[guild_id] = {}
+    data[guild_id][user_id] = {"reason": reason, "severity": severity}
+    _save_data(data)
 
-    conn.commit()
-    conn.close()
+def get_flagged_users(guild_id: int):
+    data = _load_data()
+    return data.get(str(guild_id), {})
 
-
-def save_flagged_user(user: discord.User, severity_score: int, suggested_action: str):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-
-    c.execute("""
-        INSERT OR REPLACE INTO flagged_users (
-            user_id, username, discriminator, severity_score, suggested_action, flagged_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        str(user.id),
-        user.name,
-        user.discriminator,
-        severity_score,
-        suggested_action,
-        datetime.datetime.utcnow().isoformat()
-    ))
-
-    conn.commit()
-    conn.close()
-
-
-def get_flagged_users(min_score: int = 0) -> List[Tuple[str, str, str, int, str, str]]:
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-
-    c.execute("""
-        SELECT user_id, username, discriminator, severity_score, suggested_action, flagged_at
-        FROM flagged_users
-        WHERE severity_score >= ?
-        ORDER BY severity_score DESC
-    """, (min_score,))
-
-    results = c.fetchall()
-    conn.close()
-    return results
-
-
-def get_flagged_user_by_id(user_id: int) -> Optional[Tuple[str, str, str, int, str, str]]:
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-
-    c.execute("""
-        SELECT user_id, username, discriminator, severity_score, suggested_action, flagged_at
-        FROM flagged_users
-        WHERE user_id = ?
-    """, (str(user_id),))
-
-    result = c.fetchone()
-    conn.close()
-    return result
-
-
-def clear_flag(user_id: int):
-    """Remove a flagged user from the database."""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-
-    c.execute("""
-        DELETE FROM flagged_users
-        WHERE user_id = ?
-    """, (str(user_id),))
-
-    conn.commit()
-    conn.close()
-
-
-async def send_log(message: str, channel: Optional[discord.TextChannel] = None):
-    print(f"[LOG] {message}")
-    if channel:
-        try:
-            await channel.send(f"📋 {message}")
-        except Exception as e:
-            print(f"[ERROR] Failed to send log to channel: {e}")
+def clear_flag(guild_id: int, user_id: int):
+    data = _load_data()
+    guild_id = str(guild_id)
+    user_id = str(user_id)
+    if guild_id in data and user_id in data[guild_id]:
+        del data[guild_id][user_id]
+        if not data[guild_id]:
+            del data[guild_id]
+        _save_data(data)
