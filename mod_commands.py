@@ -1,10 +1,8 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-from log_utils import send_log
-from storage import log_case
-
-MODERATOR_ROLE_ID = 955600547266822174  # 🔒 Role required for all commands
+from log_utils import send_log, log_case  # ✅ Fixed: log_case comes from log_utils
+from config import MODERATOR_ROLE_ID
 
 class ModCommands(commands.Cog):
     def __init__(self, bot):
