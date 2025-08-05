@@ -17,7 +17,6 @@ class ShadowBot(discord.Client):
         self.tree = discord.app_commands.CommandTree(self)
 
     async def setup_hook(self):
-
         # === /shadow ===
         @self.tree.command(name="shadow", description="Open the Shadow Moderation Panel")
         async def shadow(interaction: discord.Interaction):
@@ -36,7 +35,7 @@ class ShadowBot(discord.Client):
                 print(f"[ERROR] Could not send control panel: {e}")
                 await interaction.followup.send("❌ Could not send panel.", ephemeral=True)
 
-        # === /scan (defined directly here to guarantee registration) ===
+        # === /scan ===
         @self.tree.command(name="scan", description="Scan all members and flag suspicious ones.")
         @discord.app_commands.checks.has_permissions(administrator=True)
         async def scan(interaction: discord.Interaction):
@@ -45,13 +44,6 @@ class ShadowBot(discord.Client):
             members = [m async for m in guild.fetch_members(limit=None)]
             total = len(members)
             flagged = []
-
-            try:
-                mod_thread = await interaction.client.fetch_channel(MOD_QUEUE_THREAD_ID)
-            except Exception as e:
-                await interaction.followup.send("❌ Mod queue thread not found or inaccessible.", ephemeral=True)
-                print(f"[ERROR] Cannot fetch mod thread: {e}")
-                return
 
             await interaction.edit_original_response(content=f"🔍 Scanning {total} members...")
 
@@ -70,14 +62,20 @@ class ShadowBot(discord.Client):
                 await interaction.edit_original_response(content="✅ Scan complete. No suspicious users flagged.")
             else:
                 await interaction.edit_original_response(content=f"⚠️ Scan complete. {len(flagged)} users flagged.")
+
+                # ✅ Fallback safe mod thread posting
                 try:
+                    mod_thread = await interaction.client.fetch_channel(MOD_QUEUE_THREAD_ID)
                     await mod_thread.send("📥 Auto-Scan Flagged Members", view=ModQueueView(flagged))
                 except Exception as e:
-                    print(f"[THREAD ERROR] {e}")
+                    print(f"[FALLBACK] Could not post to MOD_QUEUE_THREAD_ID: {e}")
+                    await interaction.followup.send(
+                        "⚠️ Members flagged, but mod queue thread not found. Check `MOD_QUEUE_THREAD_ID` in your config.",
+                        ephemeral=True
+                    )
 
-        # ✅ Final force sync (guild-scoped)
         await self.tree.sync(guild=discord.Object(id=GUILD_ID))
-        print("[SYNC] Slash commands registered to guild.")
+        print("[SYNC] Slash commands registered.")
 
 bot = ShadowBot()
 
