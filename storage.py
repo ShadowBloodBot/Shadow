@@ -1,67 +1,58 @@
-import json
+import aiosqlite
 import os
-from datetime import datetime
+import asyncio
 
-DATA_FILE = "flagged_users.json"
-LOG_FILE = "mod_logs.json"
+DB_PATH = "shadowbot.db"
 
-def ensure_file_exists(path, default_data):
-    if not os.path.exists(path):
-        with open(path, "w") as f:
-            json.dump(default_data, f, indent=4)
-
-# Ensure storage files exist
-ensure_file_exists(DATA_FILE, {})
-ensure_file_exists(LOG_FILE, [])
-
-def get_flagged_users() -> dict:
-    """Return all currently flagged users from the mod queue."""
+# Run this once on startup to ensure tables exist
+async def init_db():
     try:
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS flagged_users (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    severity INTEGER,
+                    reason TEXT,
+                    flagged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS mod_actions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    action TEXT,
+                    reason TEXT,
+                    taken_by TEXT,
+                    action_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await db.commit()
+            print("✅ Database tables ensured.")
     except Exception as e:
-        print("[ERROR] Failed to load flagged users:", e)
-        return {}
+        print(f"[ERROR] init_db(): {e}")
+        raise
 
-def add_flagged_user(user_id: int, score: int, reason: str):
-    """Add a user to the flagged list."""
-    flagged = get_flagged_users()
-    flagged[str(user_id)] = {
-        "score": score,
-        "reason": reason,
-        "timestamp": datetime.utcnow().isoformat()
-    }
-    with open(DATA_FILE, "w") as f:
-        json.dump(flagged, f, indent=4)
+# Example function to add a flagged user
+async def add_flagged_user(user_id: int, username: str, severity: int, reason: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO flagged_users (user_id, username, severity, reason) VALUES (?, ?, ?, ?)",
+            (user_id, username, severity, reason)
+        )
+        await db.commit()
 
-def remove_flagged_user(user_id: int):
-    """Remove a user from the flagged list."""
-    flagged = get_flagged_users()
-    if str(user_id) in flagged:
-        del flagged[str(user_id)]
-        with open(DATA_FILE, "w") as f:
-            json.dump(flagged, f, indent=4)
+# Example function to log moderation actions
+async def log_mod_action(user_id: int, action: str, reason: str, taken_by: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO mod_actions (user_id, action, reason, taken_by) VALUES (?, ?, ?, ?)",
+            (user_id, action, reason, taken_by)
+        )
+        await db.commit()
 
-async def log_case(action: str, user, mod, reason: str):
-    """Append a moderation case log entry."""
-    try:
-        case = {
-            "timestamp": datetime.utcnow().isoformat(),
-            "action": action,
-            "user_id": user.id,
-            "user_tag": str(user),
-            "mod_id": mod.id,
-            "mod_tag": str(mod),
-            "reason": reason
-        }
-        logs = []
-        with open(LOG_FILE, "r") as f:
-            logs = json.load(f)
-
-        logs.append(case)
-
-        with open(LOG_FILE, "w") as f:
-            json.dump(logs, f, indent=4)
-
-    except Exception as e:
-        print("[ERROR] Failed to log moderation case:", e)
+# Optional: fetch flagged users
+async def get_all_flagged_users():
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT * FROM flagged_users") as cursor:
+            return await cursor.fetchall()
