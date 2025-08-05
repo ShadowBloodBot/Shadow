@@ -1,38 +1,40 @@
+# storage.py
+
 import json
 import os
+import threading
 
-FLAGGED_USERS_FILE = "flagged_users.json"
+STORAGE_FILE = "flagged_users.json"
+LOCK = threading.Lock()
 
-def _load_data():
-    if not os.path.exists(FLAGGED_USERS_FILE):
-        with open(FLAGGED_USERS_FILE, "w") as f:
-            json.dump({}, f)
-    with open(FLAGGED_USERS_FILE, "r") as f:
-        return json.load(f)
 
-def _save_data(data):
-    with open(FLAGGED_USERS_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+def _load_data() -> dict:
+    if not os.path.exists(STORAGE_FILE):
+        return {}
+    with open(STORAGE_FILE, "r", encoding="utf-8") as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            return {}
 
-def add_flagged_user(guild_id: int, user_id: int, reason: str, severity: int):
+
+def _save_data(data: dict):
+    with LOCK:
+        with open(STORAGE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+
+
+def add_flagged_user(user_id: int, score: int, reason: str):
     data = _load_data()
-    guild_id = str(guild_id)
-    user_id = str(user_id)
-    if guild_id not in data:
-        data[guild_id] = {}
-    data[guild_id][user_id] = {"reason": reason, "severity": severity}
+    data[str(user_id)] = {"score": score, "reason": reason}
     _save_data(data)
 
-def get_flagged_users(guild_id: int):
-    data = _load_data()
-    return data.get(str(guild_id), {})
 
-def clear_flag(guild_id: int, user_id: int):
+def get_flagged_users() -> dict:
+    return _load_data()
+
+
+def clear_flag(user_id: int):
     data = _load_data()
-    guild_id = str(guild_id)
-    user_id = str(user_id)
-    if guild_id in data and user_id in data[guild_id]:
-        del data[guild_id][user_id]
-        if not data[guild_id]:
-            del data[guild_id]
-        _save_data(data)
+    data.pop(str(user_id), None)
+    _save_data(data)
