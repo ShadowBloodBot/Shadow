@@ -3,7 +3,7 @@ import os
 import asyncio
 from discord.ext import commands
 from dotenv import load_dotenv
-from log_utils import send_log  # ✅ Fixed
+from log_utils import send_log
 from ui import ShadowControlPanel
 from mod_commands import ModCommands
 from scan_command import Scan
@@ -16,13 +16,12 @@ class ShadowBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.all()
         super().__init__(command_prefix="!", intents=intents)
-        self.tree = discord.app_commands.CommandTree(self)
 
     async def setup_hook(self):
         await self.add_cog(ModCommands(self))
         await self.add_cog(Scan(self))
         await self.add_cog(EventHandlers(self))
-        self.tree.add_command(shadow_panel)
+        self.tree.add_command(shadow_panel)  # ✅ uses built-in tree
         await self.tree.sync()
 
 @discord.app_commands.command(name="shadow", description="Open the Shadow moderation control panel.")
