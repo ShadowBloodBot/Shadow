@@ -11,7 +11,7 @@ from events import EventHandlers
 
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-MODERATOR_ROLE_ID = 955600547266822174  # ✅ Role that can use the commands
+MODERATOR_ROLE_ID = 955600547266822174
 
 class ShadowBot(commands.Bot):
     def __init__(self):
