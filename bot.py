@@ -1,7 +1,7 @@
 import discord
 import os
 from dotenv import load_dotenv
-from config import SHADOW_ROLE_ID
+from config import ALLOWED_ROLE_IDS
 from ui import ShadowControlPanel
 
 load_dotenv()
@@ -13,10 +13,10 @@ class ShadowBot(discord.Client):
         self.tree = discord.app_commands.CommandTree(self)
 
     async def setup_hook(self):
-        # Register /shadow command
         @self.tree.command(name="shadow", description="Open the Shadow Moderation Panel")
         async def shadow(interaction: discord.Interaction):
-            if SHADOW_ROLE_ID not in [role.id for role in interaction.user.roles]:
+            user_roles = [role.id for role in interaction.user.roles]
+            if not any(role_id in user_roles for role_id in ALLOWED_ROLE_IDS):
                 await interaction.response.send_message("🚫 You do not have permission to use this command.", ephemeral=True)
                 return
 
@@ -25,13 +25,11 @@ class ShadowBot(discord.Client):
             try:
                 await interaction.channel.send(f"🛡️ {interaction.user.mention} activated the `/shadow` panel", view=view)
             except Exception as e:
-                print(f"[ERROR] Couldn't post panel: {e}")
                 await interaction.followup.send("❌ Failed to launch panel.", ephemeral=True)
+                print(f"[ERROR] Could not post panel: {e}")
 
-        # Sync the command tree to all guilds
         await self.tree.sync()
         print("[SYNC] Slash commands registered.")
-
 
 bot = ShadowBot()
 
@@ -42,5 +40,5 @@ async def on_ready():
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
     if not token:
-        raise ValueError("❌ DISCORD_TOKEN not set in .env or Railway.")
+        raise ValueError("❌ DISCORD_TOKEN not set.")
     bot.run(token)
