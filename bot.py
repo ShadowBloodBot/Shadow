@@ -5,6 +5,7 @@ from config import ALLOWED_ROLE_IDS, MOD_QUEUE_THREAD_ID
 from ui import ShadowControlPanel
 from filters import ai_flag_user
 from mod_queue import ModQueueView
+from scan_command import scan_command  # ✅ Clean manual registration
 
 load_dotenv()
 
@@ -17,11 +18,7 @@ class ShadowBot(discord.Client):
         self.tree = discord.app_commands.CommandTree(self)
 
     async def setup_hook(self):
-        # ===== 🧹 CLEAR OLD COMMANDS (Fix Unknown Integration) =====
-        await self.tree.clear_commands(guild=discord.Object(id=GUILD_ID))
-        print("[SYNC] Cleared old slash commands from guild.")
-
-        # ===== /shadow =====
+        # ✅ Register /shadow
         @self.tree.command(name="shadow", description="Open the Shadow Moderation Panel")
         async def shadow(interaction: discord.Interaction):
             user_roles = [role.id for role in interaction.user.roles]
@@ -39,48 +36,12 @@ class ShadowBot(discord.Client):
                 print(f"[ERROR] Could not send control panel: {e}")
                 await interaction.followup.send("❌ Could not send panel.", ephemeral=True)
 
-        # ===== /scan =====
-        @self.tree.command(name="scan", description="Scan all members and flag suspicious ones.")
-        @discord.app_commands.checks.has_permissions(administrator=True)
-        async def scan(interaction: discord.Interaction):
-            await interaction.response.defer(ephemeral=True)
-            guild = interaction.guild
-            members = [m async for m in guild.fetch_members(limit=None)]
-            total = len(members)
-            flagged = []
+        # ✅ Manually register scan_command
+        await self.tree.add_command(scan_command, guild=discord.Object(id=GUILD_ID))
 
-            try:
-                mod_thread = await interaction.client.fetch_channel(MOD_QUEUE_THREAD_ID)
-            except Exception as e:
-                await interaction.followup.send("❌ Mod queue thread not found or inaccessible.", ephemeral=True)
-                print(f"[ERROR] Cannot fetch mod thread: {e}")
-                return
-
-            await interaction.edit_original_response(content=f"🔍 Scanning {total} members...")
-
-            for i, member in enumerate(members):
-                if member.bot:
-                    continue
-                try:
-                    if await ai_flag_user(member):
-                        flagged.append(member)
-                except Exception as e:
-                    print(f"[SCAN ERROR] {member}: {e}")
-                if i % 100 == 0:
-                    await interaction.edit_original_response(content=f"🔎 Scanned {i}/{total}...")
-
-            if not flagged:
-                await interaction.edit_original_response(content="✅ Scan complete. No suspicious users flagged.")
-            else:
-                await interaction.edit_original_response(content=f"⚠️ Scan complete. {len(flagged)} users flagged.")
-                try:
-                    await mod_thread.send("📥 Auto-Scan Flagged Members", view=ModQueueView(flagged))
-                except Exception as e:
-                    print(f"[THREAD ERROR] {e}")
-
-        # ✅ Force re-sync only to your guild
+        # ✅ Sync to your guild
         await self.tree.sync(guild=discord.Object(id=GUILD_ID))
-        print("[SYNC] Slash commands re-registered to your guild.")
+        print("[SYNC] Slash commands registered to guild.")
 
 bot = ShadowBot()
 
