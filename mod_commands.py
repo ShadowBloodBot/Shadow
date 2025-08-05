@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-from logging import send_log
+from log_utils import send_log
 from storage import log_case
 
 class ModCommands(commands.Cog):
