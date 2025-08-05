@@ -1,63 +1,93 @@
 # storage.py
 
-import json
+import sqlite3
+from typing import List, Optional, Tuple
+import discord
 import os
-from datetime import datetime
-from typing import List, Dict
+import datetime
 
-FLAG_STORE_FILE = "flagged_users.json"
-LOG_FILE = "shadow_logs.txt"
+DB_FILE = "shadow.db"
+
 
 def init_db():
-    """Ensure the flagged users storage file exists."""
-    if not os.path.exists(FLAG_STORE_FILE):
-        with open(FLAG_STORE_FILE, "w") as f:
-            json.dump({}, f)
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
 
-def load_flags() -> Dict[str, dict]:
-    """Load flagged users from the storage file."""
-    if not os.path.exists(FLAG_STORE_FILE):
-        init_db()
-    try:
-        with open(FLAG_STORE_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {}
+    # Table for flagged users
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS flagged_users (
+            user_id TEXT PRIMARY KEY,
+            username TEXT,
+            discriminator TEXT,
+            severity_score INTEGER,
+            suggested_action TEXT,
+            flagged_at TEXT
+        )
+    """)
 
-def save_flags(flags: Dict[str, dict]):
-    """Save the full flag dictionary to storage."""
-    with open(FLAG_STORE_FILE, "w") as f:
-        json.dump(flags, f, indent=2)
+    conn.commit()
+    conn.close()
 
-def flag_user(user_id: int, severity: int, reason: str = "Unspecified"):
-    """Flag a user and store their details."""
-    flags = load_flags()
-    flags[str(user_id)] = {
-        "user_id": user_id,
-        "severity": severity,
-        "reason": reason,
-        "timestamp": datetime.utcnow().isoformat()
-    }
-    save_flags(flags)
 
-def get_flagged_users() -> List[dict]:
-    """Return all flagged users as a list of dicts."""
-    return list(load_flags().values())
+def save_flagged_user(user: discord.User, severity_score: int, suggested_action: str):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
 
-def clear_flag(user_id: int):
-    """Remove a user from the flagged list."""
-    flags = load_flags()
-    user_id_str = str(user_id)
-    if user_id_str in flags:
-        del flags[user_id_str]
-        save_flags(flags)
+    c.execute("""
+        INSERT OR REPLACE INTO flagged_users (
+            user_id, username, discriminator, severity_score, suggested_action, flagged_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        str(user.id),
+        user.name,
+        user.discriminator,
+        severity_score,
+        suggested_action,
+        datetime.datetime.utcnow().isoformat()
+    ))
 
-def get_flag(user_id: int) -> dict | None:
-    """Get the flag data for a specific user."""
-    return load_flags().get(str(user_id), None)
+    conn.commit()
+    conn.close()
 
-def log_action(message: str):
-    """Append a timestamped message to the log file."""
-    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    with open(LOG_FILE, "a") as f:
-        f.write(f"[{timestamp}] {message}\n")
+
+def get_flagged_users(min_score: int = 0) -> List[Tuple[str, str, str, int, str, str]]:
+    """Returns a list of flagged users with optional minimum score filtering."""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+
+    c.execute("""
+        SELECT user_id, username, discriminator, severity_score, suggested_action, flagged_at
+        FROM flagged_users
+        WHERE severity_score >= ?
+        ORDER BY severity_score DESC
+    """, (min_score,))
+
+    results = c.fetchall()
+    conn.close()
+    return results
+
+
+async def send_log(message: str, channel: Optional[discord.TextChannel] = None):
+    """Sends a message to a specified log channel and prints to console."""
+    print(f"[LOG] {message}")
+    if channel:
+        try:
+            await channel.send(f"📋 {message}")
+        except Exception as e:
+            print(f"[ERROR] Failed to send log to channel: {e}")
+
+
+def get_flagged_user_by_id(user_id: int) -> Optional[Tuple[str, str, str, int, str, str]]:
+    """Returns a single flagged user by Discord ID."""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+
+    c.execute("""
+        SELECT user_id, username, discriminator, severity_score, suggested_action, flagged_at
+        FROM flagged_users
+        WHERE user_id = ?
+    """, (str(user_id),))
+
+    result = c.fetchone()
+    conn.close()
+    return result
