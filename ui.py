@@ -1,6 +1,5 @@
 import discord
 from discord import ui
-from discord.ext import tasks
 from filters import get_severity_score
 from storage import get_flagged_users
 from log_utils import send_log
@@ -12,17 +11,11 @@ class ModerationDropdown(ui.Select):
     def __init__(self):
         options = [
             discord.SelectOption(label="View Mod Queue", value="queue", emoji="🔍", description="See all auto-flagged users"),
-            discord.SelectOption(label="Active Timeouts", value="timeouts", emoji="⏳", description="View all currently timed-out users"),
-            discord.SelectOption(label="Case Logs", value="logs", emoji="📋", description="Browse moderation history (coming soon)"),
-            discord.SelectOption(label="Live Joins", value="live", emoji="🚨", description="Watch join events in real time (coming soon)"),
+            discord.SelectOption(label="Active Timeouts", value="timeouts", emoji="👥", description="View all currently timed-out users"),
+            discord.SelectOption(label="Case Logs", value="logs", emoji="🧾", description="Browse moderation history"),
+            discord.SelectOption(label="Live Joins", value="live", emoji="🚨", description="Watch join events in real time"),
         ]
-        super().__init__(
-            placeholder="Choose a moderation view...",
-            options=options,
-            min_values=1,
-            max_values=1,
-            custom_id="mod_dropdown"  # ✅ Required for persistence
-        )
+        super().__init__(placeholder="Select Moderation View", options=options, min_values=1, max_values=1, custom_id="moderation_dropdown")
 
     async def callback(self, interaction: discord.Interaction):
         if not any(role.id == MOD_ROLE_ID for role in interaction.user.roles):
@@ -39,18 +32,13 @@ class ModerationDropdown(ui.Select):
 
             embed = discord.Embed(title="🚨 Mod Queue", color=discord.Color.red())
             for user_id, data in users.items():
-                embed.add_field(
-                    name=f"<@{user_id}>",
-                    value=f"Score: `{data['score']}`\nReason: {data['reason']}",
-                    inline=False
-                )
+                embed.add_field(name=f"<@{user_id}>", value=f"Score: `{data['score']}`\nReason: {data['reason']}", inline=False)
 
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
         elif selection == "timeouts":
             members = [m for m in interaction.guild.members if m.timed_out_until]
             embed = discord.Embed(title="⏳ Active Timeouts", color=discord.Color.orange())
-
             if not members:
                 embed.description = "There are no members currently timed out."
             else:
@@ -61,15 +49,25 @@ class ModerationDropdown(ui.Select):
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
         elif selection == "logs":
-            await interaction.response.send_message("🧾 Case Log Viewer coming soon.", ephemeral=True)
+            await interaction.response.send_message("🧾 Coming soon: Case Log Viewer.", ephemeral=True)
 
         elif selection == "live":
             await interaction.response.send_message("🚨 Live Join Feed coming soon.", ephemeral=True)
 
 
+class ModerationControlView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(ModerationDropdown())
+        self.add_item(RefreshPanelButton())
+        self.add_item(ScanNowButton())
+        self.add_item(CaseReviewButton())
+        self.add_item(SettingsButton())
+
+
 class RefreshPanelButton(ui.Button):
     def __init__(self):
-        super().__init__(label="Refresh Panel", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="refresh_panel")
+        super().__init__(label="Refresh Panel", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id="refresh_button")
 
     async def callback(self, interaction: discord.Interaction):
         if not any(role.id == MOD_ROLE_ID for role in interaction.user.roles):
@@ -82,7 +80,7 @@ class RefreshPanelButton(ui.Button):
 
 class ScanNowButton(ui.Button):
     def __init__(self):
-        super().__init__(label="Scan Now", emoji="👥", style=discord.ButtonStyle.danger, custom_id="scan_now")
+        super().__init__(label="Scan Now", style=discord.ButtonStyle.danger, emoji="👥", custom_id="scan_now")
 
     async def callback(self, interaction: discord.Interaction):
         if not any(role.id == MOD_ROLE_ID for role in interaction.user.roles):
@@ -95,15 +93,15 @@ class ScanNowButton(ui.Button):
 
 class CaseReviewButton(ui.Button):
     def __init__(self):
-        super().__init__(label="Case Review", emoji="📋", style=discord.ButtonStyle.primary, custom_id="case_review")
+        super().__init__(label="Case Review", style=discord.ButtonStyle.primary, emoji="📋", custom_id="case_review")
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_message("📋 Case Review coming soon.", ephemeral=True)
+        await interaction.response.send_message("📋 Coming soon: Case review panel.", ephemeral=True)
 
 
 class SettingsButton(ui.Button):
     def __init__(self):
-        super().__init__(label="Settings", emoji="⚙️", style=discord.ButtonStyle.success, custom_id="settings_btn")
+        super().__init__(label="Settings", style=discord.ButtonStyle.success, emoji="⚙️", custom_id="settings_button")
 
     async def callback(self, interaction: discord.Interaction):
         if not interaction.user.guild_permissions.administrator:
@@ -113,36 +111,21 @@ class SettingsButton(ui.Button):
         await interaction.response.send_message("⚙️ Settings modal coming soon.", ephemeral=True)
 
 
-class ModerationControlView(ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)  # ✅ Required for persistence
-        self.add_item(ModerationDropdown())
-        self.add_item(RefreshPanelButton())
-        self.add_item(ScanNowButton())
-        self.add_item(CaseReviewButton())
-        self.add_item(SettingsButton())
-
-
-async def send_shadow_panel(channel: discord.TextChannel, force: bool = False):
+async def send_shadow_panel(channel: discord.TextChannel, force=False):
     try:
-        flagged_count = len(get_flagged_users())
-        timeout_count = len([m for m in channel.guild.members if m.timed_out_until])
-
+        flagged = len(get_flagged_users())
+        timeouts = len([m for m in channel.guild.members if m.timed_out_until])
         embed = discord.Embed(
             title="🛡️ Shadow Moderation Panel",
-            description=(
-                "Manage flagged users and automate moderation actions.\n"
-                "Use the dropdown below to view Mod Queue or other moderation tools."
-            ),
+            description="Manage flagged users and automate moderation actions.\nUse the dropdown below to view Mod Queue or other tools.",
             color=discord.Color.from_rgb(138, 43, 226),
             timestamp=discord.utils.utcnow()
         )
-        embed.set_footer(text="Dyno Replacement Bot — Elite Tier")
-        embed.add_field(name="👤 Flagged Users", value=f"`{flagged_count}` in queue", inline=True)
-        embed.add_field(name="⏳ Active Timeouts", value=f"`{timeout_count}` users", inline=True)
+        embed.set_footer(text="Moderation Powered by ShadowBot • Elite Tier")
+        embed.add_field(name="👤 Flagged Users", value=f"`{flagged}` in queue", inline=True)
+        embed.add_field(name="⏳ Active Timeouts", value=f"`{timeouts}` users", inline=True)
         embed.add_field(name="🕵️ Auto-Scan", value="`ON`", inline=True)
 
         await channel.send(embed=embed, view=ModerationControlView())
-
     except Exception as e:
         print("[ERROR] Failed to send control panel:", e)
