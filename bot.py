@@ -8,6 +8,8 @@ from mod_queue import ModQueueView
 
 load_dotenv()
 
+GUILD_ID = 908659586536468540  # ✅ Your confirmed server
+
 class ShadowBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.all()
@@ -31,8 +33,8 @@ class ShadowBot(discord.Client):
             try:
                 await interaction.channel.send(f"🛡️ {interaction.user.mention} activated the `/shadow` panel", view=view)
             except Exception as e:
-                await interaction.followup.send("❌ Could not send panel to this channel.", ephemeral=True)
-                print(f"[ERROR] {e}")
+                print(f"[ERROR] Could not send control panel: {e}")
+                await interaction.followup.send("❌ Could not send panel.", ephemeral=True)
 
         # ===== /scan =====
         @self.tree.command(name="scan", description="Scan all members and flag suspicious ones.")
@@ -73,8 +75,9 @@ class ShadowBot(discord.Client):
                 except Exception as e:
                     print(f"[THREAD ERROR] {e}")
 
-        await self.tree.sync()
-        print("[SYNC] Slash commands registered.")
+        # 🔥 Force sync to your guild only
+        await self.tree.sync(guild=discord.Object(id=GUILD_ID))
+        print("[SYNC] Slash commands registered to your guild.")
 
 bot = ShadowBot()
 
