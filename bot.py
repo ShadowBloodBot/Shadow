@@ -1,49 +1,75 @@
-import discord
 import os
-import asyncio
+import discord
 from discord.ext import commands
+from discord import app_commands
 from dotenv import load_dotenv
-from log_utils import send_log
-from ui import ShadowControlPanel
-from mod_commands import ModCommands
+
+from ui import send_shadow_panel
 from scan_command import Scan
+from mod_commands import ModCommands
 from events import EventHandlers
 
+MOD_ROLE_ID = 955600547266822174
+
 load_dotenv()
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-MODERATOR_ROLE_ID = 955600547266822174
+
+intents = discord.Intents.all()
+
 
 class ShadowBot(commands.Bot):
     def __init__(self):
-        intents = discord.Intents.all()
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(
+            command_prefix="!",
+            intents=intents,
+            application_id=os.getenv("APPLICATION_ID"),
+        )
+        self.synced = False
 
     async def setup_hook(self):
-        await self.add_cog(ModCommands(self))
-        await self.add_cog(Scan(self))
+        self.add_view(ModerationControlView())  # Ensure persistent view registration
         await self.add_cog(EventHandlers(self))
-        self.tree.add_command(shadow_panel)
-        await self.tree.sync()
+        await self.add_cog(Scan(self))
+        await self.add_cog(ModCommands(self))
 
-@discord.app_commands.checks.has_role(MODERATOR_ROLE_ID)
-@discord.app_commands.command(name="shadow", description="Open the Shadow moderation control panel.")
-async def shadow_panel(interaction: discord.Interaction):
-    panel = ShadowControlPanel(interaction.client)
-    embed, view = await panel.build(interaction.channel)
+
+bot = ShadowBot()
+
+
+# Global check for role locking all slash commands
+@bot.tree.check
+async def global_role_check(interaction: discord.Interaction) -> bool:
+    return any(role.id == MOD_ROLE_ID for role in interaction.user.roles)
+
+
+# Global command to open the panel
+@bot.tree.command(name="shadow", description="Open the Shadow Moderation Panel.")
+async def shadow(interaction: discord.Interaction):
+    if not any(role.id == MOD_ROLE_ID for role in interaction.user.roles):
+        await interaction.response.send_message("🚫 You don't have access to this panel.", ephemeral=True)
+        return
+
     try:
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+        await send_shadow_panel(interaction.channel)
+        await interaction.response.send_message("✅ Shadow panel deployed.", ephemeral=True)
     except Exception as e:
-        await send_log(f"[SHADOW PANEL ERROR] {e}")
-        await interaction.followup.send("❌ Failed to load panel.", ephemeral=True)
+        await interaction.response.send_message("❌ Failed to deploy panel.", ephemeral=True)
+        print("[ERROR] Panel deployment failed:", e)
 
-@shadow_panel.error
-async def shadow_panel_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
-    if isinstance(error, discord.app_commands.errors.MissingRole):
-        await interaction.response.send_message("❌ You need the Moderator role to use this command.", ephemeral=True)
-    else:
-        await interaction.response.send_message("❌ An error occurred.", ephemeral=True)
-        await send_log(f"[SHADOW COMMAND ERROR] {error}")
+
+@bot.event
+async def on_ready():
+    if not bot.synced:
+        try:
+            await bot.tree.sync()
+            bot.synced = True
+            print(f"[SYNC] Synced commands for: {bot.user}")
+        except Exception as e:
+            print(f"[ERROR] Sync failed: {e}")
+    print(f"[READY] Logged in as {bot.user}")
+
 
 if __name__ == "__main__":
-    bot = ShadowBot()
-    asyncio.run(bot.start(DISCORD_TOKEN))
+    token = os.getenv("DISCORD_TOKEN")
+    if not token:
+        raise EnvironmentError("DISCORD_TOKEN not found in environment.")
+    bot.run(token)
