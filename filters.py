@@ -12,9 +12,9 @@ BIO_KEYWORDS = [
     "hire me", "promo", "graphic designer", "freelance", "looking for work"
 ]
 
-URL_PATTERNS = [
-    r"x\.com", r"twitter\.com", r"instagram\.com", r"discord\.gg",
-    r"linktr\.ee", r"carrd\.co", r"fiverr\.com", r"onlyfans\.com"
+LINK_PATTERNS = [
+    r"http[s]?://", r"\.com\b", r"discord\.gg", r"x\.com", r"linktr\.ee",
+    r"instagram\.com", r"fiverr\.com", r"onlyfans\.com", r"carrd\.co"
 ]
 
 def score_member(member, user):
@@ -40,27 +40,21 @@ def score_member(member, user):
         score += 3
         reasons.append(f"New account ({age_days} days old)")
 
-    # === No roles ===
-    if len(member.roles) <= 1:
-        score += 1
-        reasons.append("No roles")
-
-    # === Bio scoring from fetched user ===
+    # === Bio scanning ===
     bio = getattr(user, "bio", None)
     if bio:
         lower_bio = bio.lower()
 
         if any(phrase in lower_bio for phrase in BIO_KEYWORDS):
             score += 3
-            reasons.append("Suspicious bio keywords")
+            reasons.append("Bio keyword")
 
-        if any(re.search(pat, lower_bio) for pat in URL_PATTERNS):
-            score += 3
-            reasons.append("Suspicious bio links")
+        if any(re.search(pat, lower_bio) for pat in LINK_PATTERNS):
+            score += 2
+            reasons.append("Link in bio")
 
     reason_str = ", ".join(reasons) if reasons else "No flags"
     return score, reason_str
-
 
 def get_severity_score(score: int) -> str:
     if score >= 7:
