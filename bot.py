@@ -11,6 +11,7 @@ from events import EventHandlers
 
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+MODERATOR_ROLE_ID = 955600547266822174  # ✅ Role that can use the commands
 
 class ShadowBot(commands.Bot):
     def __init__(self):
@@ -21,15 +22,12 @@ class ShadowBot(commands.Bot):
         await self.add_cog(ModCommands(self))
         await self.add_cog(Scan(self))
         await self.add_cog(EventHandlers(self))
-        self.tree.add_command(shadow_panel)  # ✅ uses built-in tree
+        self.tree.add_command(shadow_panel)
         await self.tree.sync()
 
+@discord.app_commands.checks.has_role(MODERATOR_ROLE_ID)
 @discord.app_commands.command(name="shadow", description="Open the Shadow moderation control panel.")
 async def shadow_panel(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.manage_guild:
-        await interaction.response.send_message("❌ You don't have permission to use this.", ephemeral=True)
-        return
-
     panel = ShadowControlPanel(interaction.client)
     embed, view = await panel.build(interaction.channel)
     try:
@@ -37,6 +35,14 @@ async def shadow_panel(interaction: discord.Interaction):
     except Exception as e:
         await send_log(f"[SHADOW PANEL ERROR] {e}")
         await interaction.followup.send("❌ Failed to load panel.", ephemeral=True)
+
+@shadow_panel.error
+async def shadow_panel_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
+    if isinstance(error, discord.app_commands.errors.MissingRole):
+        await interaction.response.send_message("❌ You need the Moderator role to use this command.", ephemeral=True)
+    else:
+        await interaction.response.send_message("❌ An error occurred.", ephemeral=True)
+        await send_log(f"[SHADOW COMMAND ERROR] {error}")
 
 if __name__ == "__main__":
     bot = ShadowBot()
