@@ -1,34 +1,54 @@
 import discord
-from discord.ext import commands
-from discord import ui
+from discord.ui import View, Button, Select, SelectOption
+from moderation import handle_mass_action, handle_shadowmute
+from role_manager import launch_role_manager
+from user_panel import view_user_sheet
+from filters import get_flagged_users
 from storage import load_flags
 
-class ShadowControlPanel(discord.ui.View):
-    def __init__(self, bot, user):
+class ShadowControlPanel(View):
+    def __init__(self, bot, author):
         super().__init__(timeout=None)
         self.bot = bot
-        self.user = user
+        self.author = author
 
-    @discord.ui.button(label="Mod Queue", style=discord.ButtonStyle.danger, custom_id="mod_queue")
-    async def mod_queue_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user != self.user:
-            await interaction.response.send_message("Only the command invoker can use this panel.", ephemeral=True)
-            return
+        self.add_item(Button(label="Mass Ban", style=discord.ButtonStyle.danger, custom_id="mass_ban"))
+        self.add_item(Button(label="ShadowMute", style=discord.ButtonStyle.secondary, custom_id="shadow_mute"))
+        self.add_item(Button(label="Role Manager", style=discord.ButtonStyle.primary, custom_id="role_manager"))
+        self.add_item(Button(label="User Panel", style=discord.ButtonStyle.secondary, custom_id="user_sheet"))
+        self.add_item(Button(label="Flagged Users", style=discord.ButtonStyle.success, custom_id="flagged_list"))
+        self.add_item(Button(label="Mod Queue", style=discord.ButtonStyle.red, custom_id="mod_queue"))
 
-        flagged = load_flags()
-        if not flagged:
-            await interaction.response.send_message("✅ No flagged users found.", ephemeral=True)
-            return
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user == self.author
 
-        embed = discord.Embed(
-            title="🧠 Mod Queue",
-            description="These members were flagged by the Shadow AI system.",
-            color=discord.Color.orange()
-        )
-        for user_id, info in flagged.items():
-            embed.add_field(
-                name=f"{info['username']} (ID: {user_id})",
-                value=f"**Score**: {info['score']}\n**Reason**: {info['reason']}",
-                inline=False
-            )
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item):
+        await interaction.response.send_message("⚠️ An error occurred.", ephemeral=True)
+
+    @discord.ui.button(label="Refresh Panel", style=discord.ButtonStyle.grey)
+    async def refresh(self, button: Button, interaction: discord.Interaction):
+        await interaction.response.edit_message(content="🔄 Refreshed panel.", view=self)
+
+    @discord.ui.button(label="Analytics", style=discord.ButtonStyle.blurple)
+    async def analytics(self, button: Button, interaction: discord.Interaction):
+        from analytics import get_bot_stats
+        stats = get_bot_stats(self.bot)
+        embed = discord.Embed(title="📊 Bot Analytics")
+        for key, val in stats.items():
+            embed.add_field(name=key.capitalize(), value=str(val))
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Search Users", style=discord.ButtonStyle.secondary)
+    async def search(self, button: Button, interaction: discord.Interaction):
+        from user_panel import SearchUserModal
+        modal = SearchUserModal()
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Mod Queue", style=discord.ButtonStyle.red)
+    async def mod_queue(self, button: Button, interaction: discord.Interaction):
+        from mod_queue import ModQueueView
+        flagged = [m for m in interaction.guild.members if not m.bot and m.id in get_flagged_users()]
+        if not flagged:
+            await interaction.response.send_message("✅ No users currently in the mod queue.", ephemeral=True)
+            return
+        await interaction.response.send_message("📥 Reviewing Mod Queue", view=ModQueueView(flagged), ephemeral=True)
