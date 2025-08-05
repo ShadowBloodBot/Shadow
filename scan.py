@@ -1,11 +1,14 @@
+# scan.py
+
 import discord
-from discord import app_commands
 from discord.ext import commands
-from filters import score_member, get_severity_score, suggest_action
+from discord import app_commands
+from filters import get_severity_score, suggest_action
 from storage import add_flagged_user
 import asyncio
 
 MOD_QUEUE_THREAD_ID = 1401792224500649994
+
 
 class Scan(commands.Cog):
     def __init__(self, bot):
@@ -17,39 +20,56 @@ class Scan(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         guild = interaction.guild
-        members = [m async for m in guild.fetch_members(limit=None)]
-        total = len(members)
         flagged = 0
 
         try:
-            mod_thread = await interaction.client.fetch_channel(MOD_QUEUE_THREAD_ID)
+            members = [m async for m in guild.fetch_members(limit=None)]
+        except Exception as e:
+            await interaction.followup.send("❌ Failed to fetch members.", ephemeral=True)
+            print(f"[ERROR] Fetching members failed: {e}")
+            return
+
+        total = len(members)
+
+        try:
+            mod_thread = await self.bot.fetch_channel(MOD_QUEUE_THREAD_ID)
         except Exception as e:
             await interaction.followup.send("❌ Mod queue thread not found or inaccessible.", ephemeral=True)
             print(f"[ERROR] Cannot fetch mod thread: {e}")
             return
 
-        await interaction.edit_original_response(content=f"🔍 Scanning {total} members. Please wait...")
+        try:
+            await interaction.edit_original_response(content=f"🔍 Starting scan of {total} members...")
+        except Exception as e:
+            print(f"[ERROR] Cannot edit original scan response: {e}")
 
-        for i, member in enumerate(members, start=1):
-            await asyncio.sleep(0.5)  # Throttle to prevent rate limits and improve bio fetch chance
-            score, reason = await score_member(member)
-            if score >= 3:
-                flagged += 1
-                add_flagged_user(guild.id, member.id, reason, score)
-                try:
+        for idx, member in enumerate(members):
+            try:
+                score = await get_severity_score(member)
+                if score >= 3:
+                    reason = suggest_action(score)
+                    add_flagged_user(member.id, score, reason)
                     await mod_thread.send(
-                        f"🚩 **Flagged:** {member.mention} | Severity: **{score}**\n**Reason:** {reason}\nSuggested Action: `{suggest_action(score)}`"
+                        f"🚨 **Flagged:** {member.mention} (Score: `{score}`)\nReason: `{reason}`"
                     )
-                except Exception as e:
-                    print(f"[ERROR] Could not post to mod queue: {e}")
+                    flagged += 1
+            except Exception as e:
+                print(f"[ERROR] Scanning member {member.id}: {e}")
 
-            if i % 25 == 0 or i == total:
+            if idx % 50 == 0:
                 try:
-                    await interaction.edit_original_response(content=f"⏳ Scanned {i}/{total} members... Flagged: {flagged}")
+                    await interaction.edit_original_response(
+                        content=f"📊 Scanned {idx}/{total} members...\n🚩 Flagged so far: {flagged}"
+                    )
                 except:
                     pass
 
-        await interaction.edit_original_response(content=f"✅ Scan complete. Flagged {flagged} members.")
+            await asyncio.sleep(0.1)
+
+        await interaction.edit_original_response(
+            content=f"✅ Scan complete: `{flagged}` members flagged out of `{total}`."
+        )
+
 
 async def setup(bot):
     await bot.add_cog(Scan(bot))
