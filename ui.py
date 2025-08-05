@@ -1,5 +1,3 @@
-# ui.py
-
 import discord
 from discord.ui import View, Button
 from storage import get_flagged_users, clear_flag
@@ -15,7 +13,6 @@ class ModerationControlView(View):
             custom_id="refresh_queue"
         )
         self.refresh_button.callback = self.refresh_mod_queue
-
         self.add_item(self.refresh_button)
         self.render_flagged_users()
 
@@ -46,9 +43,9 @@ class ModerationControlView(View):
                     member = interaction.guild.get_member(user_id)
                     if member:
                         await member.kick(reason="Auto-flagged by AI system")
-                        await send_log(f"👢 Kicked flagged user <@{user_id}> (Severity {sev})", channel=None)
+                        await send_log(f"👢 Kicked flagged user <@{user_id}> (Severity {sev})")
                     else:
-                        await send_log(f"⚠️ Tried to kick <@{user_id}> but they are no longer in the server", channel=None)
+                        await send_log(f"⚠️ Tried to kick <@{user_id}> but they are no longer in the server")
 
                     clear_flag(user_id)
                     await interaction.response.edit_message(content="✅ User processed and removed from queue.", view=ModerationControlView())
