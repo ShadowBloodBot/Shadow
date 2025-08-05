@@ -1,7 +1,7 @@
 import discord
 from discord.ui import View, Button
-from ai_suggestions import get_severity_score
 from mod_queue import ModQueueView
+from storage import load_flags
 
 class ShadowControlPanel(View):
     def __init__(self, bot, author):
@@ -9,7 +9,9 @@ class ShadowControlPanel(View):
         self.bot = bot
         self.author = author
 
-        self.add_item(Button(label="Mod Queue", style=discord.ButtonStyle.danger, custom_id="mod_queue"))
+        mod_queue_button = Button(label="Mod Queue", style=discord.ButtonStyle.red)
+        mod_queue_button.callback = self.open_mod_queue
+        self.add_item(mod_queue_button)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return interaction.user == self.author
@@ -17,10 +19,7 @@ class ShadowControlPanel(View):
     async def on_error(self, interaction: discord.Interaction, error: Exception, item):
         await interaction.response.send_message("⚠️ An error occurred in the panel.", ephemeral=True)
 
-    @discord.ui.button(label="Mod Queue", style=discord.ButtonStyle.red)
-    async def mod_queue(self, button: Button, interaction: discord.Interaction):
-        # Show members flagged by /scan from saved storage
-        from storage import load_flags
+    async def open_mod_queue(self, interaction: discord.Interaction):
         flagged_data = load_flags()
         flagged_ids = list(flagged_data.keys())
         flagged_members = [m for m in interaction.guild.members if str(m.id) in flagged_ids and not m.bot]
