@@ -100,3 +100,31 @@ if __name__ == "__main__":
         bot.run(token)
     else:
         print("❌ DISCORD_TOKEN not found in environment.")
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    if member.bot:
+        return
+
+    try:
+        from filters import score_member
+        from storage import load_flags, save_flags
+
+        user = await bot.fetch_user(member.id)
+        score, reason = score_member(member, user)
+
+        if score >= 1:
+            flags = load_flags()
+            user_id = str(member.id)
+            if user_id not in flags:
+                flags[user_id] = {
+                    "username": member.name,
+                    "score": score,
+                    "reason": reason
+                }
+                save_flags(flags)
+
+                print(f"🚨 Auto-flagged: {member.name} ({score}) - {reason}")
+    except Exception as e:
+        print(f"⚠️ Failed to auto-flag new member: {e}")
+
