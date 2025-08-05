@@ -53,7 +53,7 @@ class ShadowBot(discord.Client):
                 if member.bot:
                     continue
                 try:
-                    flagged_bool = await ai_flag_user(member)
+                    flagged_bool = await ai_flag_user(member, self)  # ✅ fixed
                     score = get_severity_score(member)
                     print(f"[SCAN] {member.name}#{member.discriminator} - Score: {score} | Flagged: {flagged_bool}")
 
@@ -65,7 +65,7 @@ class ShadowBot(discord.Client):
 
                 if i % 25 == 0:
                     await interaction.edit_original_response(content=f"🔎 Scanned {i}/{total} members...")
-                    await asyncio.sleep(0.2)  # Slow down to avoid ratelimit & simulate real processing
+                    await asyncio.sleep(0.2)
 
             if not flagged:
                 await interaction.edit_original_response(content="✅ Scan complete. No suspicious users flagged.")
