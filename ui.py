@@ -20,7 +20,8 @@ class ModerationDropdown(ui.Select):
             placeholder="Choose a moderation view...",
             options=options,
             min_values=1,
-            max_values=1
+            max_values=1,
+            custom_id="mod_dropdown"  # ✅ Required for persistence
         )
 
     async def callback(self, interaction: discord.Interaction):
@@ -68,7 +69,7 @@ class ModerationDropdown(ui.Select):
 
 class RefreshPanelButton(ui.Button):
     def __init__(self):
-        super().__init__(label="Refresh Panel", emoji="🔄", style=discord.ButtonStyle.secondary)
+        super().__init__(label="Refresh Panel", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="refresh_panel")
 
     async def callback(self, interaction: discord.Interaction):
         if not any(role.id == MOD_ROLE_ID for role in interaction.user.roles):
@@ -81,7 +82,7 @@ class RefreshPanelButton(ui.Button):
 
 class ScanNowButton(ui.Button):
     def __init__(self):
-        super().__init__(label="Scan Now", emoji="👥", style=discord.ButtonStyle.danger)
+        super().__init__(label="Scan Now", emoji="👥", style=discord.ButtonStyle.danger, custom_id="scan_now")
 
     async def callback(self, interaction: discord.Interaction):
         if not any(role.id == MOD_ROLE_ID for role in interaction.user.roles):
@@ -90,12 +91,11 @@ class ScanNowButton(ui.Button):
 
         await interaction.response.send_message("🛰️ Scan initiated...", ephemeral=True)
         await send_log(f"🛰️ {interaction.user.mention} triggered a manual scan.")
-        # Scan logic is in scan_command.py
 
 
 class CaseReviewButton(ui.Button):
     def __init__(self):
-        super().__init__(label="Case Review", emoji="📋", style=discord.ButtonStyle.primary)
+        super().__init__(label="Case Review", emoji="📋", style=discord.ButtonStyle.primary, custom_id="case_review")
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.send_message("📋 Case Review coming soon.", ephemeral=True)
@@ -103,7 +103,7 @@ class CaseReviewButton(ui.Button):
 
 class SettingsButton(ui.Button):
     def __init__(self):
-        super().__init__(label="Settings", emoji="⚙️", style=discord.ButtonStyle.success)
+        super().__init__(label="Settings", emoji="⚙️", style=discord.ButtonStyle.success, custom_id="settings_btn")
 
     async def callback(self, interaction: discord.Interaction):
         if not interaction.user.guild_permissions.administrator:
@@ -115,7 +115,7 @@ class SettingsButton(ui.Button):
 
 class ModerationControlView(ui.View):
     def __init__(self):
-        super().__init__(timeout=None)
+        super().__init__(timeout=None)  # ✅ Required for persistence
         self.add_item(ModerationDropdown())
         self.add_item(RefreshPanelButton())
         self.add_item(ScanNowButton())
