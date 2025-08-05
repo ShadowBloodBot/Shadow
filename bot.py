@@ -5,7 +5,7 @@ from config import ALLOWED_ROLE_IDS, MOD_QUEUE_THREAD_ID
 from ui import ShadowControlPanel
 from filters import ai_flag_user
 from mod_queue import ModQueueView
-from scan_command import scan_command  # ✅ Clean manual registration
+from scan_command import scan_command  # ✅ Proper slash command object
 
 load_dotenv()
 
@@ -18,7 +18,7 @@ class ShadowBot(discord.Client):
         self.tree = discord.app_commands.CommandTree(self)
 
     async def setup_hook(self):
-        # ✅ Register /shadow
+        # === /shadow ===
         @self.tree.command(name="shadow", description="Open the Shadow Moderation Panel")
         async def shadow(interaction: discord.Interaction):
             user_roles = [role.id for role in interaction.user.roles]
@@ -36,12 +36,12 @@ class ShadowBot(discord.Client):
                 print(f"[ERROR] Could not send control panel: {e}")
                 await interaction.followup.send("❌ Could not send panel.", ephemeral=True)
 
-        # ✅ Manually register scan_command
-        await self.tree.add_command(scan_command, guild=discord.Object(id=GUILD_ID))
+        # ✅ Register /scan manually (NO await)
+        self.tree.add_command(scan_command, guild=discord.Object(id=GUILD_ID))
 
-        # ✅ Sync to your guild
+        # ✅ Sync to your guild only
         await self.tree.sync(guild=discord.Object(id=GUILD_ID))
-        print("[SYNC] Slash commands registered to guild.")
+        print("[SYNC] Slash commands registered.")
 
 bot = ShadowBot()
 
