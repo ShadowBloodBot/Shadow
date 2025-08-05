@@ -1,58 +1,63 @@
-import aiosqlite
+# storage.py
+
+import json
 import os
-import asyncio
+from datetime import datetime
+from typing import List, Dict
 
-DB_PATH = "shadowbot.db"
+FLAG_STORE_FILE = "flagged_users.json"
+LOG_FILE = "shadow_logs.txt"
 
-# Run this once on startup to ensure tables exist
-async def init_db():
+def init_db():
+    """Ensure the flagged users storage file exists."""
+    if not os.path.exists(FLAG_STORE_FILE):
+        with open(FLAG_STORE_FILE, "w") as f:
+            json.dump({}, f)
+
+def load_flags() -> Dict[str, dict]:
+    """Load flagged users from the storage file."""
+    if not os.path.exists(FLAG_STORE_FILE):
+        init_db()
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS flagged_users (
-                    user_id INTEGER PRIMARY KEY,
-                    username TEXT,
-                    severity INTEGER,
-                    reason TEXT,
-                    flagged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS mod_actions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    action TEXT,
-                    reason TEXT,
-                    taken_by TEXT,
-                    action_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            await db.commit()
-            print("✅ Database tables ensured.")
-    except Exception as e:
-        print(f"[ERROR] init_db(): {e}")
-        raise
+        with open(FLAG_STORE_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
-# Example function to add a flagged user
-async def add_flagged_user(user_id: int, username: str, severity: int, reason: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT OR REPLACE INTO flagged_users (user_id, username, severity, reason) VALUES (?, ?, ?, ?)",
-            (user_id, username, severity, reason)
-        )
-        await db.commit()
+def save_flags(flags: Dict[str, dict]):
+    """Save the full flag dictionary to storage."""
+    with open(FLAG_STORE_FILE, "w") as f:
+        json.dump(flags, f, indent=2)
 
-# Example function to log moderation actions
-async def log_mod_action(user_id: int, action: str, reason: str, taken_by: str):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO mod_actions (user_id, action, reason, taken_by) VALUES (?, ?, ?, ?)",
-            (user_id, action, reason, taken_by)
-        )
-        await db.commit()
+def flag_user(user_id: int, severity: int, reason: str = "Unspecified"):
+    """Flag a user and store their details."""
+    flags = load_flags()
+    flags[str(user_id)] = {
+        "user_id": user_id,
+        "severity": severity,
+        "reason": reason,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    save_flags(flags)
 
-# Optional: fetch flagged users
-async def get_all_flagged_users():
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT * FROM flagged_users") as cursor:
-            return await cursor.fetchall()
+def get_flagged_users() -> List[dict]:
+    """Return all flagged users as a list of dicts."""
+    return list(load_flags().values())
+
+def clear_flag(user_id: int):
+    """Remove a user from the flagged list."""
+    flags = load_flags()
+    user_id_str = str(user_id)
+    if user_id_str in flags:
+        del flags[user_id_str]
+        save_flags(flags)
+
+def get_flag(user_id: int) -> dict | None:
+    """Get the flag data for a specific user."""
+    return load_flags().get(str(user_id), None)
+
+def log_action(message: str):
+    """Append a timestamped message to the log file."""
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    with open(LOG_FILE, "a") as f:
+        f.write(f"[{timestamp}] {message}\n")
