@@ -1,4 +1,5 @@
 import aiosqlite
+import discord  # ✅ Required for type annotations
 
 DB_NAME = "shadowbot.db"
 
