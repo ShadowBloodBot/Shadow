@@ -23,13 +23,12 @@ client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
 # ========= PERSISTENCE (webhook cache) =========
-# Cache format:
 # { "<guild_id>": { "<channel_id>": { "url": "https://discord.com/api/webhooks/..." } } }
 def load_cache() -> dict:
     try:
         with open(WEBHOOK_CACHE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            # migrate older id/token format to url-if-present (ignore if missing)
+            # migrate old id/token format -> url
             for g in list(data.keys()):
                 for c in list(data[g].keys()):
                     entry = data[g][c]
@@ -105,6 +104,28 @@ def parse_hex_color(value: Optional[str]) -> int:
     except ValueError:
         return 0x2b2d31
 
+def jump_url(guild_id: int, channel_id: int) -> str:
+    return f"https://discord.com/channels/{guild_id}/{channel_id}"
+
+def build_url_buttons(
+    *,
+    rules_link: Optional[str] = None,
+    roles_link: Optional[str] = None,
+    lobby_link: Optional[str] = None,
+    invite_link: Optional[str] = None,
+) -> discord.ui.View:
+    view = discord.ui.View()
+    # Add up to 5 buttons per row; keep it clean with one row
+    if rules_link:
+        view.add_item(discord.ui.Button(label="📜 Read Rules", url=rules_link))
+    if roles_link:
+        view.add_item(discord.ui.Button(label="🎭 Get Roles", url=roles_link))
+    if lobby_link:
+        view.add_item(discord.ui.Button(label="💬 Introduce Yourself", url=lobby_link))
+    if invite_link:
+        view.add_item(discord.ui.Button(label="🔗 Copy Invite", url=invite_link))
+    return view
+
 # ========= COMMANDS =========
 @tree.command(name="setup_webhook", description="Create or reuse a 'ShadowSyn' webhook in a channel.")
 @app_commands.describe(
@@ -131,9 +152,13 @@ async def setup_webhook(
     except Exception as e:
         await interaction.followup.send(f"❌ Failed: {e}", ephemeral=True)
 
-@tree.command(name="send_welcome", description="Post the ShadowSyn welcome embed to a channel via webhook.")
+@tree.command(name="send_welcome", description="Post the ShadowSyn welcome embed (with buttons) via webhook.")
 @app_commands.describe(
-    channel="Where to post?",
+    channel="Where to post the card?",
+    lobby="Channel for introductions",
+    self_roles="Channel for self-roles",
+    rules="Channel containing your rules",
+    invite_url="Invite link to show on the button (optional)",
     sender_name="Display name for the sender (default: ShadowSyn)",
     sender_avatar_url="Avatar URL for the sender (optional)"
 )
@@ -141,12 +166,18 @@ async def setup_webhook(
 async def send_welcome(
     interaction: discord.Interaction,
     channel: discord.TextChannel,
+    lobby: discord.TextChannel,
+    self_roles: discord.TextChannel,
+    rules: discord.TextChannel,
+    invite_url: Optional[str] = None,
     sender_name: Optional[str] = WEBHOOK_NAME_DEFAULT,
     sender_avatar_url: Optional[str] = WEBHOOK_AVATAR_DEFAULT,
 ):
     await interaction.response.defer(ephemeral=True)
     try:
         hook = await get_or_create_webhook(channel, name=sender_name, avatar_url=sender_avatar_url)
+
+        # Build the embed
         embed = discord.Embed(
             title="Welcome to ShadowSyn",
             description=(
@@ -155,8 +186,8 @@ async def send_welcome(
                 "🎮 **What we play:**\n"
                 "We’re into just about anything FPS or Survival, plus some RTS (and yes — Age of Empires IV is goated) and MMOs.\n\n"
                 "💬 **Your first steps:**\n"
-                "Head over to **#lobby** and introduce yourself — let us know where you came from or what brought you here.\n"
-                "Tag **@Blood** to get your role.\n\n"
+                f"Head over to **{lobby.mention}** and introduce yourself — let us know where you came from or what brought you here.\n"
+                f"Tag **@Blood** to get your role (see {self_roles.mention}).\n\n"
                 "Enjoy your stay! If you have any questions, **@Gravy** will love hearing you yap yap yap."
             ),
             color=0x5865F2
@@ -165,19 +196,29 @@ async def send_welcome(
             embed.set_thumbnail(url=interaction.guild.icon.url)
         embed.set_footer(text="Shadow Syndicate • Welcome")
 
+        # Build URL button row
+        g_id = interaction.guild_id
+        buttons = build_url_buttons(
+            rules_link=jump_url(g_id, rules.id),
+            roles_link=jump_url(g_id, self_roles.id),
+            lobby_link=jump_url(g_id, lobby.id),
+            invite_link=invite_url,
+        )
+
         await hook.send(
             embed=embed,
+            view=buttons,  # URL buttons work fine from webhooks
             username=sender_name or WEBHOOK_NAME_DEFAULT,
             avatar_url=sender_avatar_url or WEBHOOK_AVATAR_DEFAULT,
             allowed_mentions=discord.AllowedMentions.none()
         )
-        await interaction.followup.send(f"✅ Posted welcome embed in {channel.mention}.", ephemeral=True)
+        await interaction.followup.send(f"✅ Posted welcome card with buttons in {channel.mention}.", ephemeral=True)
     except discord.Forbidden as e:
         await interaction.followup.send(f"❌ {e}", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Failed: {e}", ephemeral=True)
 
-@tree.command(name="send_rules", description="Post the rules embed to a channel via webhook.")
+@tree.command(name="send_rules", description="Post the rules embed to a channel via webhook (no callbacks).")
 @app_commands.describe(
     channel="Where to post?",
     sender_name="Display name for the sender (default: ShadowSyn)",
