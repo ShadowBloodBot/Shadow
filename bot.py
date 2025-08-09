@@ -1,637 +1,211 @@
+# bot.py — ShadowSyn Welcome/Embed Bot (guild-scoped + global prune)
+# Env: DISCORD_TOKEN
+
 import os
-import re
-import json
 from typing import Optional
+from urllib.parse import quote_plus
 
 import discord
 from discord import app_commands
-from dotenv import load_dotenv
+from discord.ui import View, Button
 
-# ========= BASIC CONFIG =========
-WEBHOOK_NAME_DEFAULT = "ShadowSyn"
-WEBHOOK_AVATAR_DEFAULT = None  # optional avatar URL
-WEBHOOK_CACHE_FILE = "webhooks.json"
-CONFIG_FILE = "config.json"     # stores defaults for /send_welcome
-
-# ========= ENV =========
-load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-ENV_WEBHOOK_URL = os.getenv("WEB_HOOKWELCOME")  # optional: direct webhook URL
-
 if not TOKEN:
-    raise RuntimeError("Missing DISCORD_TOKEN in environment")
+    raise SystemExit("❌ DISCORD_TOKEN is not set.")
 
-# ========= CLIENT =========
-intents = discord.Intents.default()
-intents.message_content = False
-client = discord.Client(intents=intents)
-tree = app_commands.CommandTree(client)
+# ========= CONFIG =========
+WELCOME_THREAD_ID = 1166874144395247757  # your welcome thread
+DEFAULT_INVITE_URL = "https://discord.gg/shadowsyn"
+THEME_PRIMARY = 0x2B0B35  # blackish‑purple
+THEME_ACCENT  = 0x7A0F2E  # wine‑red
+LOBBY_NAME = "lobby"      # resolves to #lobby mention if it exists
 
-# ========= PERSISTENCE (webhook cache) =========
-# { "<guild_id>": { "<channel_id>": { "url": "https://discord.com/api/webhooks/..." } } }
-def load_cache() -> dict:
-    try:
-        with open(WEBHOOK_CACHE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            # migrate old id/token -> url
-            for g in list(data.keys()):
-                for c in list(data[g].keys()):
-                    entry = data[g][c]
-                    if "url" not in entry and "id" in entry and "token" in entry:
-                        data[g][c] = {"url": f"https://discord.com/api/webhooks/{entry['id']}/{entry['token']}"}
-            return data
-    except FileNotFoundError:
-        return {}
-    except Exception:
-        return {}
-
-def save_cache(cache: dict) -> None:
-    try:
-        with open(WEBHOOK_CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(cache, f, indent=2)
-    except Exception:
-        pass
-
-webhook_cache = load_cache()
-
-def _store_hook(guild_id: int, channel_id: int, url: str):
-    gk, ck = str(guild_id), str(channel_id)
-    webhook_cache.setdefault(gk, {})
-    webhook_cache[gk][ck] = {"url": url}
-    save_cache(webhook_cache)
-
-# ========= CONFIG (defaults for /send_welcome) =========
-def load_cfg():
-    try:
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {}
-
-def save_cfg(cfg: dict):
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2)
-    except Exception:
-        pass
-
-cfg = load_cfg()
 
 # ========= HELPERS =========
-async def get_or_create_webhook(
-    channel: discord.TextChannel,
-    name: str = WEBHOOK_NAME_DEFAULT,
-    avatar_url: Optional[str] = WEBHOOK_AVATAR_DEFAULT,
-) -> discord.Webhook:
-    """Return a usable webhook for the channel, creating if needed. Caches by URL."""
-    gk, ck = str(channel.guild.id), str(channel.id)
-
-    # Try cached
-    if gk in webhook_cache and ck in webhook_cache[gk]:
-        url = webhook_cache[gk][ck].get("url")
-        if url:
-            try:
-                return discord.Webhook.from_url(url, client=client)
-            except Exception:
-                pass  # fall through to repair
-
-    # Try to find existing one by name
-    try:
-        hooks = await channel.webhooks()
-        for h in hooks:
-            if h.name == name and h.token and h.url:
-                _store_hook(channel.guild.id, channel.id, h.url)
-                return discord.Webhook.from_url(h.url, client=client)
-    except discord.Forbidden:
-        raise discord.Forbidden(channel, "I need **Manage Webhooks** in this channel.")
-    except Exception:
-        pass
-
-    # Create new webhook
-    try:
-        hook = await channel.create_webhook(name=name, reason="ShadowSyn embed poster")
-        _store_hook(channel.guild.id, channel.id, hook.url)
-        return discord.Webhook.from_url(hook.url, client=client)
-    except discord.Forbidden:
-        raise discord.Forbidden(channel, "I need **Manage Webhooks** in this channel.")
-    except Exception as e:
-        raise RuntimeError(f"Failed creating webhook: {e}")
-
-def parse_hex_color(value: Optional[str]) -> int:
-    if not value:
-        return 0x2b2d31
-    value = value.strip().lstrip("#")
-    try:
-        return int(value, 16)
-    except ValueError:
-        return 0x2b2d31
-
-def jump_url(guild_id: int, channel_id: int) -> str:
-    return f"https://discord.com/channels/{guild_id}/{channel_id}"
-
-def build_url_buttons(
-    *,
-    rules_link: Optional[str] = None,
-    roles_link: Optional[str] = None,
-    lobby_link: Optional[str] = None,
-    invite_link: Optional[str] = None,
-) -> discord.ui.View:
-    view = discord.ui.View()
-    if rules_link:
-        view.add_item(discord.ui.Button(label="📜 Read Rules", url=rules_link))
-    if roles_link:
-        view.add_item(discord.ui.Button(label="🎭 Get Roles", url=roles_link))
-    if lobby_link:
-        view.add_item(discord.ui.Button(label="💬 Introduce Yourself", url=lobby_link))
-    if invite_link:
-        view.add_item(discord.ui.Button(label="🔗 Copy Invite", url=invite_link))
-    return view
-
-def welcome_embed(guild: Optional[discord.Guild], lobby_mention: str, self_roles_mention: str) -> discord.Embed:
-    embed = discord.Embed(
-        title="Welcome to ShadowSyn",
-        description=(
-            "👋 **Welcome to all our new members!**\n"
-            "We’re thrilled to have you join our community! 🎉\n\n"
-            "🎮 **What we play:**\n"
-            "We’re into just about anything FPS or Survival, plus some RTS (and yes — Age of Empires IV is goated) and MMOs.\n\n"
-            "💬 **Your first steps:**\n"
-            f"Head over to **{lobby_mention}** and introduce yourself — let us know where you came from or what brought you here.\n"
-            f"Tag **@Blood** to get your role (see {self_roles_mention}).\n\n"
-            "Enjoy your stay! If you have any questions, **@Gravy** will love hearing you yap yap yap."
-        ),
-        color=0x5865F2
-    )
-    if guild and guild.icon:
-        embed.set_thumbnail(url=guild.icon.url)
-    embed.set_footer(text="Shadow Syndicate • Welcome")
-    return embed
-
-# ========= THREAD RESOLUTION + AUTOCOMPLETE =========
-THREAD_LINK_RE = re.compile(r"https?://(?:ptb\.|canary\.)?discord\.com/channels/(\d+)/(\d+)/(\d+)")
-
-async def resolve_thread_from_input(guild: discord.Guild, thread_input: str) -> Optional[discord.Thread]:
-    s = (thread_input or "").strip()
-
-    # 1) Full link
-    m = THREAD_LINK_RE.match(s)
-    if m:
-        g_id, parent_id, thread_id = map(int, m.groups())
-        if g_id == guild.id:
-            th = guild.get_thread(thread_id)
-            if th:
-                return th
-
-    # 2) Raw numeric ID
-    if s.isdigit():
-        th = guild.get_thread(int(s))
-        if th:
-            return th
-
-    # 3) Name search: active threads
-    s_low = s.lower()
-    for th in guild.threads:
-        if s_low in th.name.lower():
-            return th
-
-    # 4) Recent archived per text channel
-    for ch in guild.text_channels:
+async def get_thread(bot: discord.Client, thread_id: int) -> Optional[discord.Thread]:
+    ch = bot.get_channel(thread_id)
+    if ch is None:
         try:
-            async for th in ch.archived_threads(limit=50):
-                if s_low in th.name.lower():
-                    return th
+            ch = await bot.fetch_channel(thread_id)
         except Exception:
-            continue
+            return None
+    return ch if isinstance(ch, discord.Thread) else None
 
+def find_text_channel_by_name(guild: discord.Guild, name: str) -> Optional[discord.TextChannel]:
+    n = name.lower().strip()
+    for ch in guild.text_channels:
+        if ch.name.lower() == n:
+            return ch
     return None
 
-# ========= COMMANDS =========
-
-@tree.command(name="setup_webhook", description="Create or reuse a 'ShadowSyn' webhook in a channel.")
-@app_commands.describe(
-    channel="Which channel should the webhook post in?",
-    name="Custom sender name (default: ShadowSyn)",
-    avatar_url="Avatar URL for the sender (optional)"
-)
-@app_commands.checks.has_permissions(manage_guild=True)
-async def setup_webhook(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel,
-    name: Optional[str] = WEBHOOK_NAME_DEFAULT,
-    avatar_url: Optional[str] = WEBHOOK_AVATAR_DEFAULT,
-):
-    await interaction.response.defer(ephemeral=True)
-    try:
-        _ = await get_or_create_webhook(channel, name=name or WEBHOOK_NAME_DEFAULT, avatar_url=avatar_url)
-        await interaction.followup.send(
-            f"✅ Webhook ready in {channel.mention} as **{name or WEBHOOK_NAME_DEFAULT}**.",
-            ephemeral=True
-        )
-    except discord.Forbidden as e:
-        await interaction.followup.send(f"❌ {e}", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Failed: {e}", ephemeral=True)
-
-# ---- SAVE DEFAULTS FOR /send_welcome ----
-@tree.command(name="set_welcome_defaults", description="Save your welcome thread/channel + default links for /send_welcome.")
-@app_commands.describe(
-    welcome_thread="Your welcome thread (preferred).",
-    welcome_channel="If not using a thread, the channel to post in.",
-    lobby="Lobby/introductions channel",
-    self_roles="Self-roles channel",
-    rules="Rules channel",
-    invite_url="Default invite link (optional)"
-)
-@app_commands.checks.has_permissions(manage_guild=True)
-async def set_welcome_defaults(
-    interaction: discord.Interaction,
-    welcome_thread: Optional[discord.Thread] = None,
-    welcome_channel: Optional[discord.TextChannel] = None,
-    lobby: Optional[discord.TextChannel] = None,
-    self_roles: Optional[discord.TextChannel] = None,
-    rules: Optional[discord.TextChannel] = None,
-    invite_url: Optional[str] = None,
-):
-    if not welcome_thread and not welcome_channel:
-        await interaction.response.send_message("❌ Pick a welcome **thread** or a **channel**.", ephemeral=True)
-        return
-
-    cfg.update({
-        "guild_id": interaction.guild_id,
-        "welcome_thread_id": welcome_thread.id if welcome_thread else None,
-        "welcome_channel_id": welcome_channel.id if welcome_channel else None,
-        "lobby_id": lobby.id if lobby else cfg.get("lobby_id"),
-        "self_roles_id": self_roles.id if self_roles else cfg.get("self_roles_id"),
-        "rules_id": rules.id if rules else cfg.get("rules_id"),
-        "invite_url": invite_url if invite_url else cfg.get("invite_url"),
-    })
-    save_cfg(cfg)
-    await interaction.response.send_message("✅ Defaults saved. Now `/send_welcome` works with no inputs.", ephemeral=True)
-
-# ---- /send_welcome uses saved defaults, zero inputs ----
-@tree.command(name="send_welcome", description="Post the welcome embed to your saved welcome thread/channel.")
-@app_commands.describe(
-    lobby="Override lobby (optional)",
-    self_roles="Override self-roles (optional)",
-    rules="Override rules (optional)",
-    invite_url="Override invite link (optional)",
-    sender_name="Override sender name (optional)",
-    sender_avatar_url="Override sender avatar URL (optional)"
-)
-@app_commands.checks.has_permissions(manage_guild=True)
-async def send_welcome(
-    interaction: discord.Interaction,
-    lobby: Optional[discord.TextChannel] = None,
-    self_roles: Optional[discord.TextChannel] = None,
-    rules: Optional[discord.TextChannel] = None,
-    invite_url: Optional[str] = None,
-    sender_name: Optional[str] = None,
-    sender_avatar_url: Optional[str] = None,
-):
-    await interaction.response.defer(ephemeral=True)
-
-    if not cfg.get("welcome_thread_id") and not cfg.get("welcome_channel_id"):
-        await interaction.followup.send("❌ No defaults set. Run `/set_welcome_defaults` once.", ephemeral=True)
-        return
-
-    g = interaction.guild
-    thread = g.get_thread(cfg.get("welcome_thread_id")) if cfg.get("welcome_thread_id") else None
-    channel = g.get_channel(cfg.get("welcome_channel_id")) if cfg.get("welcome_channel_id") else None
-
-    if not thread and not channel:
-        await interaction.followup.send("❌ Saved welcome destination not found. Re-run `/set_welcome_defaults`.", ephemeral=True)
-        return
-
-    lobby = lobby or g.get_channel(cfg.get("lobby_id"))
-    self_roles = self_roles or g.get_channel(cfg.get("self_roles_id"))
-    rules = rules or g.get_channel(cfg.get("rules_id"))
-    invite_url = invite_url or cfg.get("invite_url")
-    sender_name = sender_name or WEBHOOK_NAME_DEFAULT
-    sender_avatar_url = sender_avatar_url or WEBHOOK_AVATAR_DEFAULT
-
-    if not all([lobby, self_roles, rules]):
-        await interaction.followup.send("❌ Missing default lobby/self-roles/rules. Set them via `/set_welcome_defaults`.", ephemeral=True)
-        return
-
-    embed = welcome_embed(g, lobby.mention, self_roles.mention)
-    buttons = build_url_buttons(
-        rules_link=jump_url(g.id, rules.id),
-        roles_link=jump_url(g.id, self_roles.id),
-        lobby_link=jump_url(g.id, lobby.id),
-        invite_link=invite_url,
+def build_welcome_embed(lobby_mention: str) -> discord.Embed:
+    desc = (
+        "👋 **Welcome to all our new members!**\n"
+        "We’re thrilled to have you join our community! 🎉\n\n"
+        "🎮 **What we play:**\n"
+        "We’re into just about anything FPS or Survival, plus some RTS "
+        "(and yes — Age of Empires IV is goated) and MMO's.\n\n"
+        "💬 **Your first steps:**\n\n"
+        f"Head over to {lobby_mention} and introduce yourself — let us know where you came from or what brought you here.\n\n"
+        "Tag **@Blood** to get your role.\n\n"
+        "Enjoy your stay! If you have any questions, **@Gravy** will love hearing you yap yap yap.\n\n"
+        "Don’t be annoying, overly sensitive, or spammy. Avoid @mentioning or DMing people you don’t know, "
+        "and no self-promo unless approved. Keep personal info private and absolutely no vegans, piracy, NSFW, or other shady content. "
+        "Use common sense — it covers the rest.\n\n"
+        "Spread the love by sharing our server invite link\n"
+        f"{DEFAULT_INVITE_URL}\n"
     )
+    embed = discord.Embed(title="Welcome to ShadowSyn", description=desc, color=THEME_PRIMARY)
+    embed.set_footer(text="Be cool. Have fun. Bring friends.")
+    return embed
 
-    if thread:
-        # forum threads cannot use webhooks
-        if isinstance(thread.parent, discord.ForumChannel):
-            await interaction.followup.send("❌ Saved welcome is a *forum* thread (no webhooks). Choose a text thread/channel.", ephemeral=True)
-            return
-        parent = thread.parent  # TextChannel
-        hook = await get_or_create_webhook(parent, name=sender_name, avatar_url=sender_avatar_url)
-        await hook.send(embed=embed, view=buttons, thread=thread,
-                        username=sender_name, avatar_url=sender_avatar_url,
-                        allowed_mentions=discord.AllowedMentions.none())
-    else:
-        hook = await get_or_create_webhook(channel, name=sender_name, avatar_url=sender_avatar_url)
-        await hook.send(embed=embed, view=buttons,
-                        username=sender_name, avatar_url=sender_avatar_url,
-                        allowed_mentions=discord.AllowedMentions.none())
 
-    await interaction.followup.send("✅ Welcome posted to your saved destination.", ephemeral=True)
+# ========= VIEW =========
+class InviteShareView(View):
+    def __init__(self, parent_text_channel: discord.abc.GuildChannel):
+        super().__init__(timeout=None)
+        self.parent_text_channel = parent_text_channel
 
-# ---- Rules embed ----
-@tree.command(name="send_rules", description="Post the rules embed via channel webhook.")
-@app_commands.describe(
-    channel="Where to post?",
-    sender_name="Display name for the sender (default: ShadowSyn)",
-    sender_avatar_url="Avatar URL for the sender (optional)",
-    color_hex="Embed color hex (e.g. #2b2d31)"
-)
-@app_commands.checks.has_permissions(manage_guild=True)
-async def send_rules(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel,
-    sender_name: Optional[str] = WEBHOOK_NAME_DEFAULT,
-    sender_avatar_url: Optional[str] = WEBHOOK_AVATAR_DEFAULT,
-    color_hex: Optional[str] = "#2b2d31"
-):
-    await interaction.response.defer(ephemeral=True)
+        self.add_item(Button(label="📨 Join / Share Invite", url=DEFAULT_INVITE_URL))
+
+        personal = Button(
+            label="🔗 Create Personal Invite (24h, 1 use)",
+            style=discord.ButtonStyle.primary,
+            custom_id="make_personal_invite"
+        )
+        personal.callback = self.make_personal_invite
+        self.add_item(personal)
+
+        share_text = "Join me on ShadowSyn — elite FPS/Survival/MMO community:"
+        tweet = f"https://twitter.com/intent/tweet?text={quote_plus(share_text)}&url={quote_plus(DEFAULT_INVITE_URL)}"
+        self.add_item(Button(label="📣 Share on X", url=tweet))
+
+    async def make_personal_invite(self, interaction: discord.Interaction):
+        try:
+            perms = interaction.user.guild_permissions
+            if not (perms.manage_guild or perms.create_instant_invite):
+                await interaction.response.send_message(
+                    "🚫 You need *Create Invite* or *Manage Server* permission.", ephemeral=True
+                )
+                return
+
+            if isinstance(self.parent_text_channel, (discord.TextChannel, discord.VoiceChannel, discord.ForumChannel)):
+                invite = await self.parent_text_channel.create_invite(
+                    max_age=86400, max_uses=1, unique=True,
+                    reason=f"Personal invite created by {interaction.user}"
+                )
+                await interaction.response.send_message(
+                    f"✅ **Personal Invite (24h / 1 use)**\n{invite.url}", ephemeral=True
+                )
+            else:
+                await interaction.response.send_message("❌ Invalid parent channel for invites.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ I lack permission to create invites here.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed to create invite: `{e}`", ephemeral=True)
+
+
+# ========= BOT =========
+class ShadowSynBot(discord.Client):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.guilds = True
+        super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
+
+    async def setup_hook(self):
+        # We guild-sync on demand via /sync_here so startup stays safe across multiple guilds.
+        await self.tree.sync()  # keep any existing globals in place until we prune
+
+
+bot = ShadowSynBot()
+
+
+# ========= COMMANDS =========
+async def _send_welcome_logic(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
+    thread = await get_thread(bot, WELCOME_THREAD_ID)
+    if thread is None:
+        await interaction.followup.send("❌ I can’t access the configured welcome thread.", ephemeral=True)
+        return
+
+    lobby_ch = find_text_channel_by_name(interaction.guild, LOBBY_NAME) if interaction.guild else None
+    lobby_mention = lobby_ch.mention if lobby_ch else "#lobby"
+
+    embed = build_welcome_embed(lobby_mention)
+
+    parent = thread.parent
+    if not isinstance(parent, (discord.TextChannel, discord.VoiceChannel, discord.ForumChannel)):
+        await interaction.followup.send("❌ The welcome thread’s parent channel is invalid for invites.", ephemeral=True)
+        return
+
+    view = InviteShareView(parent_text_channel=parent)
     try:
-        hook = await get_or_create_webhook(channel, name=sender_name, avatar_url=sender_avatar_url)
-        rules_text = (
-            "Don’t be annoying, overly sensitive, or spammy. Avoid @mentioning or DMing people you don’t know, "
-            "and no self‑promo unless approved. Keep personal info private, skip the hate speech "
-            "(we’re not trying to get the Discord nuked), and absolutely no vegans, piracy, NSFW, or other shady content. "
-            "Use common sense — it covers the rest."
-        )
-        embed = discord.Embed(
-            title="Server Rules",
-            description=rules_text,
-            color=parse_hex_color(color_hex),
-        )
-        embed.set_footer(text="Shadow Syndicate • Rules")
-        await hook.send(
-            embed=embed,
-            username=sender_name or WEBHOOK_NAME_DEFAULT,
-            avatar_url=sender_avatar_url or WEBHOOK_AVATAR_DEFAULT,
-            allowed_mentions=discord.AllowedMentions.none()
-        )
-        await interaction.followup.send(f"✅ Posted rules embed in {channel.mention}.", ephemeral=True)
-    except discord.Forbidden as e:
-        await interaction.followup.send(f"❌ {e}", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Failed: {e}", ephemeral=True)
-
-# ---- Generic channel embed ----
-@tree.command(name="send_embed", description="Post a custom embed via channel webhook.")
-@app_commands.describe(
-    channel="Where to post?",
-    title="Embed title",
-    description="Embed description (supports new lines)",
-    color_hex="Color hex (e.g. #5865F2)",
-    sender_name="Display name for the sender",
-    sender_avatar_url="Avatar URL for the sender (optional)",
-    image_url="Large image URL (optional)",
-    thumbnail_url="Small thumbnail URL (optional)",
-    footer="Footer text (optional)"
-)
-@app_commands.checks.has_permissions(manage_guild=True)
-async def send_embed(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel,
-    title: str,
-    description: str,
-    color_hex: Optional[str] = "#5865F2",
-    sender_name: Optional[str] = WEBHOOK_NAME_DEFAULT,
-    sender_avatar_url: Optional[str] = WEBHOOK_AVATAR_DEFAULT,
-    image_url: Optional[str] = None,
-    thumbnail_url: Optional[str] = None,
-    footer: Optional[str] = None,
-):
-    await interaction.response.defer(ephemeral=True)
-    try:
-        hook = await get_or_create_webhook(channel, name=sender_name, avatar_url=sender_avatar_url)
-        embed = discord.Embed(
-            title=title[:256],
-            description=description[:4000],
-            color=parse_hex_color(color_hex),
-        )
-        if thumbnail_url:
-            embed.set_thumbnail(url=thumbnail_url)
-        if image_url:
-            embed.set_image(url=image_url)
-        if footer:
-            embed.set_footer(text=footer[:2048])
-        await hook.send(
-            embed=embed,
-            username=sender_name or WEBHOOK_NAME_DEFAULT,
-            avatar_url=sender_avatar_url or WEBHOOK_AVATAR_DEFAULT,
-            allowed_mentions=discord.AllowedMentions.none()
-        )
-        await interaction.followup.send(f"✅ Posted embed in {channel.mention}.", ephemeral=True)
-    except discord.Forbidden as e:
-        await interaction.followup.send(f"❌ {e}", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Failed: {e}", ephemeral=True)
-
-# ---- /send_custom to a selected THREAD (string w/ autocomplete + link/ID resolve) ----
-@tree.command(name="send_custom", description="Post a custom embed into a selected thread as ShadowSyn.")
-@app_commands.describe(
-    thread="Pick a thread, paste a thread link, or type to search",
-    title="Embed title",
-    description="Embed description (supports new lines)",
-    color_hex="Color hex (e.g. #5865F2)",
-    sender_name="Display name for the sender (default: ShadowSyn)",
-    sender_avatar_url="Avatar URL for the sender (optional)",
-    image_url="Large image URL (optional)",
-    thumbnail_url="Small thumbnail URL (optional)",
-    footer="Footer text (optional)"
-)
-@app_commands.checks.has_permissions(manage_guild=True)
-async def send_custom(
-    interaction: discord.Interaction,
-    thread: str,
-    title: str,
-    description: str,
-    color_hex: Optional[str] = "#5865F2",
-    sender_name: Optional[str] = WEBHOOK_NAME_DEFAULT,
-    sender_avatar_url: Optional[str] = WEBHOOK_AVATAR_DEFAULT,
-    image_url: Optional[str] = None,
-    thumbnail_url: Optional[str] = None,
-    footer: Optional[str] = None,
-):
-    """Accepts a thread ID/link/name with autocomplete; posts via parent text-channel webhook."""
-    await interaction.response.defer(ephemeral=True)
-    try:
-        g = interaction.guild
-        th = g.get_thread(int(thread)) if thread.isdigit() else await resolve_thread_from_input(g, thread)
-        if not th:
-            await interaction.followup.send("❌ Couldn't find that thread. Pick from suggestions or paste a valid thread link/ID.", ephemeral=True)
-            return
-
-        # webhooks only on text-channel threads
-        if isinstance(th.parent, discord.ForumChannel):
-            await interaction.followup.send("❌ Forum threads don’t support webhooks. Use a thread under a text channel.", ephemeral=True)
-            return
-        if not isinstance(th.parent, discord.TextChannel):
-            await interaction.followup.send("❌ That thread’s parent isn’t a text channel.", ephemeral=True)
-            return
-
-        hook = await get_or_create_webhook(th.parent, name=sender_name, avatar_url=sender_avatar_url)
-
-        embed = discord.Embed(
-            title=title[:256],
-            description=description[:4000],
-            color=parse_hex_color(color_hex),
-        )
-        if thumbnail_url:
-            embed.set_thumbnail(url=thumbnail_url)
-        if image_url:
-            embed.set_image(url=image_url)
-        if footer:
-            embed.set_footer(text=footer[:2048])
-
-        await hook.send(
-            embed=embed,
-            thread=th,
-            username=sender_name or WEBHOOK_NAME_DEFAULT,
-            avatar_url=sender_avatar_url or WEBHOOK_AVATAR_DEFAULT,
-            allowed_mentions=discord.AllowedMentions.none()
-        )
-        await interaction.followup.send(f"✅ Posted embed in thread **#{th.name}**.", ephemeral=True)
-
+        await thread.send(embed=embed, view=view)
+        await interaction.followup.send("✅ Welcome message sent.", ephemeral=True)
     except discord.Forbidden:
-        await interaction.followup.send("❌ I need **Manage Webhooks** in the thread’s parent channel.", ephemeral=True)
+        await interaction.followup.send("❌ I don’t have permission to send in that thread.", ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"❌ Failed: {e}", ephemeral=True)
+        await interaction.followup.send(f"❌ Failed to send welcome message: `{e}`", ephemeral=True)
 
-# ---- Autocomplete for the 'thread' param on /send_custom ----
-@send_custom.autocomplete("thread")
-async def thread_autocomplete(interaction: discord.Interaction, current: str):
-    results = []
-    cur = (current or "").lower()
 
-    # Active threads (up to ~50)
-    for th in interaction.guild.threads[:50]:
-        if not cur or cur in th.name.lower():
-            parent = getattr(th, "parent", None)
-            parent_name = f"#{parent.name}" if isinstance(parent, discord.TextChannel) else "#?"
-            results.append(app_commands.Choice(name=f"{th.name} • {parent_name}", value=str(th.id)))
-        if len(results) >= 22:
-            break
+# GUILD-SCOPED /send_welcome (no options, clean)
+@bot.tree.command(name="send_welcome", description="Post the ShadowSyn welcome embed here (guild-scoped).")
+@app_commands.checks.has_permissions(administrator=True)
+async def send_welcome(interaction: discord.Interaction):
+    await _send_welcome_logic(interaction)
 
-    # Top-up with archived samples from first ~10 text channels
-    if len(results) < 25:
-        for ch in interaction.guild.text_channels[:10]:
+
+@send_welcome.error
+async def send_welcome_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("🚫 Admins only.", ephemeral=True)
+    else:
+        try:
+            await interaction.response.send_message(f"❌ Error: `{error}`", ephemeral=True)
+        except Exception:
+            pass
+
+
+# ===== Admin utilities =====
+@bot.tree.command(name="sync_here", description="Admin: sync slash commands to THIS guild for instant updates.")
+@app_commands.checks.has_permissions(administrator=True)
+async def sync_here(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        await bot.tree.sync(guild=interaction.guild)
+        await interaction.followup.send("✅ Synced commands to this guild.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Sync failed: `{e}`", ephemeral=True)
+
+@bot.tree.command(name="prune_old_commands", description="Admin: delete stale GLOBAL commands named send_welcome/send_custom.")
+@app_commands.checks.has_permissions(administrator=True)
+async def prune_old_commands(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        app_id = bot.application_id or (bot.user and bot.user.id)
+        if not app_id:
+            await interaction.followup.send("❌ Could not determine application_id.", ephemeral=True)
+            return
+
+        # Fetch global commands via HTTP and delete any stale ones
+        globals_list = await bot.http.get_global_commands(app_id)
+        to_del = [c for c in globals_list if c.get("name") in {"send_welcome", "send_custom"}]
+        for c in to_del:
             try:
-                async for th in ch.archived_threads(limit=10):
-                    if not cur or cur in th.name.lower():
-                        results.append(app_commands.Choice(name=f"[archived] {th.name} • #{ch.name}", value=str(th.id)))
-                        if len(results) >= 25:
-                            break
+                await bot.http.delete_global_command(app_id, c["id"])
             except Exception:
-                continue
-            if len(results) >= 25:
-                break
-    return results
+                pass
 
-# ========= ENV WEBHOOK SHORTCUTS =========
-def env_hook() -> discord.Webhook:
-    if not ENV_WEBHOOK_URL:
-        raise RuntimeError("WEB_HOOKWELCOME not set")
-    return discord.Webhook.from_url(ENV_WEBHOOK_URL, client=client)
-
-@tree.command(name="send_welcome_url", description="Post the welcome embed (with buttons) using the WEB_HOOKWELCOME URL.")
-@app_commands.describe(
-    lobby="Channel for introductions",
-    self_roles="Channel for self-roles",
-    rules="Channel containing your rules",
-    invite_url="Invite link to show on the button (optional)"
-)
-@app_commands.checks.has_permissions(manage_guild=True)
-async def send_welcome_url(
-    interaction: discord.Interaction,
-    lobby: discord.TextChannel,
-    self_roles: discord.TextChannel,
-    rules: discord.TextChannel,
-    invite_url: Optional[str] = None,
-):
-    await interaction.response.defer(ephemeral=True)
-    try:
-        hook = env_hook()
-        embed = welcome_embed(interaction.guild, lobby.mention, self_roles.mention)
-        g_id = interaction.guild_id
-        buttons = build_url_buttons(
-            rules_link=jump_url(g_id, rules.id),
-            roles_link=jump_url(g_id, self_roles.id),
-            lobby_link=jump_url(g_id, lobby.id),
-            invite_link=invite_url,
-        )
-        await hook.send(
-            embed=embed,
-            view=buttons,
-            username=WEBHOOK_NAME_DEFAULT,
-            avatar_url=WEBHOOK_AVATAR_DEFAULT,
-            allowed_mentions=discord.AllowedMentions.none()
-        )
-        await interaction.followup.send("✅ Posted welcome card via env webhook.", ephemeral=True)
+        await interaction.followup.send(f"🧹 Pruned {len(to_del)} old global command(s). Use `/sync_here` after if needed.", ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"❌ Failed: {e}", ephemeral=True)
+        await interaction.followup.send(f"❌ Prune failed: `{e}`", ephemeral=True)
 
-@tree.command(name="send_embed_url", description="Post a custom embed using the WEB_HOOKWELCOME URL.")
-@app_commands.describe(
-    title="Embed title",
-    description="Embed description (supports new lines)",
-    color_hex="Color hex (e.g. #5865F2)",
-    image_url="Large image URL (optional)",
-    thumbnail_url="Small thumbnail URL (optional)",
-    footer="Footer text (optional)"
-)
-@app_commands.checks.has_permissions(manage_guild=True)
-async def send_embed_url(
-    interaction: discord.Interaction,
-    title: str,
-    description: str,
-    color_hex: Optional[str] = "#5865F2",
-    image_url: Optional[str] = None,
-    thumbnail_url: Optional[str] = None,
-    footer: Optional[str] = None,
-):
-    await interaction.response.defer(ephemeral=True)
-    try:
-        hook = env_hook()
-        embed = discord.Embed(
-            title=title[:256],
-            description=description[:4000],
-            color=parse_hex_color(color_hex),
-        )
-        if thumbnail_url:
-            embed.set_thumbnail(url=thumbnail_url)
-        if image_url:
-            embed.set_image(url=image_url)
-        if footer:
-            embed.set_footer(text=footer[:2048])
 
-        await hook.send(
-            embed=embed,
-            username=WEBHOOK_NAME_DEFAULT,
-            avatar_url=WEBHOOK_AVATAR_DEFAULT,
-            allowed_mentions=discord.AllowedMentions.none()
-        )
-        await interaction.followup.send("✅ Posted embed via env webhook.", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Failed: {e}", ephemeral=True)
+# ========= RUN =========
+def main():
+    bot.run(TOKEN)
 
-# ========= STARTUP =========
-@client.event
-async def on_ready():
-    try:
-        await tree.sync()
-        print(f"Synced {len(tree.get_commands())} slash commands.")
-    except Exception as e:
-        print(f"Command sync failed: {e}")
-    print(f"Logged in as {client.user} (ID: {client.user.id})")
-
-client.run(TOKEN)
+if __name__ == "__main__":
+    main()
