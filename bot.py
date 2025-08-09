@@ -327,7 +327,6 @@ async def send_embed(
     footer="Footer text (optional)"
 )
 @app_commands.checks.has_permissions(manage_guild=True)
-@app_commands.allowed_installs(dm_permissions=False)
 async def send_custom(
     interaction: discord.Interaction,
     thread: discord.Thread,
@@ -340,19 +339,14 @@ async def send_custom(
     thumbnail_url: Optional[str] = None,
     footer: Optional[str] = None,
 ):
-    """
-    Posts via a webhook created on the thread's PARENT channel,
-    but targets the selected thread. This preserves the ShadowSyn sender.
-    """
+    """Posts via a webhook created on the thread's parent channel, targeting the thread."""
     await interaction.response.defer(ephemeral=True)
     try:
-        if not isinstance(thread.parent, discord.TextChannel) and not isinstance(thread.parent, discord.ForumChannel):
+        if not isinstance(thread.parent, (discord.TextChannel, discord.ForumChannel)):
             await interaction.followup.send("❌ That thread has no standard text parent. Pick another.", ephemeral=True)
             return
 
-        # For forum threads, the parent where webhooks live is the forum channel itself
-        parent_channel = thread.parent if isinstance(thread.parent, discord.TextChannel) else thread.parent
-
+        parent_channel = thread.parent  # where webhooks live
         hook = await get_or_create_webhook(parent_channel, name=sender_name, avatar_url=sender_avatar_url)
 
         embed = discord.Embed(
@@ -367,10 +361,9 @@ async def send_custom(
         if footer:
             embed.set_footer(text=footer[:2048])
 
-        # Send to the specific thread
         await hook.send(
             embed=embed,
-            thread=thread,  # key line: target the thread
+            thread=thread,  # target the selected thread
             username=sender_name or WEBHOOK_NAME_DEFAULT,
             avatar_url=sender_avatar_url or WEBHOOK_AVATAR_DEFAULT,
             allowed_mentions=discord.AllowedMentions.none()
