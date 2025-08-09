@@ -1,10 +1,11 @@
-# bot.py — ShadowSyn Welcome + Custom Embed Bot (modal-based multiline message)
+# bot.py — ShadowSyn Welcome + Custom Embed Bot (Preview Flow)
 # Env: DISCORD_TOKEN
 
 import os
 import json
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, Dict
+from uuid import uuid4
 
 import discord
 from discord import app_commands
@@ -22,7 +23,7 @@ LOBBY_NAME = "lobby"
 
 # ====== PERSISTED CONFIG ======
 CONFIG_PATH = Path("welcome_config.json")
-DEFAULT_TARGET_ID = 1166874144395247757  # your initial welcome thread
+DEFAULT_TARGET_ID = 1166874144395247757  # initial welcome thread
 
 def load_config() -> dict:
     if CONFIG_PATH.exists():
@@ -44,12 +45,7 @@ config = load_config()
 async def resolve_target(
     bot: discord.Client, target_id: int
 ) -> Tuple[Optional[discord.abc.Messageable], Optional[discord.abc.GuildChannel]]:
-    """
-    Returns (messageable_target, parent_text_channel_for_invites).
-    - If TextChannel: (channel, channel)
-    - If Thread: auto-unarchive/join, return (thread, thread.parent)
-    - Else: (None, None)
-    """
+    """Returns (messageable_target, parent_text_channel_for_invites)."""
     ch = bot.get_channel(target_id)
     if ch is None:
         try:
@@ -131,6 +127,127 @@ class InviteFriendsView(View):
             except Exception:
                 pass
 
+# ====== PREVIEW STATE ======
+# In-memory preview store: key -> {guild_id, user_id, target_id, title, message}
+PREVIEW_STORE: Dict[str, Dict] = {}
+
+def make_embed(title: str, message: str) -> discord.Embed:
+    embed = discord.Embed(title=title[:256], description=message[:4096], color=THEME_PRIMARY)
+    embed.set_footer(text="ShadowSyn")
+    return embed
+
+class CustomPreviewView(View):
+    def __init__(self, key: str):
+        super().__init__(timeout=300)
+        self.key = key
+
+        self.post_btn = Button(label="✅ Post", style=discord.ButtonStyle.success, custom_id=f"post:{key}")
+        self.edit_btn = Button(label="✏️ Edit", style=discord.ButtonStyle.primary, custom_id=f"edit:{key}")
+        self.cancel_btn = Button(label="🗑️ Cancel", style=discord.ButtonStyle.danger, custom_id=f"cancel:{key}")
+
+        self.post_btn.callback = self.post
+        self.edit_btn.callback = self.edit
+        self.cancel_btn.callback = self.cancel
+
+        self.add_item(self.post_btn)
+        self.add_item(self.edit_btn)
+        self.add_item(self.cancel_btn)
+
+    async def post(self, interaction: discord.Interaction):
+        data = PREVIEW_STORE.get(self.key)
+        if not data or data.get("user_id") != interaction.user.id:
+            await interaction.response.send_message("❌ Preview expired. Please run `/send_custom` again.", ephemeral=True)
+            return
+
+        target_obj, _ = await resolve_target(interaction.client, data["target_id"])
+        if not target_obj:
+            await interaction.response.send_message("❌ I can’t access that channel/thread anymore.", ephemeral=True)
+            return
+
+        try:
+            await target_obj.send(embed=make_embed(data["title"], data["message"]))
+            await interaction.response.edit_message(content="✅ Posted.", view=None, embed=None)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ I don’t have permission to send there.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed to post: `{e}`", ephemeral=True)
+        finally:
+            PREVIEW_STORE.pop(self.key, None)
+
+    async def edit(self, interaction: discord.Interaction):
+        data = PREVIEW_STORE.get(self.key)
+        if not data or data.get("user_id") != interaction.user.id:
+            await interaction.response.send_message("❌ Preview expired. Please run `/send_custom` again.", ephemeral=True)
+            return
+
+        # Open modal prefilled
+        try:
+            await interaction.response.send_modal(CustomEmbedModal(
+                key=self.key,
+                target_id=data["target_id"],
+                title_default=data["title"],
+                message_default=data["message"]
+            ))
+        except Exception as e:
+            await interaction.followup.send(f"❌ Could not open modal: `{e}`", ephemeral=True)
+
+    async def cancel(self, interaction: discord.Interaction):
+        PREVIEW_STORE.pop(self.key, None)
+        try:
+            await interaction.response.edit_message(content="❎ Cancelled.", view=None, embed=None)
+        except Exception:
+            try:
+                await interaction.followup.send("❎ Cancelled.", ephemeral=True)
+            except Exception:
+                pass
+
+class CustomEmbedModal(Modal, title="Send Custom Embed"):
+    def __init__(self, key: Optional[str], target_id: int, title_default: str = "", message_default: str = ""):
+        super().__init__(timeout=300)
+        self.key = key or str(uuid4())
+        self.target_id = target_id
+
+        self.title_input = TextInput(
+            label="Title",
+            placeholder="Embed title",
+            default=title_default[:256],
+            max_length=256,
+            required=True
+        )
+        self.message_input = TextInput(
+            label="Message",
+            placeholder="Type your embed message. Use Shift+Enter for new lines.",
+            style=discord.TextStyle.paragraph,
+            default=message_default[:4000] if message_default else None,
+            max_length=4000,
+            required=True
+        )
+
+        self.add_item(self.title_input)
+        self.add_item(self.message_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # Cache preview
+        PREVIEW_STORE[self.key] = {
+            "guild_id": interaction.guild_id,
+            "user_id": interaction.user.id,
+            "target_id": self.target_id,
+            "title": str(self.title_input.value),
+            "message": str(self.message_input.value),
+        }
+
+        # Show preview with buttons
+        embed = make_embed(PREVIEW_STORE[self.key]["title"], PREVIEW_STORE[self.key]["message"])
+        view = CustomPreviewView(self.key)
+
+        # Send or update ephemeral preview
+        try:
+            await interaction.response.send_message("👀 **Preview** — Post when ready.", embed=embed, view=view, ephemeral=True)
+        except discord.InteractionResponded:
+            await interaction.followup.send("👀 **Preview** — Post when ready.", embed=embed, view=view, ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Could not show preview: `{e}`", ephemeral=True)
+
 # ====== BOT CORE ======
 class ShadowSynBot(discord.Client):
     def __init__(self):
@@ -198,61 +315,11 @@ async def set_welcome_target(interaction: discord.Interaction):
     kind = "thread" if isinstance(ch, discord.Thread) else "channel"
     await interaction.followup.send(f"✅ Set welcome target to this {kind}: **#{ch.name}** (`{ch.id}`).", ephemeral=True)
 
-# ====== CUSTOM EMBED (MODAL FOR MULTILINE) ======
-class CustomEmbedModal(Modal, title="Send Custom Embed"):
-    def __init__(self, target: Union[discord.TextChannel, discord.Thread], embed_title: str):
-        super().__init__(timeout=300)
-        self.target = target
-        self.embed_title = embed_title[:256]
-
-        # Paragraph input allows Shift+Enter newlines and big messages (up to 4000 chars)
-        self.message_input = TextInput(
-            label="Message",
-            placeholder="Type your embed message here. Use Shift+Enter for new lines.",
-            style=discord.TextStyle.paragraph,
-            max_length=4000,
-            required=True
-        )
-        self.add_item(self.message_input)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        # Ensure threads are usable
-        messageable: Optional[discord.abc.Messageable] = None
-        if isinstance(self.target, discord.Thread):
-            try:
-                if self.target.archived:
-                    await self.target.edit(archived=False)
-            except Exception:
-                pass
-            try:
-                await self.target.join()
-            except Exception:
-                pass
-            messageable = self.target
-        elif isinstance(self.target, discord.TextChannel):
-            messageable = self.target
-
-        if messageable is None:
-            await interaction.response.send_message("❌ Invalid target.", ephemeral=True)
-            return
-
-        # Preserve exact newlines from modal textarea
-        body = str(self.message_input.value)
-
-        embed = discord.Embed(title=self.embed_title, description=body, color=THEME_PRIMARY)
-        embed.set_footer(text="ShadowSyn")
-        try:
-            await messageable.send(embed=embed)
-            where = f"#{getattr(self.target, 'name', 'thread')}"
-            await interaction.response.send_message(f"✅ Custom embed sent to **{where}**.", ephemeral=True)
-        except discord.Forbidden:
-            await interaction.response.send_message("❌ I don’t have permission to send there.", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Failed to send: `{e}`", ephemeral=True)
-
-async def open_custom_modal(interaction: discord.Interaction, target: Union[discord.TextChannel, discord.Thread], title: str):
+# ====== CUSTOM EMBED (PREVIEW FLOW) ======
+async def start_custom_flow(interaction: discord.Interaction, target: Union[discord.TextChannel, discord.Thread]):
+    # Open modal for Title + Message
     try:
-        await interaction.response.send_modal(CustomEmbedModal(target=target, embed_title=title))
+        await interaction.response.send_modal(CustomEmbedModal(key=None, target_id=target.id))
     except Exception as e:
         try:
             await interaction.followup.send(f"❌ Could not open modal: `{e}`", ephemeral=True)
@@ -261,39 +328,41 @@ async def open_custom_modal(interaction: discord.Interaction, target: Union[disc
 
 @bot.tree.command(
     name="send_custom",
-    description="Post a custom embed to a selected text channel or thread (with multiline message modal)."
+    description="Post a custom embed to a selected text channel or thread (with preview)."
 )
-@app_commands.describe(
-    target="Choose a text channel or thread",
-    title="Embed title"
-)
+@app_commands.describe(target="Choose a text channel or thread")
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.guild_only()
 async def send_custom(
     interaction: discord.Interaction,
     target: Union[discord.TextChannel, discord.Thread],
-    title: str
 ):
-    await open_custom_modal(interaction, target, title)
+    await start_custom_flow(interaction, target)
 
 @bot.tree.command(
     name="send_custome",
-    description="(Alias) Post a custom embed to a selected text channel or thread (multiline modal)."
+    description="(Alias) Post a custom embed to a selected text channel or thread (with preview)."
 )
-@app_commands.describe(
-    target="Choose a text channel or thread",
-    title="Embed title"
-)
+@app_commands.describe(target="Choose a text channel or thread")
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.guild_only()
 async def send_custome(
     interaction: discord.Interaction,
     target: Union[discord.TextChannel, discord.Thread],
-    title: str
 ):
-    await open_custom_modal(interaction, target, title)
+    await start_custom_flow(interaction, target)
 
-# ====== OPTIONAL CLEANUP ======
+# ===== Admin utilities =====
+@bot.tree.command(name="sync_here", description="Admin: sync all slash commands to this guild for instant use.")
+@app_commands.checks.has_permissions(administrator=True)
+async def sync_here(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        await bot.tree.sync(guild=interaction.guild)
+        await interaction.followup.send("✅ Commands synced to this guild.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Sync failed: `{e}`", ephemeral=True)
+
 @bot.tree.command(name="prune_old_commands", description="Admin: delete stale GLOBAL commands named send_welcome/send_custom.")
 @app_commands.checks.has_permissions(administrator=True)
 async def prune_old_commands(interaction: discord.Interaction):
