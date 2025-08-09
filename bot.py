@@ -1,4 +1,4 @@
-# bot.py — ShadowSyn Welcome + Custom Embed Bot (Preview Flow)
+# bot.py — ShadowSyn Welcome + Custom Embed Bot (persistent Invite button + preview flow)
 # Env: DISCORD_TOKEN
 
 import os
@@ -102,13 +102,16 @@ def build_welcome_embed(lobby_mention: str) -> discord.Embed:
     return embed
 
 # ====== VIEWS ======
+INVITE_BTN_ID = "invite_friends_ephemeral"
+
 class InviteFriendsView(View):
     def __init__(self):
+        # timeout=None => eligible for persistent registration
         super().__init__(timeout=None)
         btn = Button(
             label="Invite Friends",
             style=discord.ButtonStyle.primary,
-            custom_id="invite_friends_ephemeral"
+            custom_id=INVITE_BTN_ID
         )
         btn.callback = self.send_invite_ephemeral
         self.add_item(btn)
@@ -121,6 +124,11 @@ class InviteFriendsView(View):
                 "_Tip: Clicking this link in Discord opens the native **Invite Friends** panel._"
             )
             await interaction.response.send_message(text, ephemeral=True)
+        except discord.InteractionResponded:
+            try:
+                await interaction.followup.send(text, ephemeral=True)
+            except Exception:
+                pass
         except Exception:
             try:
                 await interaction.followup.send(f"Here’s the invite: {VANITY_INVITE}", ephemeral=True)
@@ -180,7 +188,6 @@ class CustomPreviewView(View):
             await interaction.response.send_message("❌ Preview expired. Please run `/send_custom` again.", ephemeral=True)
             return
 
-        # Open modal prefilled
         try:
             await interaction.response.send_modal(CustomEmbedModal(
                 key=self.key,
@@ -236,11 +243,9 @@ class CustomEmbedModal(Modal, title="Send Custom Embed"):
             "message": str(self.message_input.value),
         }
 
-        # Show preview with buttons
         embed = make_embed(PREVIEW_STORE[self.key]["title"], PREVIEW_STORE[self.key]["message"])
         view = CustomPreviewView(self.key)
 
-        # Send or update ephemeral preview
         try:
             await interaction.response.send_message("👀 **Preview** — Post when ready.", embed=embed, view=view, ephemeral=True)
         except discord.InteractionResponded:
@@ -257,6 +262,8 @@ class ShadowSynBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
+        # Register persistent views so buttons work across restarts
+        self.add_view(InviteFriendsView())
         await self.tree.sync()
 
 bot = ShadowSynBot()
@@ -266,7 +273,7 @@ async def send_welcome_impl(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
 
     target_id = int(config.get("welcome_target_id") or DEFAULT_TARGET_ID)
-    target, parent = await resolve_target(bot, target_id)
+    target, _ = await resolve_target(bot, target_id)
     if target is None:
         await interaction.followup.send(
             "❌ I can’t access the configured welcome target. "
@@ -317,7 +324,6 @@ async def set_welcome_target(interaction: discord.Interaction):
 
 # ====== CUSTOM EMBED (PREVIEW FLOW) ======
 async def start_custom_flow(interaction: discord.Interaction, target: Union[discord.TextChannel, discord.Thread]):
-    # Open modal for Title + Message
     try:
         await interaction.response.send_modal(CustomEmbedModal(key=None, target_id=target.id))
     except Exception as e:
