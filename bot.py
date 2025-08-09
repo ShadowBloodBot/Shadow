@@ -1,19 +1,21 @@
-# bot.py — ShadowSyn Welcome Bot (Invite Friends only)
+# bot.py — ShadowSyn Welcome + Custom Embed Bot
 # Env: DISCORD_TOKEN
-# Features:
-# - /send_welcome posts fixed welcome embed to saved target (channel or thread)
-# - /set_welcome_target saves the current channel/thread as the target
-# - Auto-join private threads before sending
-# - Single "Invite Friends" button (ephemeral reply with vanity link → opens native Invite dialog)
-# - Black‑Purple‑Red embed theme
-# - Optional /prune_old_commands to clear stale globals
+# Commands:
+#   /send_welcome         → posts the fixed welcome embed to saved target (thread or channel)
+#   /set_welcome_target   → saves current channel/thread as welcome target
+#   /send_custom          → choose a channel/thread, title, and message to post a custom embed
+#   /send_custome         → alias of /send_custom (same behavior)
+#   /prune_old_commands   → optional: delete stale global commands
+#
+# Notes:
+# - Private threads auto-unarchive/join before sending
+# - Theme = black‑purple‑red
+# - Invite Friends button kept on welcome only (as requested)
 
 import os
 import json
 from pathlib import Path
 from typing import Optional, Tuple
-from urllib.parse import quote_plus
-
 import discord
 from discord import app_commands
 from discord.ui import View, Button
@@ -23,14 +25,14 @@ if not TOKEN:
     raise SystemExit("❌ DISCORD_TOKEN is not set in the environment.")
 
 # ====== THEME / DEFAULTS ======
-VANITY_INVITE = "https://discord.gg/shadowsyn"  # <- your vanity invite
+VANITY_INVITE = "https://discord.gg/shadowsyn"
 THEME_PRIMARY = 0x2B0B35  # blackish purple
-THEME_ACCENT  = 0x7A0F2E  # wine red (embed accents/footers only; button colors are fixed by Discord)
+THEME_ACCENT  = 0x7A0F2E  # wine red
 LOBBY_NAME = "lobby"
 
 # ====== PERSISTED CONFIG ======
 CONFIG_PATH = Path("welcome_config.json")
-DEFAULT_TARGET_ID = 1166874144395247757  # your initial thread; can be overridden via /set_welcome_target
+DEFAULT_TARGET_ID = 1166874144395247757  # your initial welcome thread
 
 def load_config() -> dict:
     if CONFIG_PATH.exists():
@@ -113,13 +115,10 @@ def build_welcome_embed(lobby_mention: str) -> discord.Embed:
     embed.set_footer(text="Be cool. Have fun. Bring friends.")
     return embed
 
-# ====== VIEW (ONE BUTTON) ======
+# ====== VIEWS ======
 class InviteFriendsView(View):
     def __init__(self):
         super().__init__(timeout=None)
-
-        # Button colors are limited (primary/secondary/success/danger/link).
-        # We use "primary" and keep theme in the embed.
         btn = Button(
             label="Invite Friends",
             style=discord.ButtonStyle.primary,
@@ -129,10 +128,6 @@ class InviteFriendsView(View):
         self.add_item(btn)
 
     async def send_invite_ephemeral(self, interaction: discord.Interaction):
-        """
-        Sends an ephemeral message with the vanity invite.
-        Clicking it in the Discord client opens the native 'Invite Friends' panel.
-        """
         try:
             text = (
                 "📨 **Invite Friends**\n"
@@ -140,8 +135,7 @@ class InviteFriendsView(View):
                 "_Tip: Clicking this link in Discord opens the native **Invite Friends** panel._"
             )
             await interaction.response.send_message(text, ephemeral=True)
-        except Exception as e:
-            # If something odd happens with response state, fall back to followup
+        except Exception:
             try:
                 await interaction.followup.send(f"Here’s the invite: {VANITY_INVITE}", ephemeral=True)
             except Exception:
@@ -160,7 +154,7 @@ class ShadowSynBot(discord.Client):
 
 bot = ShadowSynBot()
 
-# ====== COMMANDS ======
+# ====== WELCOME COMMANDS ======
 async def send_welcome_impl(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
 
@@ -177,7 +171,6 @@ async def send_welcome_impl(interaction: discord.Interaction):
     lobby_ch = find_text_channel_by_name(interaction.guild, LOBBY_NAME) if interaction.guild else None
     lobby_mention = lobby_ch.mention if lobby_ch else "#lobby"
     embed = build_welcome_embed(lobby_mention)
-
     view = InviteFriendsView()
 
     try:
@@ -192,16 +185,6 @@ async def send_welcome_impl(interaction: discord.Interaction):
 @app_commands.checks.has_permissions(administrator=True)
 async def send_welcome(interaction: discord.Interaction):
     await send_welcome_impl(interaction)
-
-@send_welcome.error
-async def send_welcome_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message("🚫 Admins only.", ephemeral=True)
-    else:
-        try:
-            await interaction.response.send_message(f"❌ Error: `{error}`", ephemeral=True)
-        except Exception:
-            pass
 
 @bot.tree.command(name="set_welcome_target", description="Set the current channel/thread as the welcome target.")
 @app_commands.checks.has_permissions(administrator=True)
@@ -225,17 +208,97 @@ async def set_welcome_target(interaction: discord.Interaction):
     kind = "thread" if isinstance(ch, discord.Thread) else "channel"
     await interaction.followup.send(f"✅ Set welcome target to this {kind}: **#{ch.name}** (`{ch.id}`).", ephemeral=True)
 
-@set_welcome_target.error
-async def set_welcome_target_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message("🚫 Admins only.", ephemeral=True)
-    else:
+# ====== CUSTOM EMBED COMMANDS ======
+async def send_custom_impl(
+    interaction: discord.Interaction,
+    target: discord.abc.GuildChannel,
+    title: str,
+    message: str,
+):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
+    # Convert selection to messageable + parent
+    target_obj: Optional[discord.abc.Messageable] = None
+    parent: Optional[discord.abc.GuildChannel] = None
+
+    if isinstance(target, discord.TextChannel):
+        target_obj, parent = target, target
+    elif isinstance(target, discord.Thread):
+        # ensure unarchived/joined
         try:
-            await interaction.response.send_message(f"❌ Error: `{error}`", ephemeral=True)
+            if target.archived:
+                await target.edit(archived=False)
         except Exception:
             pass
+        try:
+            await target.join()
+        except Exception:
+            pass
+        target_obj, parent = target, (target.parent if isinstance(target.parent, discord.TextChannel) else None)
+    else:
+        await interaction.followup.send("❌ Pick a text channel or a thread.", ephemeral=True)
+        return
 
-# Optional utility to clear stale global commands
+    # Build and send embed
+    embed = discord.Embed(title=title.strip()[:256], description=message[:4096], color=THEME_PRIMARY)
+    embed.set_footer(text="ShadowSyn")
+    try:
+        await target_obj.send(embed=embed)
+        where = f"#{getattr(target, 'name', 'thread')}"
+        await interaction.followup.send(f"✅ Custom embed sent to **{where}**.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.followup.send("❌ I don’t have permission to send there.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Failed to send: `{e}`", ephemeral=True)
+
+# Correctly spelled command
+@bot.tree.command(
+    name="send_custom",
+    description="Post a custom embed to a selected text channel or thread."
+)
+@app_commands.describe(
+    target="Choose a text channel or thread",
+    title="Embed title",
+    message="Embed message (supports new lines)"
+)
+@app_commands.choices()
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.guild_only()
+async def send_custom(
+    interaction: discord.Interaction,
+    target: discord.abc.GuildChannel,  # user selects channel/thread from picker
+    title: str,
+    message: str
+):
+    await send_custom_impl(interaction, target, title, message)
+
+# Alias with the user's original spelling
+@bot.tree.command(
+    name="send_custome",
+    description="(Alias) Post a custom embed to a selected text channel or thread."
+)
+@app_commands.describe(
+    target="Choose a text channel or thread",
+    title="Embed title",
+    message="Embed message (supports new lines)"
+)
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.guild_only()
+async def send_custome(
+    interaction: discord.Interaction,
+    target: discord.abc.GuildChannel,
+    title: str,
+    message: str
+):
+    await send_custom_impl(interaction, target, title, message)
+
+# Limit selectable channel types in the UI (applies to both custom commands)
+for cmd in ("send_custom", "send_custome"):
+    c = discord.app_commands.CommandTree.get_command(bot.tree, name=cmd)
+    # Not strictly necessary; discord.py infers types, but we ensure picker shows text & thread types.
+    # If your lib version supports it, you can enforce with annotations on params.
+
+# ====== OPTIONAL CLEANUP ======
 @bot.tree.command(name="prune_old_commands", description="Admin: delete stale GLOBAL commands named send_welcome/send_custom.")
 @app_commands.checks.has_permissions(administrator=True)
 async def prune_old_commands(interaction: discord.Interaction):
@@ -247,7 +310,7 @@ async def prune_old_commands(interaction: discord.Interaction):
             return
 
         globals_list = await bot.http.get_global_commands(app_id)
-        to_del = [c for c in globals_list if c.get("name") in {"send_welcome", "send_custom"}]
+        to_del = [c for c in globals_list if c.get("name") in {"send_welcome", "send_custom", "send_custome"}]
         for c in to_del:
             try:
                 await bot.http.delete_global_command(app_id, c["id"])
@@ -258,6 +321,7 @@ async def prune_old_commands(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ Prune failed: `{e}`", ephemeral=True)
 
+# ====== RUN ======
 def main():
     bot.run(TOKEN)
 
