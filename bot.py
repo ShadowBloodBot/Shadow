@@ -1,6 +1,5 @@
 import os
 import json
-import asyncio
 from typing import Optional
 
 import discord
@@ -9,7 +8,7 @@ from dotenv import load_dotenv
 
 # ========= CONFIG =========
 WEBHOOK_NAME_DEFAULT = "ShadowSyn"
-WEBHOOK_AVATAR_DEFAULT = None  # You can set a default avatar URL here if you want
+WEBHOOK_AVATAR_DEFAULT = None  # optional avatar URL
 WEBHOOK_CACHE_FILE = "webhooks.json"
 
 # ========= ENV =========
@@ -24,10 +23,19 @@ client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
 # ========= PERSISTENCE (webhook cache) =========
+# Cache format:
+# { "<guild_id>": { "<channel_id>": { "url": "https://discord.com/api/webhooks/..." } } }
 def load_cache() -> dict:
     try:
         with open(WEBHOOK_CACHE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            # migrate older id/token format to url-if-present (ignore if missing)
+            for g in list(data.keys()):
+                for c in list(data[g].keys()):
+                    entry = data[g][c]
+                    if "url" not in entry and "id" in entry and "token" in entry:
+                        data[g][c] = {"url": f"https://discord.com/api/webhooks/{entry['id']}/{entry['token']}"}
+            return data
     except FileNotFoundError:
         return {}
     except Exception:
@@ -40,7 +48,13 @@ def save_cache(cache: dict) -> None:
     except Exception:
         pass
 
-webhook_cache = load_cache()  # {guild_id: {channel_id: {"id": int, "token": str}}}
+webhook_cache = load_cache()
+
+def _store_hook(guild_id: int, channel_id: int, url: str):
+    gk, ck = str(guild_id), str(channel_id)
+    webhook_cache.setdefault(gk, {})
+    webhook_cache[gk][ck] = {"url": url}
+    save_cache(webhook_cache)
 
 # ========= HELPERS =========
 async def get_or_create_webhook(
@@ -48,62 +62,43 @@ async def get_or_create_webhook(
     name: str = WEBHOOK_NAME_DEFAULT,
     avatar_url: Optional[str] = WEBHOOK_AVATAR_DEFAULT,
 ) -> discord.Webhook:
-    """Return a usable webhook for the channel, creating if needed. Caches id/token."""
-    guild_key = str(channel.guild.id)
-    chan_key = str(channel.id)
+    """Return a usable webhook for the channel, creating if needed. Caches by URL."""
+    gk, ck = str(channel.guild.id), str(channel.id)
 
-    # Use cached webhook if it still exists
-    if guild_key in webhook_cache and chan_key in webhook_cache[guild_key]:
-        data = webhook_cache[guild_key][chan_key]
-        try:
-            return discord.Webhook.from_url(
-                f"https://discord.com/api/webhooks/{data['id']}/{data['token']}",
-                session=client.http._HTTPClient__session  # reuse internal session
-            )
-        except Exception:
-            # Fall through to re-create if token invalid
-            pass
+    # Try cached
+    if gk in webhook_cache and ck in webhook_cache[gk]:
+        url = webhook_cache[gk][ck].get("url")
+        if url:
+            try:
+                return discord.Webhook.from_url(url)
+            except Exception:
+                pass  # fall through to repair
 
-    # Otherwise, try to find existing one by name
+    # Try to find existing one by name
     try:
         hooks = await channel.webhooks()
         for h in hooks:
-            if h.name == name and h.token:
-                _store_hook(channel.guild.id, channel.id, h)
-                return discord.Webhook.from_url(
-                    h.url, session=client.http._HTTPClient__session
-                )
+            if h.name == name and h.token and h.url:
+                _store_hook(channel.guild.id, channel.id, h.url)
+                return discord.Webhook.from_url(h.url)
     except discord.Forbidden:
         raise discord.Forbidden(channel, "I need **Manage Webhooks** in this channel.")
     except Exception:
         pass
 
-    # Create a new webhook
+    # Create new webhook
     try:
-        avatar_bytes = None
-        if avatar_url:
-            # discord.py will fetch avatar image if we pass bytes; keep it simple and omit.
-            # Many servers prefer setting avatar later; name is enough for now.
-            pass
         hook = await channel.create_webhook(name=name, reason="ShadowSyn embed poster")
+        _store_hook(channel.guild.id, channel.id, hook.url)
+        return discord.Webhook.from_url(hook.url)
     except discord.Forbidden:
         raise discord.Forbidden(channel, "I need **Manage Webhooks** in this channel.")
     except Exception as e:
         raise RuntimeError(f"Failed creating webhook: {e}")
 
-    _store_hook(channel.guild.id, channel.id, hook)
-    return discord.Webhook.from_url(hook.url, session=client.http._HTTPClient__session)
-
-def _store_hook(guild_id: int, channel_id: int, hook: discord.Webhook | discord.PartialWebhook | discord.Webhook):
-    guild_key = str(guild_id)
-    chan_key = str(channel_id)
-    webhook_cache.setdefault(guild_key, {})
-    webhook_cache[guild_key][chan_key] = {"id": hook.id, "token": hook.token}
-    save_cache(webhook_cache)
-
 def parse_hex_color(value: Optional[str]) -> int:
     if not value:
-        return 0x2b2d31  # Discord dark-ish default
+        return 0x2b2d31
     value = value.strip().lstrip("#")
     try:
         return int(value, 16)
@@ -126,7 +121,7 @@ async def setup_webhook(
 ):
     await interaction.response.defer(ephemeral=True)
     try:
-        hook = await get_or_create_webhook(channel, name=name or WEBHOOK_NAME_DEFAULT, avatar_url=avatar_url)
+        _ = await get_or_create_webhook(channel, name=name or WEBHOOK_NAME_DEFAULT, avatar_url=avatar_url)
         await interaction.followup.send(
             f"✅ Webhook ready in {channel.mention} as **{name or WEBHOOK_NAME_DEFAULT}**.",
             ephemeral=True
@@ -152,7 +147,6 @@ async def send_welcome(
     await interaction.response.defer(ephemeral=True)
     try:
         hook = await get_or_create_webhook(channel, name=sender_name, avatar_url=sender_avatar_url)
-
         embed = discord.Embed(
             title="Welcome to ShadowSyn",
             description=(
@@ -167,8 +161,9 @@ async def send_welcome(
             ),
             color=0x5865F2
         )
+        if interaction.guild and interaction.guild.icon:
+            embed.set_thumbnail(url=interaction.guild.icon.url)
         embed.set_footer(text="Shadow Syndicate • Welcome")
-        embed.set_thumbnail(url=interaction.guild.icon.url if interaction.guild and interaction.guild.icon else discord.Embed.Empty)
 
         await hook.send(
             embed=embed,
@@ -177,7 +172,6 @@ async def send_welcome(
             allowed_mentions=discord.AllowedMentions.none()
         )
         await interaction.followup.send(f"✅ Posted welcome embed in {channel.mention}.", ephemeral=True)
-
     except discord.Forbidden as e:
         await interaction.followup.send(f"❌ {e}", ephemeral=True)
     except Exception as e:
@@ -201,7 +195,6 @@ async def send_rules(
     await interaction.response.defer(ephemeral=True)
     try:
         hook = await get_or_create_webhook(channel, name=sender_name, avatar_url=sender_avatar_url)
-
         rules_text = (
             "Don’t be annoying, overly sensitive, or spammy. Avoid @mentioning or DMing people you don’t know, and no self‑promo unless approved. "
             "Keep personal info private, skip the hate speech (we’re not trying to get the Discord nuked), and absolutely no vegans, piracy, NSFW, or other shady content. "
@@ -221,7 +214,6 @@ async def send_rules(
             allowed_mentions=discord.AllowedMentions.none()
         )
         await interaction.followup.send(f"✅ Posted rules embed in {channel.mention}.", ephemeral=True)
-
     except discord.Forbidden as e:
         await interaction.followup.send(f"❌ {e}", ephemeral=True)
     except Exception as e:
@@ -255,7 +247,6 @@ async def send_embed(
     await interaction.response.defer(ephemeral=True)
     try:
         hook = await get_or_create_webhook(channel, name=sender_name, avatar_url=sender_avatar_url)
-
         embed = discord.Embed(
             title=title[:256],
             description=description[:4000],
@@ -275,7 +266,6 @@ async def send_embed(
             allowed_mentions=discord.AllowedMentions.none()
         )
         await interaction.followup.send(f"✅ Posted embed in {channel.mention}.", ephemeral=True)
-
     except discord.Forbidden as e:
         await interaction.followup.send(f"❌ {e}", ephemeral=True)
     except Exception as e:
