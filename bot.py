@@ -72,7 +72,7 @@ async def get_or_create_webhook(
         url = webhook_cache[gk][ck].get("url")
         if url:
             try:
-                return discord.Webhook.from_url(url)
+                return discord.Webhook.from_url(url, client=client)
             except Exception:
                 pass  # fall through to repair
 
@@ -82,7 +82,7 @@ async def get_or_create_webhook(
         for h in hooks:
             if h.name == name and h.token and h.url:
                 _store_hook(channel.guild.id, channel.id, h.url)
-                return discord.Webhook.from_url(h.url)
+                return discord.Webhook.from_url(h.url, client=client)
     except discord.Forbidden:
         raise discord.Forbidden(channel, "I need **Manage Webhooks** in this channel.")
     except Exception:
@@ -92,7 +92,7 @@ async def get_or_create_webhook(
     try:
         hook = await channel.create_webhook(name=name, reason="ShadowSyn embed poster")
         _store_hook(channel.guild.id, channel.id, hook.url)
-        return discord.Webhook.from_url(hook.url)
+        return discord.Webhook.from_url(hook.url, client=client)
     except discord.Forbidden:
         raise discord.Forbidden(channel, "I need **Manage Webhooks** in this channel.")
     except Exception as e:
@@ -342,11 +342,15 @@ async def send_custom(
     """Posts via a webhook created on the thread's parent channel, targeting the thread."""
     await interaction.response.defer(ephemeral=True)
     try:
-        if not isinstance(thread.parent, (discord.TextChannel, discord.ForumChannel)):
-            await interaction.followup.send("❌ That thread has no standard text parent. Pick another.", ephemeral=True)
+        # Forum channels do not support webhooks; bail early
+        if isinstance(thread.parent, discord.ForumChannel):
+            await interaction.followup.send("❌ Forum threads don’t support webhooks. Use a text-channel thread.", ephemeral=True)
+            return
+        if not isinstance(thread.parent, discord.TextChannel):
+            await interaction.followup.send("❌ That thread’s parent isn’t a text channel.", ephemeral=True)
             return
 
-        parent_channel = thread.parent  # where webhooks live
+        parent_channel = thread.parent
         hook = await get_or_create_webhook(parent_channel, name=sender_name, avatar_url=sender_avatar_url)
 
         embed = discord.Embed(
@@ -378,7 +382,7 @@ async def send_custom(
 def env_hook() -> discord.Webhook:
     if not ENV_WEBHOOK_URL:
         raise RuntimeError("WEB_HOOKWELCOME not set")
-    return discord.Webhook.from_url(ENV_WEBHOOK_URL)
+    return discord.Webhook.from_url(ENV_WEBHOOK_URL, client=client)
 
 @tree.command(name="send_welcome_url", description="Post the welcome embed (with buttons) using the WEB_HOOKWELCOME URL.")
 @app_commands.describe(
