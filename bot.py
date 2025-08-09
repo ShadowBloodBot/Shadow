@@ -1,8 +1,16 @@
-# bot.py — ShadowSyn Welcome/Embed Bot (guild-scoped + global prune)
+# bot.py — ShadowSyn Welcome Bot (robust thread/channel targeting)
 # Env: DISCORD_TOKEN
+# Features:
+# - /send_welcome posts fixed welcome embed to saved target (channel or thread)
+# - /set_welcome_target saves the current channel/thread as the target
+# - Auto-join private threads before sending
+# - Invite/share buttons (no webhooks)
+# - Black‑Purple‑Red theme
 
 import os
-from typing import Optional
+import json
+from pathlib import Path
+from typing import Optional, Tuple
 from urllib.parse import quote_plus
 
 import discord
@@ -11,25 +19,79 @@ from discord.ui import View, Button
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
-    raise SystemExit("❌ DISCORD_TOKEN is not set.")
+    raise SystemExit("❌ DISCORD_TOKEN is not set in the environment.")
 
-# ========= CONFIG =========
-WELCOME_THREAD_ID = 1166874144395247757  # your welcome thread
+# ====== THEME / DEFAULTS ======
 DEFAULT_INVITE_URL = "https://discord.gg/shadowsyn"
-THEME_PRIMARY = 0x2B0B35  # blackish‑purple
-THEME_ACCENT  = 0x7A0F2E  # wine‑red
-LOBBY_NAME = "lobby"      # resolves to #lobby mention if it exists
+THEME_PRIMARY = 0x2B0B35  # blackish purple
+THEME_ACCENT  = 0x7A0F2E  # wine red
+LOBBY_NAME = "lobby"
 
+# ====== PERSISTED CONFIG ======
+CONFIG_PATH = Path("welcome_config.json")
+DEFAULT_TARGET_ID = 1166874144395247757  # Provided by you; can be overridden via /set_welcome_target
 
-# ========= HELPERS =========
-async def get_thread(bot: discord.Client, thread_id: int) -> Optional[discord.Thread]:
-    ch = bot.get_channel(thread_id)
+def load_config() -> dict:
+    if CONFIG_PATH.exists():
+        try:
+            return json.loads(CONFIG_PATH.read_text())
+        except Exception:
+            pass
+    return {"welcome_target_id": DEFAULT_TARGET_ID}
+
+def save_config(cfg: dict) -> None:
+    try:
+        CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+    except Exception:
+        pass
+
+config = load_config()
+
+# ====== HELPERS ======
+async def resolve_target(
+    bot: discord.Client, target_id: int
+) -> Tuple[Optional[discord.abc.Messageable], Optional[discord.abc.GuildChannel]]:
+    """
+    Returns (messageable_target, parent_text_channel_for_invites).
+    - If target is TextChannel: (channel, channel)
+    - If target is Thread (public/private): auto-join if needed, return (thread, thread.parent)
+    - If not found/accessible: (None, None)
+    """
+    ch = bot.get_channel(target_id)
     if ch is None:
         try:
-            ch = await bot.fetch_channel(thread_id)
+            ch = await bot.fetch_channel(target_id)
+        except discord.Forbidden:
+            return None, None
         except Exception:
-            return None
-    return ch if isinstance(ch, discord.Thread) else None
+            return None, None
+
+    # Text channel
+    if isinstance(ch, discord.TextChannel):
+        return ch, ch
+
+    # Thread (public/private/news/forum thread)
+    if isinstance(ch, discord.Thread):
+        try:
+            if ch.archived:
+                # Unarchive if we can; otherwise, send will fail
+                await ch.edit(archived=False)
+        except Exception:
+            pass
+        try:
+            # If private thread, we might need to join
+            if not ch.me:  # older libs; safety guard
+                pass
+            # discord.py offers thread.join() if not joined
+            await ch.join()
+        except Exception:
+            # join may fail if already joined or lacking perms; continue and try send
+            pass
+        parent = ch.parent if isinstance(ch.parent, discord.TextChannel) else None
+        return ch, parent
+
+    # Forum channel post also arrives as Thread; handled above
+    return None, None
 
 def find_text_channel_by_name(guild: discord.Guild, name: str) -> Optional[discord.TextChannel]:
     n = name.lower().strip()
@@ -59,10 +121,8 @@ def build_welcome_embed(lobby_mention: str) -> discord.Embed:
     embed.set_footer(text="Be cool. Have fun. Bring friends.")
     return embed
 
-
-# ========= VIEW =========
 class InviteShareView(View):
-    def __init__(self, parent_text_channel: discord.abc.GuildChannel):
+    def __init__(self, parent_text_channel: Optional[discord.abc.GuildChannel]):
         super().__init__(timeout=None)
         self.parent_text_channel = parent_text_channel
 
@@ -98,14 +158,13 @@ class InviteShareView(View):
                     f"✅ **Personal Invite (24h / 1 use)**\n{invite.url}", ephemeral=True
                 )
             else:
-                await interaction.response.send_message("❌ Invalid parent channel for invites.", ephemeral=True)
+                await interaction.response.send_message("❌ No valid parent channel to create invites.", ephemeral=True)
         except discord.Forbidden:
             await interaction.response.send_message("❌ I lack permission to create invites here.", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"❌ Failed to create invite: `{e}`", ephemeral=True)
 
-
-# ========= BOT =========
+# ====== BOT ======
 class ShadowSynBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
@@ -114,48 +173,37 @@ class ShadowSynBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
-        # We guild-sync on demand via /sync_here so startup stays safe across multiple guilds.
-        await self.tree.sync()  # keep any existing globals in place until we prune
-
+        await self.tree.sync()
 
 bot = ShadowSynBot()
 
-
-# ========= COMMANDS =========
-async def _send_welcome_logic(interaction: discord.Interaction):
+# ====== COMMANDS ======
+async def send_welcome_impl(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
 
-    thread = await get_thread(bot, WELCOME_THREAD_ID)
-    if thread is None:
-        await interaction.followup.send("❌ I can’t access the configured welcome thread.", ephemeral=True)
+    target_id = int(config.get("welcome_target_id") or DEFAULT_TARGET_ID)
+    target, parent = await resolve_target(bot, target_id)
+    if target is None:
+        await interaction.followup.send("❌ I can’t access the configured welcome target. Check ID/perms or run `/set_welcome_target` in the correct channel/thread.", ephemeral=True)
         return
 
     lobby_ch = find_text_channel_by_name(interaction.guild, LOBBY_NAME) if interaction.guild else None
     lobby_mention = lobby_ch.mention if lobby_ch else "#lobby"
-
     embed = build_welcome_embed(lobby_mention)
-
-    parent = thread.parent
-    if not isinstance(parent, (discord.TextChannel, discord.VoiceChannel, discord.ForumChannel)):
-        await interaction.followup.send("❌ The welcome thread’s parent channel is invalid for invites.", ephemeral=True)
-        return
-
     view = InviteShareView(parent_text_channel=parent)
+
     try:
-        await thread.send(embed=embed, view=view)
+        await target.send(embed=embed, view=view)
         await interaction.followup.send("✅ Welcome message sent.", ephemeral=True)
     except discord.Forbidden:
-        await interaction.followup.send("❌ I don’t have permission to send in that thread.", ephemeral=True)
+        await interaction.followup.send("❌ I don’t have permission to send there.", ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"❌ Failed to send welcome message: `{e}`", ephemeral=True)
+        await interaction.followup.send(f"❌ Failed to send: `{e}`", ephemeral=True)
 
-
-# GUILD-SCOPED /send_welcome (no options, clean)
-@bot.tree.command(name="send_welcome", description="Post the ShadowSyn welcome embed here (guild-scoped).")
+@bot.tree.command(name="send_welcome", description="Post the ShadowSyn welcome embed to the saved target.")
 @app_commands.checks.has_permissions(administrator=True)
 async def send_welcome(interaction: discord.Interaction):
-    await _send_welcome_logic(interaction)
-
+    await send_welcome_impl(interaction)
 
 @send_welcome.error
 async def send_welcome_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -167,18 +215,42 @@ async def send_welcome_error(interaction: discord.Interaction, error: app_comman
         except Exception:
             pass
 
-
-# ===== Admin utilities =====
-@bot.tree.command(name="sync_here", description="Admin: sync slash commands to THIS guild for instant updates.")
+@bot.tree.command(name="set_welcome_target", description="Set the current channel/thread as the welcome target.")
 @app_commands.checks.has_permissions(administrator=True)
-async def sync_here(interaction: discord.Interaction):
+async def set_welcome_target(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
-    try:
-        await bot.tree.sync(guild=interaction.guild)
-        await interaction.followup.send("✅ Synced commands to this guild.", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Sync failed: `{e}`", ephemeral=True)
+    ch = interaction.channel
 
+    # Only allow TextChannel or Thread
+    if not isinstance(ch, (discord.TextChannel, discord.Thread)):
+        await interaction.followup.send("❌ Run this inside a text channel or a thread.", ephemeral=True)
+        return
+
+    # If it's a thread, ensure bot can join/unarchive now so future sends succeed
+    if isinstance(ch, discord.Thread):
+        try:
+            if ch.archived:
+                await ch.edit(archived=False)
+            await ch.join()
+        except Exception:
+            pass
+
+    config["welcome_target_id"] = ch.id
+    save_config(config)
+    kind = "thread" if isinstance(ch, discord.Thread) else "channel"
+    await interaction.followup.send(f"✅ Set welcome target to this {kind}: **#{ch.name}** (`{ch.id}`).", ephemeral=True)
+
+@set_welcome_target.error
+async def set_welcome_target_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("🚫 Admins only.", ephemeral=True)
+    else:
+        try:
+            await interaction.response.send_message(f"❌ Error: `{error}`", ephemeral=True)
+        except Exception:
+            pass
+
+# Optional: keep /prune_old_commands from earlier if you still see duplicates
 @bot.tree.command(name="prune_old_commands", description="Admin: delete stale GLOBAL commands named send_welcome/send_custom.")
 @app_commands.checks.has_permissions(administrator=True)
 async def prune_old_commands(interaction: discord.Interaction):
@@ -189,7 +261,6 @@ async def prune_old_commands(interaction: discord.Interaction):
             await interaction.followup.send("❌ Could not determine application_id.", ephemeral=True)
             return
 
-        # Fetch global commands via HTTP and delete any stale ones
         globals_list = await bot.http.get_global_commands(app_id)
         to_del = [c for c in globals_list if c.get("name") in {"send_welcome", "send_custom"}]
         for c in to_del:
@@ -198,12 +269,10 @@ async def prune_old_commands(interaction: discord.Interaction):
             except Exception:
                 pass
 
-        await interaction.followup.send(f"🧹 Pruned {len(to_del)} old global command(s). Use `/sync_here` after if needed.", ephemeral=True)
+        await interaction.followup.send(f"🧹 Pruned {len(to_del)} old global command(s).", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Prune failed: `{e}`", ephemeral=True)
 
-
-# ========= RUN =========
 def main():
     bot.run(TOKEN)
 
