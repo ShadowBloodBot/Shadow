@@ -21,6 +21,7 @@ if not TOKEN:
 
 # ========= CLIENT =========
 intents = discord.Intents.default()
+intents.message_content = False
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 
@@ -309,6 +310,74 @@ async def send_embed(
         await interaction.followup.send(f"✅ Posted embed in {channel.mention}.", ephemeral=True)
     except discord.Forbidden as e:
         await interaction.followup.send(f"❌ {e}", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Failed: {e}", ephemeral=True)
+
+# ========= NEW: /send_custom to a selected THREAD =========
+@tree.command(name="send_custom", description="Post a custom embed into a selected thread as ShadowSyn.")
+@app_commands.describe(
+    thread="Choose the target thread",
+    title="Embed title",
+    description="Embed description (supports new lines)",
+    color_hex="Color hex (e.g. #5865F2)",
+    sender_name="Display name for the sender (default: ShadowSyn)",
+    sender_avatar_url="Avatar URL for the sender (optional)",
+    image_url="Large image URL (optional)",
+    thumbnail_url="Small thumbnail URL (optional)",
+    footer="Footer text (optional)"
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.allowed_installs(dm_permissions=False)
+async def send_custom(
+    interaction: discord.Interaction,
+    thread: discord.Thread,
+    title: str,
+    description: str,
+    color_hex: Optional[str] = "#5865F2",
+    sender_name: Optional[str] = WEBHOOK_NAME_DEFAULT,
+    sender_avatar_url: Optional[str] = WEBHOOK_AVATAR_DEFAULT,
+    image_url: Optional[str] = None,
+    thumbnail_url: Optional[str] = None,
+    footer: Optional[str] = None,
+):
+    """
+    Posts via a webhook created on the thread's PARENT channel,
+    but targets the selected thread. This preserves the ShadowSyn sender.
+    """
+    await interaction.response.defer(ephemeral=True)
+    try:
+        if not isinstance(thread.parent, discord.TextChannel) and not isinstance(thread.parent, discord.ForumChannel):
+            await interaction.followup.send("❌ That thread has no standard text parent. Pick another.", ephemeral=True)
+            return
+
+        # For forum threads, the parent where webhooks live is the forum channel itself
+        parent_channel = thread.parent if isinstance(thread.parent, discord.TextChannel) else thread.parent
+
+        hook = await get_or_create_webhook(parent_channel, name=sender_name, avatar_url=sender_avatar_url)
+
+        embed = discord.Embed(
+            title=title[:256],
+            description=description[:4000],
+            color=parse_hex_color(color_hex),
+        )
+        if thumbnail_url:
+            embed.set_thumbnail(url=thumbnail_url)
+        if image_url:
+            embed.set_image(url=image_url)
+        if footer:
+            embed.set_footer(text=footer[:2048])
+
+        # Send to the specific thread
+        await hook.send(
+            embed=embed,
+            thread=thread,  # key line: target the thread
+            username=sender_name or WEBHOOK_NAME_DEFAULT,
+            avatar_url=sender_avatar_url or WEBHOOK_AVATAR_DEFAULT,
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+        await interaction.followup.send(f"✅ Posted embed in thread **#{thread.name}**.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.followup.send("❌ I need **Manage Webhooks** in the thread’s parent channel.", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Failed: {e}", ephemeral=True)
 
