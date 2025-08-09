@@ -1,21 +1,11 @@
-# bot.py — ShadowSyn Welcome + Custom Embed Bot
+# bot.py — ShadowSyn Welcome + Custom Embed Bot (fixed)
 # Env: DISCORD_TOKEN
-# Commands:
-#   /send_welcome         → posts the fixed welcome embed to saved target (thread or channel)
-#   /set_welcome_target   → saves current channel/thread as welcome target
-#   /send_custom          → choose a channel/thread, title, and message to post a custom embed
-#   /send_custome         → alias of /send_custom (same behavior)
-#   /prune_old_commands   → optional: delete stale global commands
-#
-# Notes:
-# - Private threads auto-unarchive/join before sending
-# - Theme = black‑purple‑red
-# - Invite Friends button kept on welcome only (as requested)
 
 import os
 import json
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
+
 import discord
 from discord import app_commands
 from discord.ui import View, Button
@@ -27,7 +17,7 @@ if not TOKEN:
 # ====== THEME / DEFAULTS ======
 VANITY_INVITE = "https://discord.gg/shadowsyn"
 THEME_PRIMARY = 0x2B0B35  # blackish purple
-THEME_ACCENT  = 0x7A0F2E  # wine red
+THEME_ACCENT  = 0x7A0F2E  # wine red (embed accents/footers only)
 LOBBY_NAME = "lobby"
 
 # ====== PERSISTED CONFIG ======
@@ -141,7 +131,7 @@ class InviteFriendsView(View):
             except Exception:
                 pass
 
-# ====== BOT ======
+# ====== BOT CORE ======
 class ShadowSynBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
@@ -211,20 +201,14 @@ async def set_welcome_target(interaction: discord.Interaction):
 # ====== CUSTOM EMBED COMMANDS ======
 async def send_custom_impl(
     interaction: discord.Interaction,
-    target: discord.abc.GuildChannel,
+    target: Union[discord.TextChannel, discord.Thread],
     title: str,
     message: str,
 ):
     await interaction.response.defer(ephemeral=True, thinking=True)
 
-    # Convert selection to messageable + parent
-    target_obj: Optional[discord.abc.Messageable] = None
-    parent: Optional[discord.abc.GuildChannel] = None
-
-    if isinstance(target, discord.TextChannel):
-        target_obj, parent = target, target
-    elif isinstance(target, discord.Thread):
-        # ensure unarchived/joined
+    # Ensure target is usable
+    if isinstance(target, discord.Thread):
         try:
             if target.archived:
                 await target.edit(archived=False)
@@ -234,16 +218,17 @@ async def send_custom_impl(
             await target.join()
         except Exception:
             pass
-        target_obj, parent = target, (target.parent if isinstance(target.parent, discord.TextChannel) else None)
+        messageable: discord.abc.Messageable = target
+    elif isinstance(target, discord.TextChannel):
+        messageable = target
     else:
         await interaction.followup.send("❌ Pick a text channel or a thread.", ephemeral=True)
         return
 
-    # Build and send embed
     embed = discord.Embed(title=title.strip()[:256], description=message[:4096], color=THEME_PRIMARY)
     embed.set_footer(text="ShadowSyn")
     try:
-        await target_obj.send(embed=embed)
+        await messageable.send(embed=embed)
         where = f"#{getattr(target, 'name', 'thread')}"
         await interaction.followup.send(f"✅ Custom embed sent to **{where}**.", ephemeral=True)
     except discord.Forbidden:
@@ -251,7 +236,6 @@ async def send_custom_impl(
     except Exception as e:
         await interaction.followup.send(f"❌ Failed to send: `{e}`", ephemeral=True)
 
-# Correctly spelled command
 @bot.tree.command(
     name="send_custom",
     description="Post a custom embed to a selected text channel or thread."
@@ -261,18 +245,16 @@ async def send_custom_impl(
     title="Embed title",
     message="Embed message (supports new lines)"
 )
-@app_commands.choices()
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.guild_only()
 async def send_custom(
     interaction: discord.Interaction,
-    target: discord.abc.GuildChannel,  # user selects channel/thread from picker
+    target: Union[discord.TextChannel, discord.Thread],
     title: str,
     message: str
 ):
     await send_custom_impl(interaction, target, title, message)
 
-# Alias with the user's original spelling
 @bot.tree.command(
     name="send_custome",
     description="(Alias) Post a custom embed to a selected text channel or thread."
@@ -286,17 +268,11 @@ async def send_custom(
 @app_commands.guild_only()
 async def send_custome(
     interaction: discord.Interaction,
-    target: discord.abc.GuildChannel,
+    target: Union[discord.TextChannel, discord.Thread],
     title: str,
     message: str
 ):
     await send_custom_impl(interaction, target, title, message)
-
-# Limit selectable channel types in the UI (applies to both custom commands)
-for cmd in ("send_custom", "send_custome"):
-    c = discord.app_commands.CommandTree.get_command(bot.tree, name=cmd)
-    # Not strictly necessary; discord.py infers types, but we ensure picker shows text & thread types.
-    # If your lib version supports it, you can enforce with annotations on params.
 
 # ====== OPTIONAL CLEANUP ======
 @bot.tree.command(name="prune_old_commands", description="Admin: delete stale GLOBAL commands named send_welcome/send_custom.")
