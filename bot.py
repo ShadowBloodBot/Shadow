@@ -1,11 +1,12 @@
-# bot.py — ShadowSyn Welcome Bot (robust thread/channel targeting)
+# bot.py — ShadowSyn Welcome Bot (Invite Friends only)
 # Env: DISCORD_TOKEN
 # Features:
 # - /send_welcome posts fixed welcome embed to saved target (channel or thread)
 # - /set_welcome_target saves the current channel/thread as the target
 # - Auto-join private threads before sending
-# - Invite/share buttons (no webhooks)
-# - Black‑Purple‑Red theme
+# - Single "Invite Friends" button (ephemeral reply with vanity link → opens native Invite dialog)
+# - Black‑Purple‑Red embed theme
+# - Optional /prune_old_commands to clear stale globals
 
 import os
 import json
@@ -22,14 +23,14 @@ if not TOKEN:
     raise SystemExit("❌ DISCORD_TOKEN is not set in the environment.")
 
 # ====== THEME / DEFAULTS ======
-DEFAULT_INVITE_URL = "https://discord.gg/shadowsyn"
+VANITY_INVITE = "https://discord.gg/shadowsyn"  # <- your vanity invite
 THEME_PRIMARY = 0x2B0B35  # blackish purple
-THEME_ACCENT  = 0x7A0F2E  # wine red
+THEME_ACCENT  = 0x7A0F2E  # wine red (embed accents/footers only; button colors are fixed by Discord)
 LOBBY_NAME = "lobby"
 
 # ====== PERSISTED CONFIG ======
 CONFIG_PATH = Path("welcome_config.json")
-DEFAULT_TARGET_ID = 1166874144395247757  # Provided by you; can be overridden via /set_welcome_target
+DEFAULT_TARGET_ID = 1166874144395247757  # your initial thread; can be overridden via /set_welcome_target
 
 def load_config() -> dict:
     if CONFIG_PATH.exists():
@@ -53,9 +54,9 @@ async def resolve_target(
 ) -> Tuple[Optional[discord.abc.Messageable], Optional[discord.abc.GuildChannel]]:
     """
     Returns (messageable_target, parent_text_channel_for_invites).
-    - If target is TextChannel: (channel, channel)
-    - If target is Thread (public/private): auto-join if needed, return (thread, thread.parent)
-    - If not found/accessible: (None, None)
+    - If TextChannel: (channel, channel)
+    - If Thread: auto-unarchive/join, return (thread, thread.parent)
+    - Else: (None, None)
     """
     ch = bot.get_channel(target_id)
     if ch is None:
@@ -66,31 +67,22 @@ async def resolve_target(
         except Exception:
             return None, None
 
-    # Text channel
     if isinstance(ch, discord.TextChannel):
         return ch, ch
 
-    # Thread (public/private/news/forum thread)
     if isinstance(ch, discord.Thread):
         try:
             if ch.archived:
-                # Unarchive if we can; otherwise, send will fail
                 await ch.edit(archived=False)
         except Exception:
             pass
         try:
-            # If private thread, we might need to join
-            if not ch.me:  # older libs; safety guard
-                pass
-            # discord.py offers thread.join() if not joined
             await ch.join()
         except Exception:
-            # join may fail if already joined or lacking perms; continue and try send
             pass
         parent = ch.parent if isinstance(ch.parent, discord.TextChannel) else None
         return ch, parent
 
-    # Forum channel post also arrives as Thread; handled above
     return None, None
 
 def find_text_channel_by_name(guild: discord.Guild, name: str) -> Optional[discord.TextChannel]:
@@ -115,54 +107,45 @@ def build_welcome_embed(lobby_mention: str) -> discord.Embed:
         "and no self-promo unless approved. Keep personal info private and absolutely no vegans, piracy, NSFW, or other shady content. "
         "Use common sense — it covers the rest.\n\n"
         "Spread the love by sharing our server invite link\n"
-        f"{DEFAULT_INVITE_URL}\n"
+        f"{VANITY_INVITE}\n"
     )
     embed = discord.Embed(title="Welcome to ShadowSyn", description=desc, color=THEME_PRIMARY)
     embed.set_footer(text="Be cool. Have fun. Bring friends.")
     return embed
 
-class InviteShareView(View):
-    def __init__(self, parent_text_channel: Optional[discord.abc.GuildChannel]):
+# ====== VIEW (ONE BUTTON) ======
+class InviteFriendsView(View):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.parent_text_channel = parent_text_channel
 
-        self.add_item(Button(label="📨 Join / Share Invite", url=DEFAULT_INVITE_URL))
-
-        personal = Button(
-            label="🔗 Create Personal Invite (24h, 1 use)",
+        # Button colors are limited (primary/secondary/success/danger/link).
+        # We use "primary" and keep theme in the embed.
+        btn = Button(
+            label="Invite Friends",
             style=discord.ButtonStyle.primary,
-            custom_id="make_personal_invite"
+            custom_id="invite_friends_ephemeral"
         )
-        personal.callback = self.make_personal_invite
-        self.add_item(personal)
+        btn.callback = self.send_invite_ephemeral
+        self.add_item(btn)
 
-        share_text = "Join me on ShadowSyn — elite FPS/Survival/MMO community:"
-        tweet = f"https://twitter.com/intent/tweet?text={quote_plus(share_text)}&url={quote_plus(DEFAULT_INVITE_URL)}"
-        self.add_item(Button(label="📣 Share on X", url=tweet))
-
-    async def make_personal_invite(self, interaction: discord.Interaction):
+    async def send_invite_ephemeral(self, interaction: discord.Interaction):
+        """
+        Sends an ephemeral message with the vanity invite.
+        Clicking it in the Discord client opens the native 'Invite Friends' panel.
+        """
         try:
-            perms = interaction.user.guild_permissions
-            if not (perms.manage_guild or perms.create_instant_invite):
-                await interaction.response.send_message(
-                    "🚫 You need *Create Invite* or *Manage Server* permission.", ephemeral=True
-                )
-                return
-
-            if isinstance(self.parent_text_channel, (discord.TextChannel, discord.VoiceChannel, discord.ForumChannel)):
-                invite = await self.parent_text_channel.create_invite(
-                    max_age=86400, max_uses=1, unique=True,
-                    reason=f"Personal invite created by {interaction.user}"
-                )
-                await interaction.response.send_message(
-                    f"✅ **Personal Invite (24h / 1 use)**\n{invite.url}", ephemeral=True
-                )
-            else:
-                await interaction.response.send_message("❌ No valid parent channel to create invites.", ephemeral=True)
-        except discord.Forbidden:
-            await interaction.response.send_message("❌ I lack permission to create invites here.", ephemeral=True)
+            text = (
+                "📨 **Invite Friends**\n"
+                f"Here’s the server invite:\n{VANITY_INVITE}\n\n"
+                "_Tip: Clicking this link in Discord opens the native **Invite Friends** panel._"
+            )
+            await interaction.response.send_message(text, ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Failed to create invite: `{e}`", ephemeral=True)
+            # If something odd happens with response state, fall back to followup
+            try:
+                await interaction.followup.send(f"Here’s the invite: {VANITY_INVITE}", ephemeral=True)
+            except Exception:
+                pass
 
 # ====== BOT ======
 class ShadowSynBot(discord.Client):
@@ -184,17 +167,22 @@ async def send_welcome_impl(interaction: discord.Interaction):
     target_id = int(config.get("welcome_target_id") or DEFAULT_TARGET_ID)
     target, parent = await resolve_target(bot, target_id)
     if target is None:
-        await interaction.followup.send("❌ I can’t access the configured welcome target. Check ID/perms or run `/set_welcome_target` in the correct channel/thread.", ephemeral=True)
+        await interaction.followup.send(
+            "❌ I can’t access the configured welcome target. "
+            "Run `/set_welcome_target` **in your welcome thread** and try again.",
+            ephemeral=True
+        )
         return
 
     lobby_ch = find_text_channel_by_name(interaction.guild, LOBBY_NAME) if interaction.guild else None
     lobby_mention = lobby_ch.mention if lobby_ch else "#lobby"
     embed = build_welcome_embed(lobby_mention)
-    view = InviteShareView(parent_text_channel=parent)
+
+    view = InviteFriendsView()
 
     try:
         await target.send(embed=embed, view=view)
-        await interaction.followup.send("✅ Welcome message sent.", ephemeral=True)
+        await interaction.followup.send("✅ Welcome message posted.", ephemeral=True)
     except discord.Forbidden:
         await interaction.followup.send("❌ I don’t have permission to send there.", ephemeral=True)
     except Exception as e:
@@ -220,13 +208,10 @@ async def send_welcome_error(interaction: discord.Interaction, error: app_comman
 async def set_welcome_target(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
     ch = interaction.channel
-
-    # Only allow TextChannel or Thread
     if not isinstance(ch, (discord.TextChannel, discord.Thread)):
         await interaction.followup.send("❌ Run this inside a text channel or a thread.", ephemeral=True)
         return
 
-    # If it's a thread, ensure bot can join/unarchive now so future sends succeed
     if isinstance(ch, discord.Thread):
         try:
             if ch.archived:
@@ -250,7 +235,7 @@ async def set_welcome_target_error(interaction: discord.Interaction, error: app_
         except Exception:
             pass
 
-# Optional: keep /prune_old_commands from earlier if you still see duplicates
+# Optional utility to clear stale global commands
 @bot.tree.command(name="prune_old_commands", description="Admin: delete stale GLOBAL commands named send_welcome/send_custom.")
 @app_commands.checks.has_permissions(administrator=True)
 async def prune_old_commands(interaction: discord.Interaction):
