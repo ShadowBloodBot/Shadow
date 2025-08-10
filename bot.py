@@ -1,37 +1,60 @@
-# bot.py — ShadowSyn Welcome + Custom Embed Bot (persistent Invite button + preview flow)
-# Env: DISCORD_TOKEN
+# bot.py — ShadowSyn Welcome + Custom Embed Bot + Moderation Logger (logs support THREADS)
+# Runtime: python-3.11.9
+# Requirements:
+#   discord.py>=2.4.0
+#   python-dotenv>=1.0.1
+# Procfile:
+#   worker: python -u bot.py
+#
+# Env:
+#   DISCORD_TOKEN
 
 import os
 import json
 from pathlib import Path
-from typing import Optional, Tuple, Union, Dict
+from typing import Optional, Tuple, Union, Dict, Any
 from uuid import uuid4
+from datetime import datetime, timezone, timedelta
 
 import discord
 from discord import app_commands
 from discord.ui import View, Button, Modal, TextInput
 
+# ========= ENV / STARTUP =========
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise SystemExit("❌ DISCORD_TOKEN is not set in the environment.")
 
-# ====== THEME / DEFAULTS ======
+# ========= THEME / DEFAULTS =========
 VANITY_INVITE = "https://discord.gg/shadowsyn"
 THEME_PRIMARY = 0x2B0B35  # blackish purple
-THEME_ACCENT  = 0x7A0F2E  # wine red (embed accents/footers only)
+THEME_GOOD    = 0x2b9348  # green
+THEME_WARN    = 0xf39c12  # orange
+THEME_BAD     = 0xe74c3c  # red
+THEME_INFO    = 0x5865F2  # blurple
+
 LOBBY_NAME = "lobby"
 
-# ====== PERSISTED CONFIG ======
+# ========= PERSISTED CONFIG =========
 CONFIG_PATH = Path("welcome_config.json")
 DEFAULT_TARGET_ID = 1166874144395247757  # initial welcome thread
+# Updated: your audit log THREAD id
+DEFAULT_AUDIT_LOG_CHANNEL_ID = 961726632249425930
 
 def load_config() -> dict:
+    base = {
+        "welcome_target_id": DEFAULT_TARGET_ID,
+        "audit_log_channel_id": DEFAULT_AUDIT_LOG_CHANNEL_ID,
+        "vanity_invite": VANITY_INVITE,
+        "lobby_name": LOBBY_NAME,
+    }
     if CONFIG_PATH.exists():
         try:
-            return json.loads(CONFIG_PATH.read_text())
+            data = json.loads(CONFIG_PATH.read_text())
+            base.update(data or {})
         except Exception:
             pass
-    return {"welcome_target_id": DEFAULT_TARGET_ID}
+    return base
 
 def save_config(cfg: dict) -> None:
     try:
@@ -41,7 +64,7 @@ def save_config(cfg: dict) -> None:
 
 config = load_config()
 
-# ====== HELPERS ======
+# ========= HELPERS =========
 async def resolve_target(
     bot: discord.Client, target_id: int
 ) -> Tuple[Optional[discord.abc.Messageable], Optional[discord.abc.GuildChannel]]:
@@ -95,13 +118,19 @@ def build_welcome_embed(lobby_mention: str) -> discord.Embed:
         "and no self-promo unless approved. Keep personal info private and absolutely no vegans, piracy, NSFW, or other shady content. "
         "Use common sense — it covers the rest.\n\n"
         "Spread the love by sharing our server invite link\n"
-        f"{VANITY_INVITE}\n"
+        f"{config.get('vanity_invite')}\n"
     )
     embed = discord.Embed(title="Welcome to ShadowSyn", description=desc, color=THEME_PRIMARY)
     embed.set_footer(text="Be cool. Have fun. Bring friends.")
     return embed
 
-# ====== VIEWS ======
+def make_embed(title: str, message: str, color: int = THEME_PRIMARY) -> discord.Embed:
+    embed = discord.Embed(title=title[:256], description=message[:4096], color=color)
+    embed.set_footer(text="ShadowSyn")
+    embed.timestamp = datetime.now(timezone.utc)
+    return embed
+
+# ========= UI: INVITE BUTTON =========
 INVITE_BTN_ID = "invite_friends_ephemeral"
 
 class InviteFriendsView(View):
@@ -117,12 +146,12 @@ class InviteFriendsView(View):
         self.add_item(btn)
 
     async def send_invite_ephemeral(self, interaction: discord.Interaction):
+        text = (
+            "📨 **Invite Friends**\n"
+            f"Here’s the server invite:\n{config.get('vanity_invite')}\n\n"
+            "_Tip: Clicking this link in Discord opens the native **Invite Friends** panel._"
+        )
         try:
-            text = (
-                "📨 **Invite Friends**\n"
-                f"Here’s the server invite:\n{VANITY_INVITE}\n\n"
-                "_Tip: Clicking this link in Discord opens the native **Invite Friends** panel._"
-            )
             await interaction.response.send_message(text, ephemeral=True)
         except discord.InteractionResponded:
             try:
@@ -131,18 +160,12 @@ class InviteFriendsView(View):
                 pass
         except Exception:
             try:
-                await interaction.followup.send(f"Here’s the invite: {VANITY_INVITE}", ephemeral=True)
+                await interaction.followup.send(f"Here’s the invite: {config.get('vanity_invite')}", ephemeral=True)
             except Exception:
                 pass
 
-# ====== PREVIEW STATE ======
-# In-memory preview store: key -> {guild_id, user_id, target_id, title, message}
+# ========= PREVIEW STATE =========
 PREVIEW_STORE: Dict[str, Dict] = {}
-
-def make_embed(title: str, message: str) -> discord.Embed:
-    embed = discord.Embed(title=title[:256], description=message[:4096], color=THEME_PRIMARY)
-    embed.set_footer(text="ShadowSyn")
-    return embed
 
 class CustomPreviewView(View):
     def __init__(self, key: str):
@@ -234,7 +257,6 @@ class CustomEmbedModal(Modal, title="Send Custom Embed"):
         self.add_item(self.message_input)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Cache preview
         PREVIEW_STORE[self.key] = {
             "guild_id": interaction.guild_id,
             "user_id": interaction.user.id,
@@ -253,11 +275,13 @@ class CustomEmbedModal(Modal, title="Send Custom Embed"):
         except Exception as e:
             await interaction.followup.send(f"❌ Could not show preview: `{e}`", ephemeral=True)
 
-# ====== BOT CORE ======
+# ========= BOT CORE =========
 class ShadowSynBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
         intents.guilds = True
+        intents.members = True
+        intents.voice_states = True
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
 
@@ -268,7 +292,70 @@ class ShadowSynBot(discord.Client):
 
 bot = ShadowSynBot()
 
-# ====== WELCOME COMMANDS ======
+# ========= LOGGING CORE (now supports TextChannel OR Thread) =========
+async def get_log_target(guild: Optional[discord.Guild]) -> Optional[discord.abc.Messageable]:
+    if not guild:
+        return None
+    ch_id = int(config.get("audit_log_channel_id") or 0)
+    if not ch_id:
+        return None
+    target, _ = await resolve_target(bot, ch_id)
+    return target  # can be TextChannel or Thread (both Messageable)
+
+async def send_log(
+    guild: Optional[discord.Guild],
+    title: str,
+    color: int,
+    fields: Dict[str, str],
+    footer: Optional[str] = None,
+    thumbnail: Optional[Union[str, discord.Asset]] = None
+) -> None:
+    if guild is None:
+        return
+    dest = await get_log_target(guild)
+    if dest is None:
+        return
+    embed = discord.Embed(title=title[:256], color=color)
+    embed.timestamp = datetime.now(timezone.utc)
+    for k, v in fields.items():
+        if v:
+            embed.add_field(name=k[:256], value=v[:1024], inline=False)
+    if footer:
+        embed.set_footer(text=footer[:2048])
+    if thumbnail:
+        try:
+            embed.set_thumbnail(url=str(thumbnail))
+        except Exception:
+            pass
+    try:
+        await dest.send(embed=embed)
+    except Exception:
+        pass
+
+async def find_audit(
+    guild: discord.Guild,
+    action: discord.AuditLogAction,
+    target_id: Optional[int] = None,
+    within: float = 10.0
+) -> Optional[discord.AuditLogEntry]:
+    try:
+        now = datetime.now(timezone.utc)
+        async for entry in guild.audit_logs(limit=5, action=action):
+            if (now - entry.created_at).total_seconds() > within:
+                continue
+            if target_id is not None:
+                tgt = getattr(entry, "target", None)
+                if hasattr(tgt, "id"):
+                    if tgt.id != target_id:
+                        continue
+            return entry
+    except discord.Forbidden:
+        return None
+    except Exception:
+        return None
+    return None
+
+# ========= WELCOME COMMANDS =========
 async def send_welcome_impl(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
 
@@ -282,8 +369,9 @@ async def send_welcome_impl(interaction: discord.Interaction):
         )
         return
 
-    lobby_ch = find_text_channel_by_name(interaction.guild, LOBBY_NAME) if interaction.guild else None
-    lobby_mention = lobby_ch.mention if lobby_ch else "#lobby"
+    lobby_name = config.get("lobby_name", LOBBY_NAME)
+    lobby_ch = find_text_channel_by_name(interaction.guild, lobby_name) if interaction.guild else None
+    lobby_mention = lobby_ch.mention if lobby_ch else f"#{lobby_name}"
     embed = build_welcome_embed(lobby_mention)
     view = InviteFriendsView()
 
@@ -322,7 +410,7 @@ async def set_welcome_target(interaction: discord.Interaction):
     kind = "thread" if isinstance(ch, discord.Thread) else "channel"
     await interaction.followup.send(f"✅ Set welcome target to this {kind}: **#{ch.name}** (`{ch.id}`).", ephemeral=True)
 
-# ====== CUSTOM EMBED (PREVIEW FLOW) ======
+# ========= CUSTOM EMBED (PREVIEW FLOW) =========
 async def start_custom_flow(interaction: discord.Interaction, target: Union[discord.TextChannel, discord.Thread]):
     try:
         await interaction.response.send_modal(CustomEmbedModal(key=None, target_id=target.id))
@@ -358,7 +446,7 @@ async def send_custome(
 ):
     await start_custom_flow(interaction, target)
 
-# ===== Admin utilities =====
+# ========= ADMIN UTILITIES =========
 @bot.tree.command(name="sync_here", description="Admin: sync all slash commands to this guild for instant use.")
 @app_commands.checks.has_permissions(administrator=True)
 async def sync_here(interaction: discord.Interaction):
@@ -391,7 +479,214 @@ async def prune_old_commands(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ Prune failed: `{e}`", ephemeral=True)
 
-# ====== RUN ======
+# Accepts a TextChannel OR a Thread now
+@bot.tree.command(name="set_log_channel", description="Set the audit log destination (channel or thread).")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_log_channel(interaction: discord.Interaction, target: Union[discord.TextChannel, discord.Thread]):
+    config["audit_log_channel_id"] = target.id
+    save_config(config)
+    kind = "thread" if isinstance(target, discord.Thread) else "channel"
+    await interaction.response.send_message(f"✅ Audit log {kind} set to {target.mention}", ephemeral=True)
+
+@bot.tree.command(name="set_vanity", description="Set the invite URL used by the Invite button & welcome.")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_vanity(interaction: discord.Interaction, invite_url: str):
+    config["vanity_invite"] = invite_url
+    save_config(config)
+    await interaction.response.send_message("✅ Vanity invite updated.", ephemeral=True)
+
+@bot.tree.command(name="set_lobby", description="Set the lobby channel name mention in the welcome embed.")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_lobby(interaction: discord.Interaction, lobby_name: str):
+    config["lobby_name"] = lobby_name
+    save_config(config)
+    await interaction.response.send_message(f"✅ Lobby name set to `{lobby_name}`.", ephemeral=True)
+
+# ========= MODERATION EVENT LISTENERS =========
+def _fmt_user(user: Union[discord.Member, discord.User, None]) -> str:
+    if user is None:
+        return "`Unknown`"
+    return f"{user.mention} (`{user}` / `{user.id}`)"
+
+def _fmt_channel(ch: Optional[discord.abc.GuildChannel]) -> str:
+    if ch is None:
+        return "`Unknown`"
+    if isinstance(ch, discord.VoiceChannel):
+        return f"{ch.mention} (`{ch.name}` / `{ch.id}`)"
+    if isinstance(ch, discord.StageChannel):
+        return f"{ch.mention} (`{ch.name}` / `{ch.id}`)"
+    if isinstance(ch, discord.TextChannel):
+        return f"{ch.mention} (`{ch.name}` / `{ch.id}`)"
+    return f"`{getattr(ch, 'name', 'Unknown')}` / `{getattr(ch, 'id', '??')}`"
+
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    guild = after.guild
+
+    # Nickname change
+    if before.nick != after.nick:
+        actor = None
+        reason = None
+        entry = await find_audit(guild, discord.AuditLogAction.member_update, target_id=after.id, within=15)
+        if entry:
+            actor = entry.user
+            reason = entry.reason
+        await send_log(
+            guild,
+            title="📝 Nickname Changed",
+            color=THEME_INFO,
+            fields={
+                "Member": _fmt_user(after),
+                "Moderator": _fmt_user(actor),
+                "Old Nick": before.nick or "`None`",
+                "New Nick": after.nick or "`None`",
+                "Reason": reason or "`Not provided`",
+            },
+            thumbnail=after.display_avatar
+        )
+
+    # Timeout changes
+    before_cdu = before.communication_disabled_until
+    after_cdu = after.communication_disabled_until
+    if before_cdu != after_cdu:
+        actor = None
+        reason = None
+        entry = await find_audit(guild, discord.AuditLogAction.member_update, target_id=after.id, within=15)
+        if entry:
+            actor = entry.user
+            reason = entry.reason
+
+        if after_cdu and (not before_cdu or after_cdu > datetime.now(timezone.utc)):
+            dur = (after_cdu - datetime.now(timezone.utc)).total_seconds()
+            human = f"{int(dur//3600)}h {int((dur%3600)//60)}m"
+            await send_log(
+                guild,
+                title="⏳ Timeout Applied",
+                color=THEME_WARN,
+                fields={
+                    "Member": _fmt_user(after),
+                    "Moderator": _fmt_user(actor),
+                    "Until": f"<t:{int(after_cdu.timestamp())}:F>",
+                    "Approx Duration": human,
+                    "Reason": reason or "`Not provided`",
+                },
+                thumbnail=after.display_avatar
+            )
+        else:
+            await send_log(
+                guild,
+                title="✅ Timeout Removed",
+                color=THEME_GOOD,
+                fields={
+                    "Member": _fmt_user(after),
+                    "Moderator": _fmt_user(actor),
+                    "Reason": reason or "`Not provided`",
+                },
+                thumbnail=after.display_avatar
+            )
+
+    # Server mute/deafen flips
+    if before.voice or after.voice:
+        try:
+            b = before.voice
+            a = after.voice
+            if b and a:
+                if b.mute != a.mute:
+                    entry = await find_audit(guild, discord.AuditLogAction.member_update, target_id=after.id, within=15)
+                    await send_log(
+                        guild,
+                        title="🔇 Server Mute Toggled",
+                        color=THEME_WARN if a.mute else THEME_GOOD,
+                        fields={
+                            "Member": _fmt_user(after),
+                            "Moderator": _fmt_user(entry.user if entry else None),
+                            "Now": "`Muted`" if a.mute else "`Unmuted`",
+                        },
+                        thumbnail=after.display_avatar
+                    )
+                if b.deaf != a.deaf:
+                    entry = await find_audit(guild, discord.AuditLogAction.member_update, target_id=after.id, within=15)
+                    await send_log(
+                        guild,
+                        title="🔈 Server Deafen Toggled",
+                        color=THEME_WARN if a.deaf else THEME_GOOD,
+                        fields={
+                            "Member": _fmt_user(after),
+                            "Moderator": _fmt_user(entry.user if entry else None),
+                            "Now": "`Deafened`" if a.deaf else "`Undeafened`",
+                        },
+                        thumbnail=after.display_avatar
+                    )
+        except Exception:
+            pass
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    guild = member.guild
+    entry = await find_audit(guild, discord.AuditLogAction.kick, target_id=member.id, within=15)
+    if entry:
+        await send_log(
+            guild,
+            title="👢 Member Kicked",
+            color=THEME_BAD,
+            fields={
+                "Member": _fmt_user(member),
+                "Moderator": _fmt_user(entry.user),
+                "Reason": entry.reason or "`Not provided`",
+            },
+            thumbnail=member.display_avatar
+        )
+
+@bot.event
+async def on_member_ban(guild: discord.Guild, user: Union[discord.Member, discord.User]):
+    entry = await find_audit(guild, discord.AuditLogAction.ban, target_id=getattr(user, "id", None), within=20)
+    await send_log(
+        guild,
+        title="⛔ Member Banned",
+        color=THEME_BAD,
+        fields={
+            "Member": _fmt_user(user),
+            "Moderator": _fmt_user(entry.user if entry else None),
+            "Reason": (entry.reason if entry else None) or "`Not provided`",
+        },
+        thumbnail=getattr(user, "display_avatar", None)
+    )
+
+@bot.event
+async def on_member_unban(guild: discord.Guild, user: Union[discord.Member, discord.User]):
+    entry = await find_audit(guild, discord.AuditLogAction.unban, target_id=getattr(user, "id", None), within=20)
+    await send_log(
+        guild,
+        title="♻️ Member Unbanned",
+        color=THEME_INFO,
+        fields={
+            "Member": _fmt_user(user),
+            "Moderator": _fmt_user(entry.user if entry else None),
+            "Reason": (entry.reason if entry else None) or "`Not provided`",
+        },
+        thumbnail=getattr(user, "display_avatar", None)
+    )
+
+@bot.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    if before.channel != after.channel:
+        guild = member.guild
+        entry = await find_audit(guild, discord.AuditLogAction.member_move, target_id=None, within=10)
+        moderator = entry.user if entry else None
+        await send_log(
+            guild,
+            title="↔️ Member Moved",
+            color=THEME_INFO,
+            fields={
+                "Member": _fmt_user(member),
+                "Moderator": _fmt_user(moderator),
+                "From": _fmt_channel(before.channel) if before.channel else "`None`",
+                "To": _fmt_channel(after.channel) if after.channel else "`Disconnected`",
+            },
+            thumbnail=member.display_avatar
+        )
+
+# ========= RUN =========
 def main():
     bot.run(TOKEN)
 
