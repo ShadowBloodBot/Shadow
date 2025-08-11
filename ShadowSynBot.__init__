@@ -1,0 +1,5 @@
+intents = discord.Intents.default()
+intents.guilds = True
+intents.voice_states = True
+intents.members = True            # ← add this
+super().__init__(intents=intents)
