@@ -1,18 +1,19 @@
-# bot.py — ShadowSyn Welcome + Custom Embed Bot (+ /speak TTS with ElevenLabs or Discord TTS fallback)
-# Env: DISCORD_TOKEN, optional ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
+# bot.py — ShadowSyn Welcome + Custom Embed Bot (+ /speak voice TTS; hidden input, VC playback, auto-leave)
+# Env: DISCORD_TOKEN
 
 import os
 import json
+import asyncio
+import tempfile
 from pathlib import Path
 from typing import Optional, Tuple, Union, Dict
 from uuid import uuid4
-from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
 from discord.ui import View, Button, Modal, TextInput
-import aiohttp
-import asyncio
+from gtts import gTTS
+from shutil import which
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
@@ -29,21 +30,12 @@ CONFIG_PATH = Path("welcome_config.json")
 DEFAULT_TARGET_ID = 1166874144395247757  # initial welcome thread
 
 def load_config() -> dict:
-    base = {
-        "welcome_target_id": DEFAULT_TARGET_ID,
-        # TTS defaults
-        "tts_provider": "elevenlabs",   # "elevenlabs" | "discord_tts"
-        "tts_autoleave": True,
-        "elevenlabs_voice_id": os.getenv("ELEVENLABS_VOICE_ID") or "",  # can set via command too
-    }
     if CONFIG_PATH.exists():
         try:
-            data = json.loads(CONFIG_PATH.read_text())
-            if isinstance(data, dict):
-                base.update(data)
+            return json.loads(CONFIG_PATH.read_text())
         except Exception:
             pass
-    return base
+    return {"welcome_target_id": DEFAULT_TARGET_ID}
 
 def save_config(cfg: dict) -> None:
     try:
@@ -270,7 +262,7 @@ class ShadowSynBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
         intents.guilds = True
-        intents.voice_states = True   # needed for VC join/leave
+        intents.voice_states = True  # needed for VC join/leave
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
 
@@ -404,146 +396,75 @@ async def prune_old_commands(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ Prune failed: `{e}`", ephemeral=True)
 
-# ====== TTS /speak ======
-ELEVEN_API = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
-ELEVEN_KEY = os.getenv("ELEVENLABS_API_KEY") or ""
-
-async def elevenlabs_tts_to_file(text: str, voice_id: str, outfile: Path) -> bool:
-    """Stream ElevenLabs audio to a local file. Returns True on success."""
-    if not ELEVEN_KEY or not voice_id:
-        return False
-    headers = {
-        "xi-api-key": ELEVEN_KEY,
-        "Accept": "audio/mpeg",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "text": text[:5000],
-        "model_id": "eleven_multilingual_v2",
-        "voice_settings": {"stability": 0.4, "similarity_boost": 0.8},
-    }
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(ELEVEN_API.format(voice_id=voice_id), headers=headers, json=payload) as r:
-                if r.status != 200:
-                    return False
-                with outfile.open("wb") as f:
-                    async for chunk in r.content.iter_chunked(32768):
-                        f.write(chunk)
-        return True
-    except Exception:
-        return False
-
-def ffmpeg_exists() -> bool:
-    from shutil import which
+# ====== /speak — hidden VC TTS (gTTS + FFmpeg) ======
+def ffmpeg_available() -> bool:
     return which("ffmpeg") is not None
 
 async def ensure_voice(interaction: discord.Interaction) -> Optional[discord.VoiceClient]:
-    """Join the user's voice channel or move there. Returns VoiceClient or None."""
+    """Join the user's voice channel (or move to it)."""
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return None
-    vc = interaction.user.voice
-    if not vc or not vc.channel:
+    state = interaction.user.voice
+    if not state or not state.channel:
         await interaction.response.send_message("❌ Join a voice channel first.", ephemeral=True)
         return None
     try:
-        if interaction.guild.voice_client and interaction.guild.voice_client.channel != vc.channel:
-            await interaction.guild.voice_client.move_to(vc.channel)
+        if interaction.guild.voice_client and interaction.guild.voice_client.channel != state.channel:
+            await interaction.guild.voice_client.move_to(state.channel)
             return interaction.guild.voice_client
         if interaction.guild.voice_client:
             return interaction.guild.voice_client
-        return await vc.channel.connect(reconnect=True, timeout=15)
+        return await state.channel.connect(reconnect=True, timeout=15)
     except Exception as e:
         await interaction.response.send_message(f"❌ Can’t join VC: `{e}`", ephemeral=True)
         return None
 
-@bot.tree.command(name="speak", description="Make the bot speak your text in voice (or send TTS in chat as fallback).")
+@bot.tree.command(name="speak", description="Bot joins your VC and speaks the text (no message posted).")
 @app_commands.describe(text="What should I say?")
 @app_commands.guild_only()
 async def speak(interaction: discord.Interaction, text: str):
-    provider = str(config.get("tts_provider", "elevenlabs")).lower()
-    autoleave = bool(config.get("tts_autoleave", True))
-    voice_id = config.get("elevenlabs_voice_id", "") or os.getenv("ELEVENLABS_VOICE_ID", "")
-
-    # Try VC path if provider is elevenlabs and ffmpeg present
-    if provider == "elevenlabs" and ffmpeg_exists():
-        vc = await ensure_voice(interaction)
-        if vc is None:
-            return  # message already sent
-        # Defer ephemeral confirm
-        try:
-            await interaction.response.send_message("🎙️ Generating speech…", ephemeral=True)
-        except discord.InteractionResponded:
-            pass
-
-        # Synthesize to temp file
-        tmp = Path(f"/tmp/tts_{uuid4().hex}.mp3")
-        ok = await elevenlabs_tts_to_file(text, voice_id, tmp)
-        if not ok or not tmp.exists():
-            # Fallback to text-channel TTS
-            await interaction.followup.send("⚠️ ElevenLabs failed — sending Discord TTS in chat instead.", ephemeral=True)
-            try:
-                await interaction.channel.send(text, tts=True)
-            except Exception:
-                pass
-            return
-
-        # Play it
-        try:
-            src = discord.FFmpegPCMAudio(str(tmp), before_options="-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5")
-            vc.play(src)
-            # wait until done
-            while vc.is_playing():
-                await asyncio.sleep(0.25)
-        except Exception as e:
-            await interaction.followup.send(f"❌ Playback error: `{e}`", ephemeral=True)
-        finally:
-            try:
-                if tmp.exists():
-                    tmp.unlink(missing_ok=True)
-            except Exception:
-                pass
-            if autoleave:
-                try:
-                    await vc.disconnect(force=False)
-                except Exception:
-                    pass
-        return
-
-    # Fallback: Discord text-channel TTS
+    # Always keep interaction hidden
     try:
-        await interaction.response.send_message("🔈 Sending TTS to this channel…", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
     except discord.InteractionResponded:
         pass
-    try:
-        await interaction.channel.send(text, tts=True)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Couldn’t send TTS: `{e}`", ephemeral=True)
 
-@bot.tree.command(name="set_tts_provider", description="Admin: choose TTS provider (elevenlabs or discord_tts).")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_tts_provider(interaction: discord.Interaction, provider: str):
-    provider = provider.lower().strip()
-    if provider not in {"elevenlabs", "discord_tts"}:
-        await interaction.response.send_message("❌ Use `elevenlabs` or `discord_tts`.", ephemeral=True)
+    if not ffmpeg_available():
+        await interaction.followup.send("❌ FFmpeg isn’t available. Add `nixpacks.toml` with ffmpeg and redeploy.", ephemeral=True)
         return
-    config["tts_provider"] = provider
-    save_config(config)
-    await interaction.response.send_message(f"✅ TTS provider set to `{provider}`.", ephemeral=True)
 
-@bot.tree.command(name="set_tts_voice", description="Admin: set default ElevenLabs voice ID.")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_tts_voice(interaction: discord.Interaction, voice_id: str):
-    config["elevenlabs_voice_id"] = voice_id.strip()
-    save_config(config)
-    await interaction.response.send_message("✅ ElevenLabs voice saved.", ephemeral=True)
+    vc = await ensure_voice(interaction)
+    if vc is None:
+        return  # error already sent
 
-@bot.tree.command(name="set_tts_autoleave", description="Admin: toggle auto-leave after speaking.")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_tts_autoleave(interaction: discord.Interaction, value: bool):
-    config["tts_autoleave"] = bool(value)
-    save_config(config)
-    await interaction.response.send_message(f"✅ Auto-leave set to `{value}`.", ephemeral=True)
+    # Synthesize to temp mp3 via gTTS
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
+            tmp_path = f.name
+        tts = gTTS(text=text[:5000], lang="en")
+        tts.save(tmp_path)
+    except Exception as e:
+        await interaction.followup.send(f"❌ TTS failed: `{e}`", ephemeral=True)
+        return
+
+    # Play and wait
+    try:
+        audio = discord.FFmpegPCMAudio(tmp_path, before_options="-nostdin")
+        vc.play(audio)
+        while vc.is_playing():
+            await asyncio.sleep(0.25)
+        await interaction.followup.send("✅ Done.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Playback error: `{e}`", ephemeral=True)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        try:
+            await vc.disconnect(force=False)
+        except Exception:
+            pass
 
 # ====== RUN ======
 def main():
