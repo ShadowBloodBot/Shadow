@@ -1,5 +1,5 @@
 # bot.py — ShadowSyn Welcome + Custom Embed Bot
-# + /speak voice TTS (hidden input, VC playback, auto-leave, translation)
+# + /speak voice TTS (hidden input, VC playback, auto-leave, translation, usage logs)
 # Env: DISCORD_TOKEN
 
 import os
@@ -33,6 +33,9 @@ DEFAULT_TARGET_ID  = 1166874144395247757  # initial welcome thread
 
 # Permissions / role-gates
 MEMBER_ROLE_ID = 955600320287887400  # users must have this to run /speak
+
+# /speak usage log destination (thread)
+SPEAK_LOG_THREAD_ID = 1400048671973703690
 
 # Language options for /speak
 translator = Translator()
@@ -392,40 +395,10 @@ async def send_custom(interaction: discord.Interaction, target: Union[discord.Te
 async def send_custome(interaction: discord.Interaction, target: Union[discord.TextChannel, discord.Thread]):
     await start_custom_flow(interaction, target)
 
-# ----- Admin utilities -----
-@bot.tree.command(name="sync_here", description="Admin: sync all slash commands to this guild for instant use.")
-@app_commands.checks.has_permissions(administrator=True)
-async def sync_here(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    try:
-        await bot.tree.sync(guild=interaction.guild)
-        await interaction.followup.send("✅ Commands synced to this guild.", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Sync failed: `{e}`", ephemeral=True)
+# ============================================================
+#                       /SPEAK (TTS + TRANSLATE + LOG)
+# ============================================================
 
-@bot.tree.command(name="prune_old_commands", description="Admin: delete stale GLOBAL commands named send_welcome/send_custom.")
-@app_commands.checks.has_permissions(administrator=True)
-async def prune_old_commands(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    try:
-        app_id = bot.application_id or (bot.user and bot.user.id)
-        if not app_id:
-            await interaction.followup.send("❌ Could not determine application_id.", ephemeral=True)
-            return
-
-        globals_list = await bot.http.get_global_commands(app_id)
-        to_del = [c for c in globals_list if c.get("name") in {"send_welcome", "send_custom", "send_custome"}]
-        for c in to_del:
-            try:
-                await bot.http.delete_global_command(app_id, c["id"])
-            except Exception:
-                pass
-
-        await interaction.followup.send(f"🧹 Pruned {len(to_del)} old global command(s).", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Prune failed: `{e}`", ephemeral=True)
-
-# ----- /speak (hidden VC TTS; role-gated; translation) -----
 async def ensure_voice(interaction: discord.Interaction) -> Optional[discord.VoiceClient]:
     """Join/move to the user's voice channel."""
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -444,6 +417,32 @@ async def ensure_voice(interaction: discord.Interaction) -> Optional[discord.Voi
     except Exception as e:
         await interaction.response.send_message(f"❌ Can’t join VC: `{e}`", ephemeral=True)
         return None
+
+async def log_speak_usage(interaction: discord.Interaction, original_text: str, lang_code: str):
+    """Send a /speak usage log to the configured thread."""
+    target, _ = await resolve_target(bot, SPEAK_LOG_THREAD_ID)
+    if not target:
+        return  # can't access the thread
+
+    pretty = next((c.name for c in LANG_CHOICES if c.value == lang_code), lang_code)
+    vc_name = (
+        interaction.user.voice.channel.mention
+        if (isinstance(interaction.user, discord.Member) and interaction.user.voice and interaction.user.voice.channel)
+        else "`N/A`"
+    )
+    text_channel = interaction.channel.mention if isinstance(interaction.channel, discord.TextChannel) else "`N/A`"
+
+    embed = discord.Embed(title="🗣️ /speak used", color=THEME_PRIMARY)
+    embed.add_field(name="User", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=False)
+    embed.add_field(name="Language", value=pretty, inline=True)
+    embed.add_field(name="Voice Channel", value=vc_name, inline=True)
+    embed.add_field(name="Typed Text (EN)", value=(original_text[:1024] or "`(empty)`"), inline=False)
+    embed.set_footer(text=f"Invoked in {text_channel}")
+
+    try:
+        await target.send(embed=embed)
+    except Exception:
+        pass
 
 @bot.tree.command(name="speak", description="Bot joins your VC and speaks the text (no message posted).")
 @app_commands.describe(
@@ -472,9 +471,13 @@ async def speak(
     if vc is None:
         return
 
-    # Determine language and translate EN -> target if needed
+    # Determine language, log usage, and translate EN -> target if needed
     lang_code = (language.value if language else "en").lower()
     to_say = text[:5000]
+
+    # Log usage to the thread
+    await log_speak_usage(interaction, original_text=text, lang_code=lang_code)
+
     if lang_code != "en":
         try:
             result = translator.translate(to_say, src="en", dest=lang_code)
