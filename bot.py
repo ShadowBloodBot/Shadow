@@ -1,4 +1,5 @@
-# bot.py — ShadowSyn Welcome + Custom Embed Bot (+ /speak voice TTS; hidden input, VC playback, auto-leave)
+# bot.py — ShadowSyn Welcome + Custom Embed Bot
+# + /speak voice TTS (hidden input, VC playback, auto-leave)
 # Env: DISCORD_TOKEN
 
 import os
@@ -15,55 +16,43 @@ from discord.ui import View, Button, Modal, TextInput
 from gtts import gTTS
 from shutil import which
 
-MEMBER_ROLE_ID = 955600320287887400
+# ============================================================
+#                       CONSTANTS
+# ============================================================
 
-def has_member_role(interaction: discord.Interaction) -> bool:
-    m = interaction.user
-    return isinstance(m, discord.Member) and any(r.id == MEMBER_ROLE_ID for r in m.roles)
+# Server branding
+VANITY_INVITE  = "https://discord.gg/shadowsyn"
+THEME_PRIMARY  = 0x2B0B35  # blackish purple
+THEME_ACCENT   = 0x7A0F2E  # wine red (not heavily used)
+LOBBY_NAME     = "lobby"
 
-@bot.tree.command(name="speak", description="Bot joins your VC and speaks the text (no message posted).")
-@app_commands.describe(text="What should I say?")
-@app_commands.check(has_member_role)   # ← require Member role
-@app_commands.guild_only()
-async def speak(interaction: discord.Interaction, text: str):
-    ...
+# Persistence
+CONFIG_PATH        = Path("welcome_config.json")
+DEFAULT_TARGET_ID  = 1166874144395247757  # initial welcome thread
 
-@bot.tree.error
-async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.CheckFailure):
-        try:
-            await interaction.response.send_message(
-                "❌ You need the **Member** role to use `/speak`.",
-                ephemeral=True
-            )
-        except discord.InteractionResponded:
-            await interaction.followup.send(
-                "❌ You need the **Member** role to use `/speak`.",
-                ephemeral=True
-            )
+# Permissions / role-gates
+MEMBER_ROLE_ID = 955600320287887400  # users must have this to run /speak
 
-
+# Token
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise SystemExit("❌ DISCORD_TOKEN is not set in the environment.")
 
-# ====== THEME / DEFAULTS ======
-VANITY_INVITE = "https://discord.gg/shadowsyn"
-THEME_PRIMARY = 0x2B0B35  # blackish purple
-THEME_ACCENT  = 0x7A0F2E  # wine red (embed accents/footers only)
-LOBBY_NAME = "lobby"
-
-# ====== PERSISTED CONFIG ======
-CONFIG_PATH = Path("welcome_config.json")
-DEFAULT_TARGET_ID = 1166874144395247757  # initial welcome thread
+# ============================================================
+#                       CONFIG I/O
+# ============================================================
 
 def load_config() -> dict:
+    """Load config with safe defaults."""
+    base = {"welcome_target_id": DEFAULT_TARGET_ID}
     if CONFIG_PATH.exists():
         try:
-            return json.loads(CONFIG_PATH.read_text())
+            data = json.loads(CONFIG_PATH.read_text())
+            if isinstance(data, dict):
+                base.update(data)
         except Exception:
             pass
-    return {"welcome_target_id": DEFAULT_TARGET_ID}
+    return base
 
 def save_config(cfg: dict) -> None:
     try:
@@ -73,11 +62,22 @@ def save_config(cfg: dict) -> None:
 
 config = load_config()
 
-# ====== HELPERS ======
+# ============================================================
+#                       HELPERS
+# ============================================================
+
+def has_member_role(interaction: discord.Interaction) -> bool:
+    """Check if the invoker has the Member role."""
+    m = interaction.user
+    return isinstance(m, discord.Member) and any(r.id == MEMBER_ROLE_ID for r in m.roles)
+
 async def resolve_target(
     bot: discord.Client, target_id: int
 ) -> Tuple[Optional[discord.abc.Messageable], Optional[discord.abc.GuildChannel]]:
-    """Returns (messageable_target, parent_text_channel_for_invites)."""
+    """
+    Resolve a channel/thread ID to a messageable object.
+    Returns (messageable_target, parent_text_channel_for_invites).
+    """
     ch = bot.get_channel(target_id)
     if ch is None:
         try:
@@ -133,28 +133,34 @@ def build_welcome_embed(lobby_mention: str) -> discord.Embed:
     embed.set_footer(text="Be cool. Have fun. Bring friends.")
     return embed
 
-# ====== VIEWS ======
+def make_embed(title: str, message: str) -> discord.Embed:
+    embed = discord.Embed(title=title[:256], description=message[:4096], color=THEME_PRIMARY)
+    embed.set_footer(text="ShadowSyn")
+    return embed
+
+def ffmpeg_available() -> bool:
+    return which("ffmpeg") is not None
+
+# ============================================================
+#                       UI VIEWS
+# ============================================================
+
 INVITE_BTN_ID = "invite_friends_ephemeral"
 
 class InviteFriendsView(View):
     def __init__(self):
-        # timeout=None => eligible for persistent registration
-        super().__init__(timeout=None)
-        btn = Button(
-            label="Invite Friends",
-            style=discord.ButtonStyle.primary,
-            custom_id=INVITE_BTN_ID
-        )
+        super().__init__(timeout=None)  # persistent across restarts
+        btn = Button(label="Invite Friends", style=discord.ButtonStyle.primary, custom_id=INVITE_BTN_ID)
         btn.callback = self.send_invite_ephemeral
         self.add_item(btn)
 
     async def send_invite_ephemeral(self, interaction: discord.Interaction):
+        text = (
+            "📨 **Invite Friends**\n"
+            f"Here’s the server invite:\n{VANITY_INVITE}\n\n"
+            "_Tip: Clicking this link in Discord opens the native **Invite Friends** panel._"
+        )
         try:
-            text = (
-                "📨 **Invite Friends**\n"
-                f"Here’s the server invite:\n{VANITY_INVITE}\n\n"
-                "_Tip: Clicking this link in Discord opens the native **Invite Friends** panel._"
-            )
             await interaction.response.send_message(text, ephemeral=True)
         except discord.InteractionResponded:
             try:
@@ -167,31 +173,27 @@ class InviteFriendsView(View):
             except Exception:
                 pass
 
-# ====== PREVIEW STATE ======
+# ----- Custom embed modal + preview flow -----
+
 # In-memory preview store: key -> {guild_id, user_id, target_id, title, message}
 PREVIEW_STORE: Dict[str, Dict] = {}
-
-def make_embed(title: str, message: str) -> discord.Embed:
-    embed = discord.Embed(title=title[:256], description=message[:4096], color=THEME_PRIMARY)
-    embed.set_footer(text="ShadowSyn")
-    return embed
 
 class CustomPreviewView(View):
     def __init__(self, key: str):
         super().__init__(timeout=300)
         self.key = key
 
-        self.post_btn = Button(label="✅ Post", style=discord.ButtonStyle.success, custom_id=f"post:{key}")
-        self.edit_btn = Button(label="✏️ Edit", style=discord.ButtonStyle.primary, custom_id=f"edit:{key}")
-        self.cancel_btn = Button(label="🗑️ Cancel", style=discord.ButtonStyle.danger, custom_id=f"cancel:{key}")
+        post_btn   = Button(label="✅ Post",   style=discord.ButtonStyle.success, custom_id=f"post:{key}")
+        edit_btn   = Button(label="✏️ Edit",   style=discord.ButtonStyle.primary, custom_id=f"edit:{key}")
+        cancel_btn = Button(label="🗑️ Cancel", style=discord.ButtonStyle.danger,  custom_id=f"cancel:{key}")
 
-        self.post_btn.callback = self.post
-        self.edit_btn.callback = self.edit
-        self.cancel_btn.callback = self.cancel
+        post_btn.callback   = self.post
+        edit_btn.callback   = self.edit
+        cancel_btn.callback = self.cancel
 
-        self.add_item(self.post_btn)
-        self.add_item(self.edit_btn)
-        self.add_item(self.cancel_btn)
+        self.add_item(post_btn)
+        self.add_item(edit_btn)
+        self.add_item(cancel_btn)
 
     async def post(self, interaction: discord.Interaction):
         data = PREVIEW_STORE.get(self.key)
@@ -247,26 +249,19 @@ class CustomEmbedModal(Modal, title="Send Custom Embed"):
         self.target_id = target_id
 
         self.title_input = TextInput(
-            label="Title",
-            placeholder="Embed title",
-            default=title_default[:256],
-            max_length=256,
-            required=True
+            label="Title", placeholder="Embed title",
+            default=title_default[:256], max_length=256, required=True
         )
         self.message_input = TextInput(
-            label="Message",
-            placeholder="Type your embed message. Use Shift+Enter for new lines.",
-            style=discord.TextStyle.paragraph,
-            default=message_default[:4000] if message_default else None,
-            max_length=4000,
-            required=True
+            label="Message", placeholder="Type your embed message. Use Shift+Enter for new lines.",
+            style=discord.TextStyle.paragraph, default=message_default[:4000] if message_default else None,
+            max_length=4000, required=True
         )
 
         self.add_item(self.title_input)
         self.add_item(self.message_input)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Cache preview
         PREVIEW_STORE[self.key] = {
             "guild_id": interaction.guild_id,
             "user_id": interaction.user.id,
@@ -285,23 +280,31 @@ class CustomEmbedModal(Modal, title="Send Custom Embed"):
         except Exception as e:
             await interaction.followup.send(f"❌ Could not show preview: `{e}`", ephemeral=True)
 
-# ====== BOT CORE ======
+# ============================================================
+#                       BOT CORE
+# ============================================================
+
 class ShadowSynBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
         intents.guilds = True
-        intents.voice_states = True  # needed for VC join/leave
+        intents.voice_states = True  # VC join/leave
+        intents.members = True       # role checks for /speak
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
-        # Register persistent views so buttons work across restarts
+        # Persistent UI
         self.add_view(InviteFriendsView())
         await self.tree.sync()
 
 bot = ShadowSynBot()
 
-# ====== WELCOME COMMANDS ======
+# ============================================================
+#                       COMMANDS
+# ============================================================
+
+# ----- Welcome poster -----
 async def send_welcome_impl(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
 
@@ -316,7 +319,7 @@ async def send_welcome_impl(interaction: discord.Interaction):
         return
 
     lobby_ch = find_text_channel_by_name(interaction.guild, LOBBY_NAME) if interaction.guild else None
-    lobby_mention = lobby_ch.mention if lobby_ch else "#lobby"
+    lobby_mention = lobby_ch.mention if lobby_ch else f"#{LOBBY_NAME}"
     embed = build_welcome_embed(lobby_mention)
     view = InviteFriendsView()
 
@@ -355,7 +358,7 @@ async def set_welcome_target(interaction: discord.Interaction):
     kind = "thread" if isinstance(ch, discord.Thread) else "channel"
     await interaction.followup.send(f"✅ Set welcome target to this {kind}: **#{ch.name}** (`{ch.id}`).", ephemeral=True)
 
-# ====== CUSTOM EMBED (PREVIEW FLOW) ======
+# ----- Custom embed with preview -----
 async def start_custom_flow(interaction: discord.Interaction, target: Union[discord.TextChannel, discord.Thread]):
     try:
         await interaction.response.send_modal(CustomEmbedModal(key=None, target_id=target.id))
@@ -365,33 +368,21 @@ async def start_custom_flow(interaction: discord.Interaction, target: Union[disc
         except Exception:
             pass
 
-@bot.tree.command(
-    name="send_custom",
-    description="Post a custom embed to a selected text channel or thread (with preview)."
-)
+@bot.tree.command(name="send_custom", description="Post a custom embed to a selected text channel or thread (with preview).")
 @app_commands.describe(target="Choose a text channel or thread")
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.guild_only()
-async def send_custom(
-    interaction: discord.Interaction,
-    target: Union[discord.TextChannel, discord.Thread],
-):
+async def send_custom(interaction: discord.Interaction, target: Union[discord.TextChannel, discord.Thread]):
     await start_custom_flow(interaction, target)
 
-@bot.tree.command(
-    name="send_custome",
-    description="(Alias) Post a custom embed to a selected text channel or thread (with preview)."
-)
+@bot.tree.command(name="send_custome", description="(Alias) Post a custom embed to a selected text channel or thread (with preview).")
 @app_commands.describe(target="Choose a text channel or thread")
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.guild_only()
-async def send_custome(
-    interaction: discord.Interaction,
-    target: Union[discord.TextChannel, discord.Thread],
-):
+async def send_custome(interaction: discord.Interaction, target: Union[discord.TextChannel, discord.Thread]):
     await start_custom_flow(interaction, target)
 
-# ===== Admin utilities =====
+# ----- Admin utilities -----
 @bot.tree.command(name="sync_here", description="Admin: sync all slash commands to this guild for instant use.")
 @app_commands.checks.has_permissions(administrator=True)
 async def sync_here(interaction: discord.Interaction):
@@ -424,12 +415,9 @@ async def prune_old_commands(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ Prune failed: `{e}`", ephemeral=True)
 
-# ====== /speak — hidden VC TTS (gTTS + FFmpeg) ======
-def ffmpeg_available() -> bool:
-    return which("ffmpeg") is not None
-
+# ----- /speak (hidden VC TTS; role-gated) -----
 async def ensure_voice(interaction: discord.Interaction) -> Optional[discord.VoiceClient]:
-    """Join the user's voice channel (or move to it)."""
+    """Join/move to the user's voice channel."""
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
         return None
     state = interaction.user.voice
@@ -449,21 +437,22 @@ async def ensure_voice(interaction: discord.Interaction) -> Optional[discord.Voi
 
 @bot.tree.command(name="speak", description="Bot joins your VC and speaks the text (no message posted).")
 @app_commands.describe(text="What should I say?")
+@app_commands.check(has_member_role)   # require Member role
 @app_commands.guild_only()
 async def speak(interaction: discord.Interaction, text: str):
-    # Always keep interaction hidden
+    # Hidden interaction
     try:
         await interaction.response.defer(ephemeral=True)
     except discord.InteractionResponded:
         pass
 
     if not ffmpeg_available():
-        await interaction.followup.send("❌ FFmpeg isn’t available. Add `nixpacks.toml` with ffmpeg and redeploy.", ephemeral=True)
+        await interaction.followup.send("❌ FFmpeg isn’t available in this container. Rebuild with FFmpeg and try again.", ephemeral=True)
         return
 
     vc = await ensure_voice(interaction)
     if vc is None:
-        return  # error already sent
+        return
 
     # Synthesize to temp mp3 via gTTS
     try:
@@ -475,7 +464,7 @@ async def speak(interaction: discord.Interaction, text: str):
         await interaction.followup.send(f"❌ TTS failed: `{e}`", ephemeral=True)
         return
 
-    # Play and wait
+    # Play and wait; auto-leave
     try:
         audio = discord.FFmpegPCMAudio(tmp_path, before_options="-nostdin")
         vc.play(audio)
@@ -494,8 +483,31 @@ async def speak(interaction: discord.Interaction, text: str):
         except Exception:
             pass
 
-# ====== RUN ======
+# ============================================================
+#                       ERROR HANDLING
+# ============================================================
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.CheckFailure):
+        try:
+            await interaction.response.send_message(
+                "❌ You need the **Member** role to use `/speak`.",
+                ephemeral=True
+            )
+        except discord.InteractionResponded:
+            await interaction.followup.send(
+                "❌ You need the **Member** role to use `/speak`.",
+                ephemeral=True
+            )
+
+# ============================================================
+#                       RUN
+# ============================================================
+
 def main():
+    # Optional: log ffmpeg path for sanity during deploys
+    print("FFMPEG PATH:", which("ffmpeg"))
     bot.run(TOKEN)
 
 if __name__ == "__main__":
