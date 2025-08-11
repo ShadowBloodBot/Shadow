@@ -21,6 +21,27 @@ def has_member_role(interaction: discord.Interaction) -> bool:
     m = interaction.user
     return isinstance(m, discord.Member) and any(r.id == MEMBER_ROLE_ID for r in m.roles)
 
+@bot.tree.command(name="speak", description="Bot joins your VC and speaks the text (no message posted).")
+@app_commands.describe(text="What should I say?")
+@app_commands.check(has_member_role)   # ← require Member role
+@app_commands.guild_only()
+async def speak(interaction: discord.Interaction, text: str):
+    ...
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.CheckFailure):
+        try:
+            await interaction.response.send_message(
+                "❌ You need the **Member** role to use `/speak`.",
+                ephemeral=True
+            )
+        except discord.InteractionResponded:
+            await interaction.followup.send(
+                "❌ You need the **Member** role to use `/speak`.",
+                ephemeral=True
+            )
+
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
