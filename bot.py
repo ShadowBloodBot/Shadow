@@ -1,5 +1,5 @@
 # bot.py — ShadowSyn Welcome + Custom Embed Bot
-# + /speak voice TTS (hidden input, VC playback, auto-leave)
+# + /speak voice TTS (hidden input, VC playback, auto-leave, translation)
 # Env: DISCORD_TOKEN
 
 import os
@@ -15,6 +15,7 @@ from discord import app_commands
 from discord.ui import View, Button, Modal, TextInput
 from gtts import gTTS
 from shutil import which
+from googletrans import Translator
 
 # ============================================================
 #                       CONSTANTS
@@ -32,6 +33,15 @@ DEFAULT_TARGET_ID  = 1166874144395247757  # initial welcome thread
 
 # Permissions / role-gates
 MEMBER_ROLE_ID = 955600320287887400  # users must have this to run /speak
+
+# Language options for /speak
+translator = Translator()
+LANG_CHOICES = [
+    app_commands.Choice(name="English",  value="en"),
+    app_commands.Choice(name="Japanese", value="ja"),
+    app_commands.Choice(name="German",   value="de"),
+    app_commands.Choice(name="Spanish",  value="es"),
+]
 
 # Token
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -415,7 +425,7 @@ async def prune_old_commands(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ Prune failed: `{e}`", ephemeral=True)
 
-# ----- /speak (hidden VC TTS; role-gated) -----
+# ----- /speak (hidden VC TTS; role-gated; translation) -----
 async def ensure_voice(interaction: discord.Interaction) -> Optional[discord.VoiceClient]:
     """Join/move to the user's voice channel."""
     if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -436,10 +446,18 @@ async def ensure_voice(interaction: discord.Interaction) -> Optional[discord.Voi
         return None
 
 @bot.tree.command(name="speak", description="Bot joins your VC and speaks the text (no message posted).")
-@app_commands.describe(text="What should I say?")
+@app_commands.describe(
+    text="Type your message in English",
+    language="Target language to speak"
+)
+@app_commands.choices(language=LANG_CHOICES)
 @app_commands.check(has_member_role)   # require Member role
 @app_commands.guild_only()
-async def speak(interaction: discord.Interaction, text: str):
+async def speak(
+    interaction: discord.Interaction,
+    text: str,
+    language: app_commands.Choice[str] = None
+):
     # Hidden interaction
     try:
         await interaction.response.defer(ephemeral=True)
@@ -454,11 +472,21 @@ async def speak(interaction: discord.Interaction, text: str):
     if vc is None:
         return
 
-    # Synthesize to temp mp3 via gTTS
+    # Determine language and translate EN -> target if needed
+    lang_code = (language.value if language else "en").lower()
+    to_say = text[:5000]
+    if lang_code != "en":
+        try:
+            result = translator.translate(to_say, src="en", dest=lang_code)
+            to_say = result.text[:5000]
+        except Exception as e:
+            await interaction.followup.send(f"⚠️ Translation failed ({e}); speaking original English.", ephemeral=True)
+
+    # Synthesize to temp mp3 via gTTS with the target language
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
             tmp_path = f.name
-        tts = gTTS(text=text[:5000], lang="en")
+        tts = gTTS(text=to_say, lang=lang_code)
         tts.save(tmp_path)
     except Exception as e:
         await interaction.followup.send(f"❌ TTS failed: `{e}`", ephemeral=True)
@@ -470,7 +498,8 @@ async def speak(interaction: discord.Interaction, text: str):
         vc.play(audio)
         while vc.is_playing():
             await asyncio.sleep(0.25)
-        await interaction.followup.send("✅ Done.", ephemeral=True)
+        pretty = next((c.name for c in LANG_CHOICES if c.value == lang_code), lang_code)
+        await interaction.followup.send(f"✅ Spoke in **{pretty}**.", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Playback error: `{e}`", ephemeral=True)
     finally:
