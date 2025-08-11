@@ -1,57 +1,46 @@
-# bot.py — ShadowSyn Welcome + Custom Embed Bot + Moderation Logger (logs support THREADS)
-# Runtime: python-3.11.9
-# Requirements:
-#   discord.py>=2.4.0
-#   python-dotenv>=1.0.1
-# Procfile:
-#   worker: python -u bot.py
-#
-# Env:
-#   DISCORD_TOKEN
+# bot.py — ShadowSyn Welcome + Custom Embed Bot (+ /speak TTS with ElevenLabs or Discord TTS fallback)
+# Env: DISCORD_TOKEN, optional ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
 
 import os
 import json
 from pathlib import Path
-from typing import Optional, Tuple, Union, Dict, Any
+from typing import Optional, Tuple, Union, Dict
 from uuid import uuid4
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
 from discord.ui import View, Button, Modal, TextInput
+import aiohttp
+import asyncio
 
-# ========= ENV / STARTUP =========
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise SystemExit("❌ DISCORD_TOKEN is not set in the environment.")
 
-# ========= THEME / DEFAULTS =========
+# ====== THEME / DEFAULTS ======
 VANITY_INVITE = "https://discord.gg/shadowsyn"
 THEME_PRIMARY = 0x2B0B35  # blackish purple
-THEME_GOOD    = 0x2b9348  # green
-THEME_WARN    = 0xf39c12  # orange
-THEME_BAD     = 0xe74c3c  # red
-THEME_INFO    = 0x5865F2  # blurple
-
+THEME_ACCENT  = 0x7A0F2E  # wine red (embed accents/footers only)
 LOBBY_NAME = "lobby"
 
-# ========= PERSISTED CONFIG =========
+# ====== PERSISTED CONFIG ======
 CONFIG_PATH = Path("welcome_config.json")
 DEFAULT_TARGET_ID = 1166874144395247757  # initial welcome thread
-# Updated: your audit log THREAD id
-DEFAULT_AUDIT_LOG_CHANNEL_ID = 961726632249425930
 
 def load_config() -> dict:
     base = {
         "welcome_target_id": DEFAULT_TARGET_ID,
-        "audit_log_channel_id": DEFAULT_AUDIT_LOG_CHANNEL_ID,
-        "vanity_invite": VANITY_INVITE,
-        "lobby_name": LOBBY_NAME,
+        # TTS defaults
+        "tts_provider": "elevenlabs",   # "elevenlabs" | "discord_tts"
+        "tts_autoleave": True,
+        "elevenlabs_voice_id": os.getenv("ELEVENLABS_VOICE_ID") or "",  # can set via command too
     }
     if CONFIG_PATH.exists():
         try:
             data = json.loads(CONFIG_PATH.read_text())
-            base.update(data or {})
+            if isinstance(data, dict):
+                base.update(data)
         except Exception:
             pass
     return base
@@ -64,7 +53,7 @@ def save_config(cfg: dict) -> None:
 
 config = load_config()
 
-# ========= HELPERS =========
+# ====== HELPERS ======
 async def resolve_target(
     bot: discord.Client, target_id: int
 ) -> Tuple[Optional[discord.abc.Messageable], Optional[discord.abc.GuildChannel]]:
@@ -118,19 +107,13 @@ def build_welcome_embed(lobby_mention: str) -> discord.Embed:
         "and no self-promo unless approved. Keep personal info private and absolutely no vegans, piracy, NSFW, or other shady content. "
         "Use common sense — it covers the rest.\n\n"
         "Spread the love by sharing our server invite link\n"
-        f"{config.get('vanity_invite')}\n"
+        f"{VANITY_INVITE}\n"
     )
     embed = discord.Embed(title="Welcome to ShadowSyn", description=desc, color=THEME_PRIMARY)
     embed.set_footer(text="Be cool. Have fun. Bring friends.")
     return embed
 
-def make_embed(title: str, message: str, color: int = THEME_PRIMARY) -> discord.Embed:
-    embed = discord.Embed(title=title[:256], description=message[:4096], color=color)
-    embed.set_footer(text="ShadowSyn")
-    embed.timestamp = datetime.now(timezone.utc)
-    return embed
-
-# ========= UI: INVITE BUTTON =========
+# ====== VIEWS ======
 INVITE_BTN_ID = "invite_friends_ephemeral"
 
 class InviteFriendsView(View):
@@ -146,12 +129,12 @@ class InviteFriendsView(View):
         self.add_item(btn)
 
     async def send_invite_ephemeral(self, interaction: discord.Interaction):
-        text = (
-            "📨 **Invite Friends**\n"
-            f"Here’s the server invite:\n{config.get('vanity_invite')}\n\n"
-            "_Tip: Clicking this link in Discord opens the native **Invite Friends** panel._"
-        )
         try:
+            text = (
+                "📨 **Invite Friends**\n"
+                f"Here’s the server invite:\n{VANITY_INVITE}\n\n"
+                "_Tip: Clicking this link in Discord opens the native **Invite Friends** panel._"
+            )
             await interaction.response.send_message(text, ephemeral=True)
         except discord.InteractionResponded:
             try:
@@ -160,12 +143,18 @@ class InviteFriendsView(View):
                 pass
         except Exception:
             try:
-                await interaction.followup.send(f"Here’s the invite: {config.get('vanity_invite')}", ephemeral=True)
+                await interaction.followup.send(f"Here’s the invite: {VANITY_INVITE}", ephemeral=True)
             except Exception:
                 pass
 
-# ========= PREVIEW STATE =========
+# ====== PREVIEW STATE ======
+# In-memory preview store: key -> {guild_id, user_id, target_id, title, message}
 PREVIEW_STORE: Dict[str, Dict] = {}
+
+def make_embed(title: str, message: str) -> discord.Embed:
+    embed = discord.Embed(title=title[:256], description=message[:4096], color=THEME_PRIMARY)
+    embed.set_footer(text="ShadowSyn")
+    return embed
 
 class CustomPreviewView(View):
     def __init__(self, key: str):
@@ -257,6 +246,7 @@ class CustomEmbedModal(Modal, title="Send Custom Embed"):
         self.add_item(self.message_input)
 
     async def on_submit(self, interaction: discord.Interaction):
+        # Cache preview
         PREVIEW_STORE[self.key] = {
             "guild_id": interaction.guild_id,
             "user_id": interaction.user.id,
@@ -275,13 +265,12 @@ class CustomEmbedModal(Modal, title="Send Custom Embed"):
         except Exception as e:
             await interaction.followup.send(f"❌ Could not show preview: `{e}`", ephemeral=True)
 
-# ========= BOT CORE =========
+# ====== BOT CORE ======
 class ShadowSynBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
         intents.guilds = True
-        intents.members = True
-        intents.voice_states = True
+        intents.voice_states = True   # needed for VC join/leave
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
 
@@ -292,70 +281,7 @@ class ShadowSynBot(discord.Client):
 
 bot = ShadowSynBot()
 
-# ========= LOGGING CORE (now supports TextChannel OR Thread) =========
-async def get_log_target(guild: Optional[discord.Guild]) -> Optional[discord.abc.Messageable]:
-    if not guild:
-        return None
-    ch_id = int(config.get("audit_log_channel_id") or 0)
-    if not ch_id:
-        return None
-    target, _ = await resolve_target(bot, ch_id)
-    return target  # can be TextChannel or Thread (both Messageable)
-
-async def send_log(
-    guild: Optional[discord.Guild],
-    title: str,
-    color: int,
-    fields: Dict[str, str],
-    footer: Optional[str] = None,
-    thumbnail: Optional[Union[str, discord.Asset]] = None
-) -> None:
-    if guild is None:
-        return
-    dest = await get_log_target(guild)
-    if dest is None:
-        return
-    embed = discord.Embed(title=title[:256], color=color)
-    embed.timestamp = datetime.now(timezone.utc)
-    for k, v in fields.items():
-        if v:
-            embed.add_field(name=k[:256], value=v[:1024], inline=False)
-    if footer:
-        embed.set_footer(text=footer[:2048])
-    if thumbnail:
-        try:
-            embed.set_thumbnail(url=str(thumbnail))
-        except Exception:
-            pass
-    try:
-        await dest.send(embed=embed)
-    except Exception:
-        pass
-
-async def find_audit(
-    guild: discord.Guild,
-    action: discord.AuditLogAction,
-    target_id: Optional[int] = None,
-    within: float = 10.0
-) -> Optional[discord.AuditLogEntry]:
-    try:
-        now = datetime.now(timezone.utc)
-        async for entry in guild.audit_logs(limit=5, action=action):
-            if (now - entry.created_at).total_seconds() > within:
-                continue
-            if target_id is not None:
-                tgt = getattr(entry, "target", None)
-                if hasattr(tgt, "id"):
-                    if tgt.id != target_id:
-                        continue
-            return entry
-    except discord.Forbidden:
-        return None
-    except Exception:
-        return None
-    return None
-
-# ========= WELCOME COMMANDS =========
+# ====== WELCOME COMMANDS ======
 async def send_welcome_impl(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
 
@@ -369,9 +295,8 @@ async def send_welcome_impl(interaction: discord.Interaction):
         )
         return
 
-    lobby_name = config.get("lobby_name", LOBBY_NAME)
-    lobby_ch = find_text_channel_by_name(interaction.guild, lobby_name) if interaction.guild else None
-    lobby_mention = lobby_ch.mention if lobby_ch else f"#{lobby_name}"
+    lobby_ch = find_text_channel_by_name(interaction.guild, LOBBY_NAME) if interaction.guild else None
+    lobby_mention = lobby_ch.mention if lobby_ch else "#lobby"
     embed = build_welcome_embed(lobby_mention)
     view = InviteFriendsView()
 
@@ -410,7 +335,7 @@ async def set_welcome_target(interaction: discord.Interaction):
     kind = "thread" if isinstance(ch, discord.Thread) else "channel"
     await interaction.followup.send(f"✅ Set welcome target to this {kind}: **#{ch.name}** (`{ch.id}`).", ephemeral=True)
 
-# ========= CUSTOM EMBED (PREVIEW FLOW) =========
+# ====== CUSTOM EMBED (PREVIEW FLOW) ======
 async def start_custom_flow(interaction: discord.Interaction, target: Union[discord.TextChannel, discord.Thread]):
     try:
         await interaction.response.send_modal(CustomEmbedModal(key=None, target_id=target.id))
@@ -446,7 +371,7 @@ async def send_custome(
 ):
     await start_custom_flow(interaction, target)
 
-# ========= ADMIN UTILITIES =========
+# ===== Admin utilities =====
 @bot.tree.command(name="sync_here", description="Admin: sync all slash commands to this guild for instant use.")
 @app_commands.checks.has_permissions(administrator=True)
 async def sync_here(interaction: discord.Interaction):
@@ -479,214 +404,148 @@ async def prune_old_commands(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ Prune failed: `{e}`", ephemeral=True)
 
-# Accepts a TextChannel OR a Thread now
-@bot.tree.command(name="set_log_channel", description="Set the audit log destination (channel or thread).")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_log_channel(interaction: discord.Interaction, target: Union[discord.TextChannel, discord.Thread]):
-    config["audit_log_channel_id"] = target.id
-    save_config(config)
-    kind = "thread" if isinstance(target, discord.Thread) else "channel"
-    await interaction.response.send_message(f"✅ Audit log {kind} set to {target.mention}", ephemeral=True)
+# ====== TTS /speak ======
+ELEVEN_API = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
+ELEVEN_KEY = os.getenv("ELEVENLABS_API_KEY") or ""
 
-@bot.tree.command(name="set_vanity", description="Set the invite URL used by the Invite button & welcome.")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_vanity(interaction: discord.Interaction, invite_url: str):
-    config["vanity_invite"] = invite_url
-    save_config(config)
-    await interaction.response.send_message("✅ Vanity invite updated.", ephemeral=True)
+async def elevenlabs_tts_to_file(text: str, voice_id: str, outfile: Path) -> bool:
+    """Stream ElevenLabs audio to a local file. Returns True on success."""
+    if not ELEVEN_KEY or not voice_id:
+        return False
+    headers = {
+        "xi-api-key": ELEVEN_KEY,
+        "Accept": "audio/mpeg",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "text": text[:5000],
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {"stability": 0.4, "similarity_boost": 0.8},
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(ELEVEN_API.format(voice_id=voice_id), headers=headers, json=payload) as r:
+                if r.status != 200:
+                    return False
+                with outfile.open("wb") as f:
+                    async for chunk in r.content.iter_chunked(32768):
+                        f.write(chunk)
+        return True
+    except Exception:
+        return False
 
-@bot.tree.command(name="set_lobby", description="Set the lobby channel name mention in the welcome embed.")
-@app_commands.checks.has_permissions(administrator=True)
-async def set_lobby(interaction: discord.Interaction, lobby_name: str):
-    config["lobby_name"] = lobby_name
-    save_config(config)
-    await interaction.response.send_message(f"✅ Lobby name set to `{lobby_name}`.", ephemeral=True)
+def ffmpeg_exists() -> bool:
+    from shutil import which
+    return which("ffmpeg") is not None
 
-# ========= MODERATION EVENT LISTENERS =========
-def _fmt_user(user: Union[discord.Member, discord.User, None]) -> str:
-    if user is None:
-        return "`Unknown`"
-    return f"{user.mention} (`{user}` / `{user.id}`)"
+async def ensure_voice(interaction: discord.Interaction) -> Optional[discord.VoiceClient]:
+    """Join the user's voice channel or move there. Returns VoiceClient or None."""
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return None
+    vc = interaction.user.voice
+    if not vc or not vc.channel:
+        await interaction.response.send_message("❌ Join a voice channel first.", ephemeral=True)
+        return None
+    try:
+        if interaction.guild.voice_client and interaction.guild.voice_client.channel != vc.channel:
+            await interaction.guild.voice_client.move_to(vc.channel)
+            return interaction.guild.voice_client
+        if interaction.guild.voice_client:
+            return interaction.guild.voice_client
+        return await vc.channel.connect(reconnect=True, timeout=15)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Can’t join VC: `{e}`", ephemeral=True)
+        return None
 
-def _fmt_channel(ch: Optional[discord.abc.GuildChannel]) -> str:
-    if ch is None:
-        return "`Unknown`"
-    if isinstance(ch, discord.VoiceChannel):
-        return f"{ch.mention} (`{ch.name}` / `{ch.id}`)"
-    if isinstance(ch, discord.StageChannel):
-        return f"{ch.mention} (`{ch.name}` / `{ch.id}`)"
-    if isinstance(ch, discord.TextChannel):
-        return f"{ch.mention} (`{ch.name}` / `{ch.id}`)"
-    return f"`{getattr(ch, 'name', 'Unknown')}` / `{getattr(ch, 'id', '??')}`"
+@bot.tree.command(name="speak", description="Make the bot speak your text in voice (or send TTS in chat as fallback).")
+@app_commands.describe(text="What should I say?")
+@app_commands.guild_only()
+async def speak(interaction: discord.Interaction, text: str):
+    provider = str(config.get("tts_provider", "elevenlabs")).lower()
+    autoleave = bool(config.get("tts_autoleave", True))
+    voice_id = config.get("elevenlabs_voice_id", "") or os.getenv("ELEVENLABS_VOICE_ID", "")
 
-@bot.event
-async def on_member_update(before: discord.Member, after: discord.Member):
-    guild = after.guild
-
-    # Nickname change
-    if before.nick != after.nick:
-        actor = None
-        reason = None
-        entry = await find_audit(guild, discord.AuditLogAction.member_update, target_id=after.id, within=15)
-        if entry:
-            actor = entry.user
-            reason = entry.reason
-        await send_log(
-            guild,
-            title="📝 Nickname Changed",
-            color=THEME_INFO,
-            fields={
-                "Member": _fmt_user(after),
-                "Moderator": _fmt_user(actor),
-                "Old Nick": before.nick or "`None`",
-                "New Nick": after.nick or "`None`",
-                "Reason": reason or "`Not provided`",
-            },
-            thumbnail=after.display_avatar
-        )
-
-    # Timeout changes
-    before_cdu = before.communication_disabled_until
-    after_cdu = after.communication_disabled_until
-    if before_cdu != after_cdu:
-        actor = None
-        reason = None
-        entry = await find_audit(guild, discord.AuditLogAction.member_update, target_id=after.id, within=15)
-        if entry:
-            actor = entry.user
-            reason = entry.reason
-
-        if after_cdu and (not before_cdu or after_cdu > datetime.now(timezone.utc)):
-            dur = (after_cdu - datetime.now(timezone.utc)).total_seconds()
-            human = f"{int(dur//3600)}h {int((dur%3600)//60)}m"
-            await send_log(
-                guild,
-                title="⏳ Timeout Applied",
-                color=THEME_WARN,
-                fields={
-                    "Member": _fmt_user(after),
-                    "Moderator": _fmt_user(actor),
-                    "Until": f"<t:{int(after_cdu.timestamp())}:F>",
-                    "Approx Duration": human,
-                    "Reason": reason or "`Not provided`",
-                },
-                thumbnail=after.display_avatar
-            )
-        else:
-            await send_log(
-                guild,
-                title="✅ Timeout Removed",
-                color=THEME_GOOD,
-                fields={
-                    "Member": _fmt_user(after),
-                    "Moderator": _fmt_user(actor),
-                    "Reason": reason or "`Not provided`",
-                },
-                thumbnail=after.display_avatar
-            )
-
-    # Server mute/deafen flips
-    if before.voice or after.voice:
+    # Try VC path if provider is elevenlabs and ffmpeg present
+    if provider == "elevenlabs" and ffmpeg_exists():
+        vc = await ensure_voice(interaction)
+        if vc is None:
+            return  # message already sent
+        # Defer ephemeral confirm
         try:
-            b = before.voice
-            a = after.voice
-            if b and a:
-                if b.mute != a.mute:
-                    entry = await find_audit(guild, discord.AuditLogAction.member_update, target_id=after.id, within=15)
-                    await send_log(
-                        guild,
-                        title="🔇 Server Mute Toggled",
-                        color=THEME_WARN if a.mute else THEME_GOOD,
-                        fields={
-                            "Member": _fmt_user(after),
-                            "Moderator": _fmt_user(entry.user if entry else None),
-                            "Now": "`Muted`" if a.mute else "`Unmuted`",
-                        },
-                        thumbnail=after.display_avatar
-                    )
-                if b.deaf != a.deaf:
-                    entry = await find_audit(guild, discord.AuditLogAction.member_update, target_id=after.id, within=15)
-                    await send_log(
-                        guild,
-                        title="🔈 Server Deafen Toggled",
-                        color=THEME_WARN if a.deaf else THEME_GOOD,
-                        fields={
-                            "Member": _fmt_user(after),
-                            "Moderator": _fmt_user(entry.user if entry else None),
-                            "Now": "`Deafened`" if a.deaf else "`Undeafened`",
-                        },
-                        thumbnail=after.display_avatar
-                    )
-        except Exception:
+            await interaction.response.send_message("🎙️ Generating speech…", ephemeral=True)
+        except discord.InteractionResponded:
             pass
 
-@bot.event
-async def on_member_remove(member: discord.Member):
-    guild = member.guild
-    entry = await find_audit(guild, discord.AuditLogAction.kick, target_id=member.id, within=15)
-    if entry:
-        await send_log(
-            guild,
-            title="👢 Member Kicked",
-            color=THEME_BAD,
-            fields={
-                "Member": _fmt_user(member),
-                "Moderator": _fmt_user(entry.user),
-                "Reason": entry.reason or "`Not provided`",
-            },
-            thumbnail=member.display_avatar
-        )
+        # Synthesize to temp file
+        tmp = Path(f"/tmp/tts_{uuid4().hex}.mp3")
+        ok = await elevenlabs_tts_to_file(text, voice_id, tmp)
+        if not ok or not tmp.exists():
+            # Fallback to text-channel TTS
+            await interaction.followup.send("⚠️ ElevenLabs failed — sending Discord TTS in chat instead.", ephemeral=True)
+            try:
+                await interaction.channel.send(text, tts=True)
+            except Exception:
+                pass
+            return
 
-@bot.event
-async def on_member_ban(guild: discord.Guild, user: Union[discord.Member, discord.User]):
-    entry = await find_audit(guild, discord.AuditLogAction.ban, target_id=getattr(user, "id", None), within=20)
-    await send_log(
-        guild,
-        title="⛔ Member Banned",
-        color=THEME_BAD,
-        fields={
-            "Member": _fmt_user(user),
-            "Moderator": _fmt_user(entry.user if entry else None),
-            "Reason": (entry.reason if entry else None) or "`Not provided`",
-        },
-        thumbnail=getattr(user, "display_avatar", None)
-    )
+        # Play it
+        try:
+            src = discord.FFmpegPCMAudio(str(tmp), before_options="-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5")
+            vc.play(src)
+            # wait until done
+            while vc.is_playing():
+                await asyncio.sleep(0.25)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Playback error: `{e}`", ephemeral=True)
+        finally:
+            try:
+                if tmp.exists():
+                    tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+            if autoleave:
+                try:
+                    await vc.disconnect(force=False)
+                except Exception:
+                    pass
+        return
 
-@bot.event
-async def on_member_unban(guild: discord.Guild, user: Union[discord.Member, discord.User]):
-    entry = await find_audit(guild, discord.AuditLogAction.unban, target_id=getattr(user, "id", None), within=20)
-    await send_log(
-        guild,
-        title="♻️ Member Unbanned",
-        color=THEME_INFO,
-        fields={
-            "Member": _fmt_user(user),
-            "Moderator": _fmt_user(entry.user if entry else None),
-            "Reason": (entry.reason if entry else None) or "`Not provided`",
-        },
-        thumbnail=getattr(user, "display_avatar", None)
-    )
+    # Fallback: Discord text-channel TTS
+    try:
+        await interaction.response.send_message("🔈 Sending TTS to this channel…", ephemeral=True)
+    except discord.InteractionResponded:
+        pass
+    try:
+        await interaction.channel.send(text, tts=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Couldn’t send TTS: `{e}`", ephemeral=True)
 
-@bot.event
-async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-    if before.channel != after.channel:
-        guild = member.guild
-        entry = await find_audit(guild, discord.AuditLogAction.member_move, target_id=None, within=10)
-        moderator = entry.user if entry else None
-        await send_log(
-            guild,
-            title="↔️ Member Moved",
-            color=THEME_INFO,
-            fields={
-                "Member": _fmt_user(member),
-                "Moderator": _fmt_user(moderator),
-                "From": _fmt_channel(before.channel) if before.channel else "`None`",
-                "To": _fmt_channel(after.channel) if after.channel else "`Disconnected`",
-            },
-            thumbnail=member.display_avatar
-        )
+@bot.tree.command(name="set_tts_provider", description="Admin: choose TTS provider (elevenlabs or discord_tts).")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_tts_provider(interaction: discord.Interaction, provider: str):
+    provider = provider.lower().strip()
+    if provider not in {"elevenlabs", "discord_tts"}:
+        await interaction.response.send_message("❌ Use `elevenlabs` or `discord_tts`.", ephemeral=True)
+        return
+    config["tts_provider"] = provider
+    save_config(config)
+    await interaction.response.send_message(f"✅ TTS provider set to `{provider}`.", ephemeral=True)
 
-# ========= RUN =========
+@bot.tree.command(name="set_tts_voice", description="Admin: set default ElevenLabs voice ID.")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_tts_voice(interaction: discord.Interaction, voice_id: str):
+    config["elevenlabs_voice_id"] = voice_id.strip()
+    save_config(config)
+    await interaction.response.send_message("✅ ElevenLabs voice saved.", ephemeral=True)
+
+@bot.tree.command(name="set_tts_autoleave", description="Admin: toggle auto-leave after speaking.")
+@app_commands.checks.has_permissions(administrator=True)
+async def set_tts_autoleave(interaction: discord.Interaction, value: bool):
+    config["tts_autoleave"] = bool(value)
+    save_config(config)
+    await interaction.response.send_message(f"✅ Auto-leave set to `{value}`.", ephemeral=True)
+
+# ====== RUN ======
 def main():
     bot.run(TOKEN)
 
