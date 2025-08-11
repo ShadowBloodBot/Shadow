@@ -15,6 +15,13 @@ from discord.ui import View, Button, Modal, TextInput
 from gtts import gTTS
 from shutil import which
 
+MEMBER_ROLE_ID = 955600320287887400
+
+def has_member_role(interaction: discord.Interaction) -> bool:
+    m = interaction.user
+    return isinstance(m, discord.Member) and any(r.id == MEMBER_ROLE_ID for r in m.roles)
+
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise SystemExit("❌ DISCORD_TOKEN is not set in the environment.")
