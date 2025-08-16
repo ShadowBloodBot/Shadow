@@ -1,5 +1,6 @@
 # bot.py — ShadowSyn Welcome + Custom Embed Bot
 # + /speak voice TTS (hidden input, VC playback, auto-leave, translation, usage logs)
+# + Mee6 welcome replacement (arrivals card + Minion button)
 # Env: DISCORD_TOKEN
 
 import os
@@ -27,9 +28,14 @@ THEME_PRIMARY  = 0x2B0B35  # blackish purple
 THEME_ACCENT   = 0x7A0F2E  # wine red (not heavily used)
 LOBBY_NAME     = "lobby"
 
+# Mee6 replacement targets/roles
+ARRIVALS_THREAD_ID = 959629903186259978  # where the join card is posted
+ROLE_MINION_ID     = 955600021502431233  # Minion role granted by the button
+ROLE_ADMIN_ID      = 1214794734770323466 # Admin role allowed to press
+
 # Persistence
 CONFIG_PATH        = Path("welcome_config.json")
-DEFAULT_TARGET_ID  = 1166874144395247757  # initial welcome thread
+DEFAULT_TARGET_ID  = 1166874144395247757  # initial welcome thread for /send_welcome
 
 # Permissions / role-gates
 MEMBER_ROLE_ID = 955600320287887400  # users must have this to run /speak
@@ -302,7 +308,7 @@ class ShadowSynBot(discord.Client):
         intents = discord.Intents.default()
         intents.guilds = True
         intents.voice_states = True  # VC join/leave
-        intents.members = True       # role checks for /speak
+        intents.members = True       # role checks + on_member_join
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
 
@@ -312,6 +318,146 @@ class ShadowSynBot(discord.Client):
         await self.tree.sync()
 
 bot = ShadowSynBot()
+
+# ============================================================
+#                MEE6 WELCOME REPLACEMENT (AUTOMATED)
+# ============================================================
+
+def setup_welcome(bot: discord.Client):
+    """
+    Install the arrivals card + Minion button.
+    """
+    class MinionView(View):
+        def __init__(self, target_member_id: int):
+            # 24h timeout to avoid stale buttons
+            super().__init__(timeout=60 * 60 * 24)
+            self.target_member_id = target_member_id
+
+            btn = Button(label="Minion", style=discord.ButtonStyle.success)
+            btn.callback = self._grant_minion
+            self.add_item(btn)
+
+        async def interaction_check(self, interaction: discord.Interaction) -> bool:
+            """Allow Admin role or Manage Roles."""
+            guild = interaction.guild
+            if not guild:
+                await interaction.response.send_message("Guild not found.", ephemeral=True)
+                return False
+
+            invoker = guild.get_member(interaction.user.id)
+            if not invoker:
+                await interaction.response.send_message("Member not found.", ephemeral=True)
+                return False
+
+            has_admin_role = any(r.id == ROLE_ADMIN_ID for r in invoker.roles)
+            if has_admin_role or invoker.guild_permissions.manage_roles:
+                return True
+
+            await interaction.response.send_message("You don’t have permission to give roles.", ephemeral=True)
+            return False
+
+        async def _grant_minion(self, interaction: discord.Interaction):
+            guild = interaction.guild
+            if not guild:
+                return await interaction.response.send_message("Guild not found.", ephemeral=True)
+
+            target_member = guild.get_member(self.target_member_id)
+            if not target_member:
+                return await interaction.response.send_message("Member not found.", ephemeral=True)
+
+            minion_role = guild.get_role(ROLE_MINION_ID)
+            if not minion_role:
+                return await interaction.response.send_message(
+                    f"Minion role `{ROLE_MINION_ID}` not found.", ephemeral=True
+                )
+
+            try:
+                if minion_role in target_member.roles:
+                    await interaction.response.send_message(
+                        f"{target_member.mention} already has **{minion_role.name}**.", ephemeral=True
+                    )
+                else:
+                    await target_member.add_roles(
+                        minion_role,
+                        reason=f"Granted by {interaction.user} via Welcome button"
+                    )
+                    await interaction.response.send_message(
+                        f"✅ Gave **{minion_role.name}** to {target_member.mention}.", ephemeral=True
+                    )
+                    # Disable button after success
+                    try:
+                        if interaction.message:
+                            view = View.from_message(interaction.message)
+                            for item in view.children:
+                                if isinstance(item, Button):
+                                    item.disabled = True
+                            await interaction.message.edit(view=view)
+                    except Exception:
+                        pass
+            except discord.Forbidden:
+                await interaction.response.send_message(
+                    "I need **Manage Roles**, and my top role must be **above** Minion.", ephemeral=True
+                )
+            except Exception as e:
+                await interaction.response.send_message(f"Unexpected error: {e}", ephemeral=True)
+
+        async def on_timeout(self):
+            for child in self.children:
+                if isinstance(child, Button):
+                    child.disabled = True
+
+    async def _send_arrival_card(member: discord.Member):
+        """Post minimal card with button in arrivals thread."""
+        if member.bot:
+            return
+
+        # Resolve arrivals destination
+        dest = bot.get_channel(ARRIVALS_THREAD_ID)
+        if dest is None:
+            try:
+                dest = await bot.fetch_channel(ARRIVALS_THREAD_ID)
+            except Exception:
+                dest = None
+
+        if isinstance(dest, (discord.Thread, discord.TextChannel)):
+            target = dest
+        else:
+            target = member.guild.system_channel or (member.guild.text_channels[0] if member.guild.text_channels else None)
+
+        if target is None:
+            return  # nowhere to send
+
+        embed = discord.Embed(
+            description=f"{member.mention} joined **{member.guild.name}**",
+            color=discord.Color.dark_theme()
+        )
+        embed.set_author(name=str(member), icon_url=getattr(member.display_avatar, "url", discord.Embed.Empty))
+        embed.set_footer(text="Tap the button below to grant Minion")
+
+        view = MinionView(member.id)
+
+        try:
+            await target.send(embed=embed, view=view)
+        except discord.Forbidden:
+            # Attempt warning in system channel
+            sys = member.guild.system_channel
+            if sys:
+                try:
+                    await sys.send(
+                        f"⚠️ I couldn't post in arrivals thread `{ARRIVALS_THREAD_ID}`. "
+                        f"Check my permissions (Send Messages, Embed Links) and thread access."
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    @bot.event
+    async def on_member_join(member: discord.Member):
+        await _send_arrival_card(member)
+
+# install
+setup_welcome(bot)
 
 # ============================================================
 #                       COMMANDS
