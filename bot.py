@@ -67,7 +67,7 @@ if not TOKEN:
 def load_config() -> dict:
     base = {
         "welcome_target_id": DEFAULT_TARGET_ID,
-        "audit_channel_id": None,  # set via /set_audit_channel
+        "audit_channel_id": None,    # set with /set_audit_channel
     }
     if CONFIG_PATH.exists():
         try:
@@ -310,8 +310,8 @@ class ShadowSynBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
         intents.guilds = True
-        intents.voice_states = True  # REQUIRED for voice audit logs
-        intents.members = True       # REQUIRED for on_member_join
+        intents.voice_states = True   # REQUIRED for audit logs
+        intents.members = True        # REQUIRED for on_member_join
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
 
@@ -406,6 +406,7 @@ def setup_welcome(bot: discord.Client):
             except Exception:
                 pass
             p = dest.permissions_for(me)
+            # Threads use send_messages; guard for embed_links + visibility
             if p.view_channel and p.send_messages and p.embed_links:
                 target = dest
 
@@ -520,8 +521,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         await channel.send(embed=e)
 
     elif before.channel is not None and after.channel is None:
-        # Left VC
-        # Check if a moderator disconnected them (audit log)
+        # Left VC (or moderator disconnected)
         moderator = await _find_moderator_for_move(guild, member)
         title = "🔌 Member Disconnected" if moderator else "🔇 Member Left"
         e = _member_card(title, member, thumb)
@@ -584,19 +584,125 @@ async def audit_test(interaction: discord.Interaction):
 #                       COMMANDS (WELCOME & CUSTOM)
 # ============================================================
 
-# ----- Welcome poster -----
+@bot.tree.command(name="welcome_diag", description="Diagnose arrivals permissions & config.")
+@app_commands.checks.has_permissions(administrator=True)
+async def welcome_diag(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    guild = interaction.guild
+    if not guild:
+        return await interaction.followup.send("Not in a guild.", ephemeral=True)
+
+    me = guild.me
+    try:
+        dest = bot.get_channel(ARRIVALS_THREAD_ID) or await bot.fetch_channel(ARRIVALS_THREAD_ID)
+    except Exception:
+        dest = None
+
+    where = f"{type(dest).__name__} `{getattr(dest,'name','?')}` ({ARRIVALS_THREAD_ID})" if dest else f"(missing) {ARRIVALS_THREAD_ID}"
+    fields = []
+
+    if isinstance(dest, discord.Thread):
+        p = dest.permissions_for(me)
+        fields += [("view_channel", p.view_channel),
+                   ("send_messages (thread)", p.send_messages),
+                   ("embed_links", p.embed_links)]
+    elif isinstance(dest, discord.TextChannel):
+        p = dest.permissions_for(me)
+        fields += [("view_channel", p.view_channel),
+                   ("send_messages", p.send_messages),
+                   ("embed_links", p.embed_links)]
+    else:
+        fields.append(("channel_accessible", False))
+
+    r = guild.get_role(ROLE_MINION_ID)
+    fields.append(("minion_role_found", bool(r)))
+    fields.append(("bot_above_minion", me.top_role > r if r else False))
+    fields.append(("manage_roles", me.guild_permissions.manage_roles))
+
+    e = discord.Embed(title="Welcome Diagnostics", color=THEME_PRIMARY)
+    e.add_field(name="Arrivals target", value=where, inline=False)
+    for k, v in fields:
+        e.add_field(name=k, value=str(v), inline=True)
+
+    await interaction.followup.send(embed=e, ephemeral=True)
+
+@bot.tree.command(name="welcome_test", description="Post a Minion-button card for a member to the arrivals channel.")
+@app_commands.describe(member="Member to show on the test card")
+@app_commands.checks.has_permissions(administrator=True)
+async def welcome_test(interaction: discord.Interaction, member: discord.Member):
+    await interaction.response.defer(ephemeral=True)
+
+    try:
+        dest = bot.get_channel(ARRIVALS_THREAD_ID) or await bot.fetch_channel(ARRIVALS_THREAD_ID)
+    except Exception:
+        dest = None
+
+    me = interaction.guild.me
+    target = None
+    if isinstance(dest, discord.Thread):
+        try:
+            if dest.archived:
+                await dest.edit(archived=False)
+            await dest.join()
+        except Exception:
+            pass
+        p = dest.permissions_for(me)
+        if p.view_channel and p.send_messages and p.embed_links:
+            target = dest
+    elif isinstance(dest, discord.TextChannel):
+        p = dest.permissions_for(me)
+        if p.view_channel and p.send_messages and p.embed_links:
+            target = dest
+    if target is None:
+        target = interaction.guild.system_channel
+    if target is None:
+        return await interaction.followup.send("No writable destination found.", ephemeral=True)
+
+    class MinionView(View):
+        def __init__(self, target_member_id: int):
+            super().__init__(timeout=60*60*24)
+            self.target_member_id = target_member_id
+            btn = Button(label="Minion", style=discord.ButtonStyle.success)
+            btn.callback = self._grant_minion
+            self.add_item(btn)
+        async def interaction_check(self, inter: discord.Interaction) -> bool:
+            m = inter.guild.get_member(inter.user.id)
+            if m and (any(r.id == ROLE_ADMIN_ID for r in m.roles) or m.guild_permissions.manage_roles):
+                return True
+            await inter.response.send_message("No permission.", ephemeral=True); return False
+        async def _grant_minion(self, inter: discord.Interaction):
+            role = inter.guild.get_role(ROLE_MINION_ID)
+            tgt = inter.guild.get_member(self.target_member_id)
+            if not role or not tgt:
+                return await inter.response.send_message("Role/member missing.", ephemeral=True)
+            try:
+                if role not in tgt.roles:
+                    await tgt.add_roles(role, reason=f"Granted by {inter.user} (test)")
+                await inter.response.send_message(f"✅ Gave **{role.name}** to {tgt.mention}.", ephemeral=True)
+            except Exception as e:
+                await inter.response.send_message(f"Error: {e}", ephemeral=True)
+
+    icon = safe_avatar_url(member)
+    embed = discord.Embed(
+        description=f"{member.mention} joined **{interaction.guild.name}**",
+        color=discord.Color.dark_theme()
+    )
+    embed.set_author(name=str(member), icon_url=icon)
+    embed.set_footer(text="Tap the button below to grant Minion")
+
+    await target.send(embed=embed, view=MinionView(member.id))
+    await interaction.followup.send("Posted test card.", ephemeral=True)
+
+# ----- Manual long welcome embed -----
 async def send_welcome_impl(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
-
     target_id = int(config.get("welcome_target_id") or DEFAULT_TARGET_ID)
     target, _ = await resolve_target(bot, target_id)
     if target is None:
-        await interaction.followup.send(
-            "❌ I can’t access the configured welcome target. "
-            "Run `/set_welcome_target` **in your welcome thread** and try again.",
+        return await interaction.followup.send(
+            "❌ I can’t access the configured welcome target. Run `/set_welcome_target` **in your welcome thread** and try again.",
             ephemeral=True
         )
-        return
 
     lobby_ch = find_text_channel_by_name(interaction.guild, LOBBY_NAME) if interaction.guild else None
     lobby_mention = lobby_ch.mention if lobby_ch else f"#{LOBBY_NAME}"
@@ -622,9 +728,7 @@ async def set_welcome_target(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
     ch = interaction.channel
     if not isinstance(ch, (discord.TextChannel, discord.Thread)):
-        await interaction.followup.send("❌ Run this inside a text channel or a thread.", ephemeral=True)
-        return
-
+        return await interaction.followup.send("❌ Run this inside a text channel or a thread.", ephemeral=True)
     if isinstance(ch, discord.Thread):
         try:
             if ch.archived:
@@ -632,35 +736,10 @@ async def set_welcome_target(interaction: discord.Interaction):
             await ch.join()
         except Exception:
             pass
-
     config["welcome_target_id"] = ch.id
     save_config(config)
     kind = "thread" if isinstance(ch, discord.Thread) else "channel"
     await interaction.followup.send(f"✅ Set welcome target to this {kind}: **#{ch.name}** (`{ch.id}`).", ephemeral=True)
-
-# ----- Custom embed with preview -----
-async def start_custom_flow(interaction: discord.Interaction, target: Union[discord.TextChannel, discord.Thread]):
-    try:
-        await interaction.response.send_modal(CustomEmbedModal(key=None, target_id=target.id))
-    except Exception as e:
-        try:
-            await interaction.followup.send(f"❌ Could not open modal: `{e}`", ephemeral=True)
-        except Exception:
-            pass
-
-@bot.tree.command(name="send_custom", description="Post a custom embed to a selected text channel or thread (with preview).")
-@app_commands.describe(target="Choose a text channel or thread")
-@app_commands.checks.has_permissions(administrator=True)
-@app_commands.guild_only()
-async def send_custom(interaction: discord.Interaction, target: Union[discord.TextChannel, discord.Thread]):
-    await start_custom_flow(interaction, target)
-
-@bot.tree.command(name="send_custome", description="(Alias) Post a custom embed to a selected text channel or thread (with preview).")
-@app_commands.describe(target="Choose a text channel or thread")
-@app_commands.checks.has_permissions(administrator=True)
-@app_commands.guild_only()
-async def send_custome(interaction: discord.Interaction, target: Union[discord.TextChannel, discord.Thread]):
-    await start_custom_flow(interaction, target)
 
 # ============================================================
 #                       /SPEAK (TTS + TRANSLATE + LOG)
@@ -687,7 +766,8 @@ async def ensure_voice(interaction: discord.Interaction) -> Optional[discord.Voi
 async def log_speak_usage(interaction: discord.Interaction, original_text: str, lang_code: str):
     target, _ = await resolve_target(bot, SPEAK_LOG_THREAD_ID)
     if not target:
-        return
+        return  # can't access the thread
+
     pretty = next((c.name for c in LANG_CHOICES if c.value == lang_code), lang_code)
     vc_name = (
         interaction.user.voice.channel.mention
@@ -695,23 +775,33 @@ async def log_speak_usage(interaction: discord.Interaction, original_text: str, 
         else "`N/A`"
     )
     text_channel = interaction.channel.mention if isinstance(interaction.channel, discord.TextChannel) else "`N/A`"
+
     embed = discord.Embed(title="🗣️ /speak used", color=THEME_PRIMARY)
     embed.add_field(name="User", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=False)
     embed.add_field(name="Language", value=pretty, inline=True)
     embed.add_field(name="Voice Channel", value=vc_name, inline=True)
     embed.add_field(name="Typed Text (EN)", value=(original_text[:1024] or "`(empty)`"), inline=False)
     embed.set_footer(text=f"Invoked in {text_channel}")
+
     try:
         await target.send(embed=embed)
     except Exception:
         pass
 
 @bot.tree.command(name="speak", description="Bot joins your VC and speaks the text (no message posted).")
-@app_commands.describe(text="Type your message in English", language="Target language to speak")
+@app_commands.describe(
+    text="Type your message in English",
+    language="Target language to speak"
+)
 @app_commands.choices(language=LANG_CHOICES)
-@app_commands.check(has_member_role)
+@app_commands.check(has_member_role)   # require Member role
 @app_commands.guild_only()
-async def speak(interaction: discord.Interaction, text: str, language: app_commands.Choice[str] = None):
+async def speak(
+    interaction: discord.Interaction,
+    text: str,
+    language: app_commands.Choice[str] = None
+):
+    # Hidden interaction
     try:
         await interaction.response.defer(ephemeral=True)
     except discord.InteractionResponded:
@@ -725,9 +815,11 @@ async def speak(interaction: discord.Interaction, text: str, language: app_comma
     if vc is None:
         return
 
+    # Determine language, log usage, and translate EN -> target if needed
     lang_code = (language.value if language else "en").lower()
     to_say = text[:5000]
 
+    # Log usage to the thread
     await log_speak_usage(interaction, original_text=text, lang_code=lang_code)
 
     if lang_code != "en":
@@ -737,6 +829,7 @@ async def speak(interaction: discord.Interaction, text: str, language: app_comma
         except Exception as e:
             await interaction.followup.send(f"⚠️ Translation failed ({e}); speaking original English.", ephemeral=True)
 
+    # Synthesize to temp mp3 via gTTS with the target language
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
             tmp_path = f.name
@@ -746,6 +839,7 @@ async def speak(interaction: discord.Interaction, text: str, language: app_comma
         await interaction.followup.send(f"❌ TTS failed: `{e}`", ephemeral=True)
         return
 
+    # Play and wait; auto-leave
     try:
         audio = discord.FFmpegPCMAudio(tmp_path, before_options="-nostdin")
         vc.play(audio)
@@ -756,10 +850,14 @@ async def speak(interaction: discord.Interaction, text: str, language: app_comma
     except Exception as e:
         await interaction.followup.send(f"❌ Playback error: `{e}`", ephemeral=True)
     finally:
-        try: os.remove(tmp_path)
-        except Exception: pass
-        try: await vc.disconnect(force=False)
-        except Exception: pass
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        try:
+            await vc.disconnect(force=False)
+        except Exception:
+            pass
 
 # ============================================================
 #                       ERROR HANDLING & RUN
@@ -769,15 +867,22 @@ async def speak(interaction: discord.Interaction, text: str, language: app_comma
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CheckFailure):
         try:
-            await interaction.response.send_message("❌ You need the **Member** role to use `/speak`.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ You need the **Member** role to use `/speak`.",
+                ephemeral=True
+            )
         except discord.InteractionResponded:
-            await interaction.followup.send("❌ You need the **Member** role to use `/speak`.", ephemeral=True)
+            await interaction.followup.send(
+                "❌ You need the **Member** role to use `/speak`.",
+                ephemeral=True
+            )
 
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} • Members intent={bot.intents.members} • Voice intent={bot.intents.voice_states}")
 
 def main():
+    # Optional: log ffmpeg path for sanity during deploys
     print("FFMPEG PATH:", which("ffmpeg"))
     bot.run(TOKEN)
 
