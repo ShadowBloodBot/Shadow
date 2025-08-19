@@ -50,6 +50,9 @@ SPEAK_LOG_THREAD_ID = 1400048671973703690
 # Departures (leave/kick/ban) log destination (thread)
 DEPARTURES_THREAD_ID = 960088192177029140
 
+# >>> Default Audit Destination (YOUR REQUIRED THREAD)
+DEFAULT_AUDIT_THREAD_ID = 961726632249425930
+
 # Token
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
@@ -71,7 +74,8 @@ LANG_CHOICES = [
 def load_config() -> dict:
     base = {
         "welcome_target_id": DEFAULT_TARGET_ID,
-        "audit_channel_id": None,    # set with /set_audit_channel
+        # Default audit channel points to your thread; /set_audit_channel can override.
+        "audit_channel_id": DEFAULT_AUDIT_THREAD_ID,
     }
     if CONFIG_PATH.exists():
         try:
@@ -113,6 +117,7 @@ async def resolve_target(
 
     if isinstance(ch, discord.Thread):
         try:
+            # Unarchive/unlock and join to ensure we can post.
             if ch.archived or ch.locked:
                 await ch.edit(archived=False, locked=False)
             await ch.join()
@@ -177,14 +182,12 @@ async def _detect_join_source(member: discord.Member) -> Optional[str]:
         return None
 
     if not _can_track_invites(guild):
-        # Try a light vanity hint even without manage_guild
         try:
-            vanity = guild.vanity_url_code  # requires manage_guild to fetch reliably; may be None
+            vanity = guild.vanity_url_code
         except Exception:
             vanity = None
         return f"Joined via Vanity: `{vanity}`" if vanity else None
 
-    # Compare cached uses vs fresh uses
     try:
         before = _INVITES_CACHE.get(guild.id, {})
         current_invites = await guild.invites()
@@ -195,7 +198,6 @@ async def _detect_join_source(member: discord.Member) -> Optional[str]:
                 increased = inv
                 break
 
-        # Update cache to latest snapshot
         _INVITES_CACHE[guild.id] = {inv.code: (inv.uses or 0) for inv in current_invites}
 
         if increased:
@@ -203,7 +205,6 @@ async def _detect_join_source(member: discord.Member) -> Optional[str]:
             inviter_name = f"{inviter}" if inviter else "Unknown"
             return f"Joined via `{increased.code}`, invited by **{inviter_name}** (uses: {increased.uses or 0})"
 
-        # No invite increased; likely vanity or external
         try:
             vanity = guild.vanity_url_code
         except Exception:
@@ -214,7 +215,6 @@ async def _detect_join_source(member: discord.Member) -> Optional[str]:
     except Exception:
         return None
 
-# Keep cache in sync when invites are created/deleted
 async def _on_invite_create(invite: discord.Invite):
     try:
         d = _INVITES_CACHE.setdefault(invite.guild.id, {})
@@ -377,9 +377,14 @@ _AUDIT_QUEUE: asyncio.Queue = asyncio.Queue(maxsize=1000)
 _AUDIT_WORKER_TASK: Optional[asyncio.Task] = None
 
 async def _get_audit_target(guild: discord.Guild) -> Optional[discord.abc.Messageable]:
-    chan_id = config.get("audit_channel_id")
+    """
+    Resolves the audit destination from config["audit_channel_id"] with robust Thread handling.
+    Will unarchive/unlock/join threads automatically.
+    """
+    chan_id = config.get("audit_channel_id") or DEFAULT_AUDIT_THREAD_ID
     if not chan_id:
         return None
+
     ch = guild.get_channel(chan_id)
     if ch is None:
         try:
@@ -388,20 +393,31 @@ async def _get_audit_target(guild: discord.Guild) -> Optional[discord.abc.Messag
             return None
 
     me = guild.me
+    if not me:
+        return None
 
+    # Thread handling
     if isinstance(ch, discord.Thread):
         try:
+            # Try to unarchive/unlock; ignore Forbidden so we at least try to send.
             if ch.archived or ch.locked:
                 try:
                     await ch.edit(archived=False, locked=False)
                 except discord.Forbidden:
                     pass
+            # Join thread to satisfy send_messages_in_threads check internally
+            try:
+                await ch.join()
+            except discord.Forbidden:
+                pass
+
             perms = ch.permissions_for(me)
             if perms.view_channel and perms.send_messages:
                 return ch
         except Exception:
             return None
 
+    # Text channel handling
     if isinstance(ch, discord.TextChannel):
         p = ch.permissions_for(me)
         if p.view_channel and p.send_messages and p.embed_links:
@@ -417,11 +433,16 @@ def _member_card(title: str, member: discord.Member, thumb: Optional[str]=None) 
     return e
 
 async def _find_moderator_for_move(guild: discord.Guild, target_member: discord.Member) -> Optional[discord.Member]:
-    if not guild.me.guild_permissions.view_audit_log:
+    """
+    Attempts to attribute move/disconnect events to a moderator via audit logs.
+    """
+    if not guild.me or not guild.me.guild_permissions.view_audit_log:
         return None
+
+    # Give Discord a moment to write the audit entry
     await asyncio.sleep(1.0)
     try:
-        async for entry in guild.audit_logs(limit=6):
+        async for entry in guild.audit_logs(limit=8):
             if entry.action in (discord.AuditLogAction.member_move, discord.AuditLogAction.member_disconnect):
                 if getattr(entry.target, "id", None) == target_member.id:
                     return entry.user if isinstance(entry.user, discord.Member) else guild.get_member(getattr(entry.user, "id", 0))
@@ -443,14 +464,24 @@ async def _audit_worker(bot: "ShadowSynBot"):
                 if dest is None:
                     _AUDIT_QUEUE.task_done(); continue
 
-                member = guild.get_member(member_id) or await guild.fetch_member(member_id)
+                # Fetch member live; if they left the guild (edge case) bail on enriched data
+                try:
+                    member = guild.get_member(member_id) or await guild.fetch_member(member_id)
+                except discord.NotFound:
+                    _AUDIT_QUEUE.task_done(); continue
+                except Exception:
+                    member = guild.get_member(member_id)
+
                 before_ch = guild.get_channel(before_id) if before_id else None
                 after_ch  = guild.get_channel(after_id)  if after_id  else None
 
                 def chfmt(ch):
                     if ch is None: return "`N/A`"
                     mention = getattr(ch, "mention", f"`{ch.id}`")
-                    return f"{mention} (`{ch.id}`)"
+                    base = f"{mention} (`{ch.id}`)"
+                    if hasattr(ch, 'name'):
+                        base += f" • **{ch.name}**"
+                    return base
 
                 thumb = safe_avatar_url(member)
 
@@ -461,7 +492,7 @@ async def _audit_worker(bot: "ShadowSynBot"):
                     try:
                         if not guild.me.guild_permissions.view_audit_log:
                             return None
-                        async for entry in guild.audit_logs(limit=6):
+                        async for entry in guild.audit_logs(limit=8):
                             if entry.action == discord.AuditLogAction.member_update and getattr(entry.target, "id", None) == member.id:
                                 created = entry.created_at.replace(tzinfo=timezone.utc) if entry.created_at.tzinfo is None else entry.created_at
                                 if (utcnow() - created).total_seconds() <= 15:
@@ -472,6 +503,7 @@ async def _audit_worker(bot: "ShadowSynBot"):
                 if etype == "join":
                     embed = _member_card("🔊 Member Joined", member, thumb)
                     embed.add_field(name="To", value=chfmt(after_ch), inline=False)
+
                 elif etype == "leave":
                     moderator = await _find_moderator_for_move(guild, member)
                     title = "🔌 Member Disconnected" if moderator else "🔇 Member Left"
@@ -479,6 +511,7 @@ async def _audit_worker(bot: "ShadowSynBot"):
                     embed.add_field(name="From", value=chfmt(before_ch), inline=False)
                     if moderator:
                         embed.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator} / {moderator.id}`", inline=False)
+
                 elif etype == "move":
                     moderator = await _find_moderator_for_move(guild, member)
                     embed = _member_card("↔️ Member Moved", member, thumb)
@@ -566,6 +599,15 @@ bot = ShadowSynBot()
 
 @bot.event
 async def on_ready():
+    # Print audit target resolution diagnostics on boot
+    try:
+        for g in bot.guilds:
+            dest = await _get_audit_target(g)
+            name = getattr(dest, "name", None) or (getattr(dest, "parent", None).name if isinstance(dest, discord.Thread) and dest.parent else "unknown")
+            print(f"[AUDIT] Guild: {g.name} -> audit target resolved: {bool(dest)} ({type(dest).__name__ if dest else 'None'}) • {name}")
+    except Exception as e:
+        print(f"[AUDIT] on_ready diag error: {e}")
+
     print(f"Logged in as {bot.user} • Members intent={bot.intents.members} • Voice intent={bot.intents.voice_states}")
 
 @bot.event
@@ -809,7 +851,7 @@ async def audit_diag(interaction: discord.Interaction):
     if not guild:
         return await interaction.followup.send("Not in a guild.", ephemeral=True)
 
-    chan_cfg = config.get("audit_channel_id")
+    chan_cfg = config.get("audit_channel_id") or DEFAULT_AUDIT_THREAD_ID
     dest = await _get_audit_target(guild)
     e = discord.Embed(title="Audit Logger Diagnostics", color=THEME_PRIMARY)
     e.add_field(name="Configured ID", value=str(chan_cfg), inline=False)
