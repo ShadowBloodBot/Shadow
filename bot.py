@@ -374,6 +374,144 @@ class CustomEmbedModal(Modal, title="Send Custom Embed"):
 #                       BOT CORE
 # ============================================================
 
+# ---------- AUDIT PIPELINE (SUPER FIX) ----------
+# A resilient queue + worker so audit logging never "sleeps"
+_AUDIT_QUEUE: "asyncio.Queue[tuple]" = asyncio.Queue(maxsize=1000)
+_AUDIT_WORKER_TASK: Optional[asyncio.Task] = None
+
+async def _get_audit_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
+    chan_id = config.get("audit_channel_id")
+    if not chan_id:
+        return None
+    ch = guild.get_channel(chan_id)
+    if ch is None:
+        try:
+            ch = await guild.fetch_channel(chan_id)
+        except Exception:
+            return None
+    if isinstance(ch, discord.TextChannel):
+        perms = ch.permissions_for(guild.me)
+        if perms.view_channel and perms.send_messages and perms.embed_links:
+            return ch
+    return None
+
+def _member_card(title: str, member: discord.Member, thumb: Optional[str]=None) -> discord.Embed:
+    e = discord.Embed(title=title, color=0x2D7DFF, timestamp=utcnow())
+    e.add_field(name="Member", value=f"{member.mention}\n`{member} / {member.id}`", inline=False)
+    if thumb:
+        e.set_thumbnail(url=thumb)
+    return e
+
+async def _find_moderator_for_move(guild: discord.Guild, target_member: discord.Member) -> Optional[discord.Member]:
+    if not guild.me.guild_permissions.view_audit_log:
+        return None
+    await asyncio.sleep(1.0)
+    try:
+        async for entry in guild.audit_logs(limit=6):
+            if entry.action in (discord.AuditLogAction.member_move, discord.AuditLogAction.member_disconnect):
+                if getattr(entry.target, "id", None) == target_member.id:
+                    return entry.user if isinstance(entry.user, discord.Member) else guild.get_member(entry.user.id)
+    except Exception:
+        return None
+    return None
+
+async def _audit_worker(bot: "ShadowSynBot"):
+    """
+    Robust consumer:
+    - Never raises out (wrap everything)
+    - Re-fetches channel each send
+    - Backoff on transient HTTP exceptions
+    - Auto-restarts via done-callback in setup_hook
+    """
+    backoff = 0.0
+    while True:
+        try:
+            item = await _AUDIT_QUEUE.get()
+            guild_id, member_id, before_ch_id, after_ch_id = item
+
+            guild = bot.get_guild(guild_id)
+            if guild is None:
+                _AUDIT_QUEUE.task_done()
+                continue
+
+            channel = await _get_audit_channel(guild)
+            if channel is None:
+                _AUDIT_QUEUE.task_done()
+                continue
+
+            member = guild.get_member(member_id)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(member_id)
+                except Exception:
+                    _AUDIT_QUEUE.task_done()
+                    continue
+
+            # Rebuild pseudo VoiceState from ids
+            before_ch = guild.get_channel(before_ch_id) if before_ch_id else None
+            after_ch  = guild.get_channel(after_ch_id) if after_ch_id else None
+
+            thumb = safe_avatar_url(member)
+
+            # Determine event type
+            if before_ch is None and after_ch is not None:
+                e = _member_card("🔊 Member Joined", member, thumb)
+                e.add_field(name="To", value=f"{after_ch.mention} (`{after_ch.id}`)" if isinstance(after_ch, discord.VoiceChannel) else "`N/A`", inline=False)
+            elif before_ch is not None and after_ch is None:
+                moderator = await _find_moderator_for_move(guild, member)
+                title = "🔌 Member Disconnected" if moderator else "🔇 Member Left"
+                e = _member_card(title, member, thumb)
+                e.add_field(name="From", value=f"{before_ch.mention} (`{before_ch.id}`)" if isinstance(before_ch, discord.VoiceChannel) else "`N/A`", inline=False)
+                if moderator:
+                    e.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator} / {moderator.id}`", inline=False)
+            else:
+                if before_ch_id == after_ch_id:
+                    _AUDIT_QUEUE.task_done()
+                    continue
+                moderator = await _find_moderator_for_move(guild, member)
+                e = _member_card("↔️ Member Moved", member, thumb)
+                if moderator:
+                    e.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator} / {moderator.id}`", inline=False)
+                e.add_field(name="From", value=f"{before_ch.mention} (`{before_ch.id}`)" if isinstance(before_ch, discord.VoiceChannel) else "`N/A`", inline=False)
+                e.add_field(name="To", value=f"{after_ch.mention} (`{after_ch.id}`)" if isinstance(after_ch, discord.VoiceChannel) else "`N/A`", inline=False)
+
+            try:
+                await channel.send(embed=e)
+                backoff = 0.0  # successful send resets backoff
+            except discord.HTTPException as he:
+                # 429 or intermittent issues — apply capped backoff
+                backoff = min(10.0, (backoff + 1.0))
+                print(f"[AUDIT] HTTPException, backing off {backoff}s: {he}")
+                await asyncio.sleep(backoff)
+            except discord.Forbidden:
+                # perms changed; skip this item
+                pass
+            except Exception as send_err:
+                print(f"[AUDIT] Send error: {send_err}")
+
+            _AUDIT_QUEUE.task_done()
+
+        except Exception as loop_err:
+            # Never exit; small pause to avoid hot loop if something is badly wrong
+            print(f"[AUDIT] Worker loop error: {loop_err}")
+            await asyncio.sleep(1.0)
+
+def _start_audit_worker(bot: "ShadowSynBot"):
+    global _AUDIT_WORKER_TASK
+    if _AUDIT_WORKER_TASK and not _AUDIT_WORKER_TASK.done():
+        return
+    _AUDIT_WORKER_TASK = bot.loop.create_task(_audit_worker(bot))
+    def _restart(t: asyncio.Task):
+        # Auto-restart if it ever stops
+        try:
+            exc = t.exception()
+            if exc:
+                print(f"[AUDIT] Worker crashed: {exc} — restarting")
+        except Exception:
+            pass
+        _start_audit_worker(bot)
+    _AUDIT_WORKER_TASK.add_done_callback(_restart)
+
 class ShadowSynBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
@@ -388,6 +526,7 @@ class ShadowSynBot(discord.Client):
         for g in self.guilds:
             await _prime_invites_cache(g)
         self.add_view(InviteFriendsView())  # persistent button view
+        _start_audit_worker(self)           # <<< start robust audit worker
         await self.tree.sync()
 
 bot = ShadowSynBot()
@@ -559,76 +698,31 @@ setup_welcome(bot)
 #                 VOICE AUDIT LOGGER (JOIN/LEAVE/MOVE)
 # ============================================================
 
-async def _get_audit_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
-    chan_id = config.get("audit_channel_id")
-    if not chan_id:
-        return None
-    ch = guild.get_channel(chan_id)
-    if ch is None:
-        try:
-            ch = await guild.fetch_channel(chan_id)
-        except Exception:
-            return None
-    if isinstance(ch, discord.TextChannel):
-        perms = ch.permissions_for(guild.me)
-        if perms.view_channel and perms.send_messages and perms.embed_links:
-            return ch
-    return None
-
-def _member_card(title: str, member: discord.Member, thumb: Optional[str]=None) -> discord.Embed:
-    e = discord.Embed(title=title, color=0x2D7DFF, timestamp=utcnow())
-    e.add_field(name="Member", value=f"{member.mention}\n`{member} / {member.id}`", inline=False)
-    if thumb:
-        e.set_thumbnail(url=thumb)
-    return e
-
-async def _find_moderator_for_move(guild: discord.Guild, target_member: discord.Member) -> Optional[discord.Member]:
-    if not guild.me.guild_permissions.view_audit_log:
-        return None
-    await asyncio.sleep(1.0)
-    try:
-        async for entry in guild.audit_logs(limit=6):
-            if entry.action in (discord.AuditLogAction.member_move, discord.AuditLogAction.member_disconnect):
-                if getattr(entry.target, "id", None) == target_member.id:
-                    return entry.user if isinstance(entry.user, discord.Member) else guild.get_member(entry.user.id)
-    except Exception:
-        return None
-    return None
-
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-    if member.bot:
-        return
-
-    guild = member.guild
-    channel = await _get_audit_channel(guild)
-    if channel is None:
-        return
-
-    thumb = safe_avatar_url(member)
-
-    if before.channel is None and after.channel is not None:
-        e = _member_card("🔊 Member Joined", member, thumb)
-        e.add_field(name="To", value=f"{after.channel.mention} (`{after.channel.id}`)", inline=False)
-        await channel.send(embed=e)
-
-    elif before.channel is not None and after.channel is None:
-        moderator = await _find_moderator_for_move(guild, member)
-        title = "🔌 Member Disconnected" if moderator else "🔇 Member Left"
-        e = _member_card(title, member, thumb)
-        e.add_field(name="From", value=f"{before.channel.mention} (`{before.channel.id}`)", inline=False)
-        if moderator:
-            e.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator} / {moderator.id}`", inline=False)
-        await channel.send(embed=e)
-
-    elif before.channel is not None and after.channel is not None and before.channel.id != after.channel.id:
-        moderator = await _find_moderator_for_move(guild, member)
-        e = _member_card("↔️ Member Moved", member, thumb)
-        if moderator:
-            e.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator} / {moderator.id}`", inline=False)
-        e.add_field(name="From", value=f"{before.channel.mention} (`{before.channel.id}`)", inline=False)
-        e.add_field(name="To", value=f"{after.channel.mention} (`{after.channel.id}`)", inline=False)
-        await channel.send(embed=e)
+    # Push to queue; never block or crash the listener
+    try:
+        if member.bot:
+            return
+        if before.channel == after.channel:
+            return
+        before_id = before.channel.id if before.channel else None
+        after_id  = after.channel.id if after.channel else None
+        try:
+            _AUDIT_QUEUE.put_nowait((member.guild.id, member.id, before_id, after_id))
+        except asyncio.QueueFull:
+            # Drop oldest by draining one, then enqueue (keeps pipeline alive under burst)
+            try:
+                _ = _AUDIT_QUEUE.get_nowait()
+                _AUDIT_QUEUE.task_done()
+            except Exception:
+                pass
+            try:
+                _AUDIT_QUEUE.put_nowait((member.guild.id, member.id, before_id, after_id))
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[VOICE] on_voice_state_update error: {e}")
 
 @bot.tree.command(name="set_audit_channel", description="Bind audit logs to this channel.")
 @app_commands.checks.has_permissions(administrator=True)
