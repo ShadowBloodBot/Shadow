@@ -4,7 +4,7 @@
 # + Diagnostics: /welcome_diag, /welcome_test
 # + Voice Audit Logger: /set_audit_channel, /audit_diag, /audit_test  (RESILIENT QUEUE + THREAD SUPPORT + FULL STATE COVERAGE)
 # + Departures Logger (leave/kick/ban) -> thread 960088192177029140 with de-dupe
-# + /send_custom restored (choose channel/thread → modal → preview → post)
+# + /send_custom (auto-posts in the channel/thread used)
 # Env: DISCORD_TOKEN
 
 import os
@@ -75,7 +75,8 @@ LANG_CHOICES = [
 def load_config() -> dict:
     base = {
         "welcome_target_id": DEFAULT_TARGET_ID,
-        "audit_channel_id": DEFAULT_AUDIT_THREAD_ID,  # default to your thread; override via /set_audit_channel
+        # Default audit channel points to your thread; /set_audit_channel can override.
+        "audit_channel_id": DEFAULT_AUDIT_THREAD_ID,
     }
     if CONFIG_PATH.exists():
         try:
@@ -370,14 +371,20 @@ class CustomEmbedModal(Modal, title="Send Custom Embed"):
 #                       BOT CORE
 # ============================================================
 
-# ---------- AUDIT PIPELINE (RESILIENT) ----------
+# ---------- AUDIT PIPELINE (SUPER FIX) ----------
+# Resilient queue + worker; supports TextChannel/Thread; full voice-state coverage.
 _AUDIT_QUEUE: asyncio.Queue = asyncio.Queue(maxsize=1000)
 _AUDIT_WORKER_TASK: Optional[asyncio.Task] = None
 
 async def _get_audit_target(guild: discord.Guild) -> Optional[discord.abc.Messageable]:
+    """
+    Resolves the audit destination from config["audit_channel_id"] with robust Thread handling.
+    Will unarchive/unlock/join threads automatically.
+    """
     chan_id = config.get("audit_channel_id") or DEFAULT_AUDIT_THREAD_ID
     if not chan_id:
         return None
+
     ch = guild.get_channel(chan_id)
     if ch is None:
         try:
@@ -389,6 +396,7 @@ async def _get_audit_target(guild: discord.Guild) -> Optional[discord.abc.Messag
     if not me:
         return None
 
+    # Thread handling
     if isinstance(ch, discord.Thread):
         try:
             if ch.archived or ch.locked:
@@ -400,12 +408,14 @@ async def _get_audit_target(guild: discord.Guild) -> Optional[discord.abc.Messag
                 await ch.join()
             except discord.Forbidden:
                 pass
+
             perms = ch.permissions_for(me)
             if perms.view_channel and perms.send_messages:
                 return ch
         except Exception:
             return None
 
+    # Text channel handling
     if isinstance(ch, discord.TextChannel):
         p = ch.permissions_for(me)
         if p.view_channel and p.send_messages and p.embed_links:
@@ -421,8 +431,12 @@ def _member_card(title: str, member: discord.Member, thumb: Optional[str]=None) 
     return e
 
 async def _find_moderator_for_move(guild: discord.Guild, target_member: discord.Member) -> Optional[discord.Member]:
+    """
+    Attempts to attribute move/disconnect events to a moderator via audit logs.
+    """
     if not guild.me or not guild.me.guild_permissions.view_audit_log:
         return None
+
     await asyncio.sleep(1.0)
     try:
         async for entry in guild.audit_logs(limit=8):
@@ -447,6 +461,7 @@ async def _audit_worker(bot: "ShadowSynBot"):
                 if dest is None:
                     _AUDIT_QUEUE.task_done(); continue
 
+                # Fetch member
                 try:
                     member = guild.get_member(member_id) or await guild.fetch_member(member_id)
                 except discord.NotFound:
@@ -485,6 +500,7 @@ async def _audit_worker(bot: "ShadowSynBot"):
                 if etype == "join":
                     embed = _member_card("🔊 Member Joined", member, thumb)
                     embed.add_field(name="To", value=chfmt(after_ch), inline=False)
+
                 elif etype == "leave":
                     moderator = await _find_moderator_for_move(guild, member)
                     title = "🔌 Member Disconnected" if moderator else "🔇 Member Left"
@@ -492,6 +508,7 @@ async def _audit_worker(bot: "ShadowSynBot"):
                     embed.add_field(name="From", value=chfmt(before_ch), inline=False)
                     if moderator:
                         embed.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator} / {moderator.id}`", inline=False)
+
                 elif etype == "move":
                     moderator = await _find_moderator_for_move(guild, member)
                     embed = _member_card("↔️ Member Moved", member, thumb)
@@ -499,6 +516,7 @@ async def _audit_worker(bot: "ShadowSynBot"):
                         embed.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator} / {moderator.id}`", inline=False)
                     embed.add_field(name="From", value=chfmt(before_ch), inline=False)
                     embed.add_field(name="To", value=chfmt(after_ch), inline=False)
+
                 elif etype in ("self_mute","self_unmute","self_deaf","self_undeaf","stream_start","stream_stop","video_start","video_stop"):
                     titles = {
                         "self_mute":"🔈 Self Muted", "self_unmute":"🔊 Self Unmuted",
@@ -508,6 +526,7 @@ async def _audit_worker(bot: "ShadowSynBot"):
                     }
                     embed = _member_card(titles.get(etype, "🎙️ Voice State"), member, thumb)
                     embed.add_field(name="Channel", value=chfmt(after_ch or before_ch), inline=False)
+
                 elif etype in ("server_mute","server_unmute","server_deaf","server_undeaf"):
                     titles = {
                         "server_mute":"🚫 Server Muted", "server_unmute":"✅ Server Unmuted",
@@ -566,10 +585,11 @@ class ShadowSynBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
+        # Prime invite cache for all guilds before we start receiving joins
         for g in self.guilds:
             await _prime_invites_cache(g)
         self.add_view(InviteFriendsView())  # persistent button view
-        _start_audit_worker(self)
+        _start_audit_worker(self)           # start robust audit worker
         await self.tree.sync()
 
 bot = ShadowSynBot()
@@ -583,6 +603,7 @@ async def on_ready():
             print(f"[AUDIT] Guild: {g.name} -> audit target resolved: {bool(dest)} ({type(dest).__name__ if dest else 'None'}) • {name}")
     except Exception as e:
         print(f"[AUDIT] on_ready diag error: {e}")
+
     print(f"Logged in as {bot.user} • Members intent={bot.intents.members} • Voice intent={bot.intents.voice_states}")
 
 @bot.event
@@ -664,6 +685,7 @@ def setup_welcome(bot: discord.Client):
         if member.bot:
             return
 
+        # 1) Determine where to send
         dest = bot.get_channel(ARRIVALS_THREAD_ID)
         if dest is None:
             try:
@@ -697,8 +719,10 @@ def setup_welcome(bot: discord.Client):
             print("[ARRIVALS] No writable destination found.")
             return
 
-        invite_line = await _detect_join_source(member)
+        # 2) Resolve invite attribution (member invite / vanity / unknown)
+        invite_line = await _detect_join_source(member)  # may be None
 
+        # 3) Build embed
         icon = safe_avatar_url(member)
         embed = discord.Embed(
             description=f"{member.mention} joined **{member.guild.name}**",
@@ -711,6 +735,7 @@ def setup_welcome(bot: discord.Client):
 
         view = MinionView(member.id)
 
+        # 4) Send
         try:
             await target.send(embed=embed, view=view)
             print(f"[ARRIVALS] Posted card for {member} in #{getattr(target, 'name', 'thread')}")
@@ -729,6 +754,7 @@ def setup_welcome(bot: discord.Client):
 
     @bot.event
     async def on_member_join(member: discord.Member):
+        # refresh snapshot once more (helps accuracy if many invites change quickly)
         if _can_track_invites(member.guild):
             try:
                 await _prime_invites_cache(member.guild)
@@ -751,6 +777,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
         events = []
 
+        # Channel transitions
         if before.channel is None and after.channel is not None:
             events.append({"type": "join", "before_id": None, "after_id": after.channel.id})
         elif before.channel is not None and after.channel is None:
@@ -758,6 +785,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         elif (before.channel is not None and after.channel is not None and before.channel.id != after.channel.id):
             events.append({"type": "move", "before_id": before.channel.id, "after_id": after.channel.id})
 
+        # Self state changes (don’t require channel swap)
         if before.self_mute != after.self_mute:
             events.append({"type": "self_mute" if after.self_mute else "self_unmute",
                            "before_id": getattr(before.channel, "id", None), "after_id": getattr(after.channel, "id", None)})
@@ -771,6 +799,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             events.append({"type": "video_start" if getattr(after, "self_video", False) else "video_stop",
                            "before_id": getattr(before.channel, "id", None), "after_id": getattr(after.channel, "id", None)})
 
+        # Server state changes (moderators)
         if before.mute != after.mute:
             events.append({"type": "server_mute" if after.mute else "server_unmute",
                            "before_id": getattr(before.channel, "id", None), "after_id": getattr(after.channel, "id", None)})
@@ -786,6 +815,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             try:
                 _AUDIT_QUEUE.put_nowait(payload)
             except asyncio.QueueFull:
+                # Drop oldest to keep pipeline alive under burst
                 try:
                     _ = _AUDIT_QUEUE.get_nowait()
                     _AUDIT_QUEUE.task_done()
@@ -1065,6 +1095,7 @@ async def welcome_test(interaction: discord.Interaction, member: discord.Member)
     if target is None:
         return await interaction.followup.send("No writable destination found.", ephemeral=True)
 
+    # Include a sample "Joined Via" line if we can detect it for the selected member’s guild
     join_via = await _detect_join_source(member)
     icon = safe_avatar_url(member)
     embed = discord.Embed(
@@ -1151,39 +1182,52 @@ async def set_welcome_target(interaction: discord.Interaction):
     kind = "thread" if isinstance(ch, discord.Thread) else "channel"
     await interaction.followup.send(f"✅ Set welcome target to this {kind}: **#{ch.name}** (`{ch.id}`).", ephemeral=True)
 
-# ======== RESTORED: /send_custom (select thread/channel → modal → preview → post) ========
-
-@bot.tree.command(name="send_custom", description="Create a custom embed and post it to a selected text channel or thread.")
-@app_commands.describe(target="Channel or thread to post into")
+# ======== /send_custom — auto-post HERE (channel/thread it's invoked in) ========
+@bot.tree.command(
+    name="send_custom",
+    description="Create a custom embed and post it here (this channel/thread)."
+)
 @app_commands.checks.has_permissions(administrator=True)
 @app_commands.guild_only()
-async def send_custom(
-    interaction: discord.Interaction,
-    target: Union[discord.TextChannel, discord.Thread]
-):
-    # Quick permission sanity check before opening the modal
+async def send_custom(interaction: discord.Interaction):
+    ch = interaction.channel
+
+    # Only usable in guild text channels or threads
+    if not isinstance(ch, (discord.TextChannel, discord.Thread)):
+        return await interaction.response.send_message(
+            "❌ Run this in a **text channel** or a **thread** inside a server.",
+            ephemeral=True
+        )
+
     me = interaction.guild.me if interaction.guild else None
     if not me:
         return await interaction.response.send_message("❌ Not in a guild.", ephemeral=True)
 
-    # Ensure threads are joinable so the subsequent Post can succeed
-    if isinstance(target, discord.Thread):
+    # Threads: make sure we can write (unarchive/unlock/join)
+    if isinstance(ch, discord.Thread):
         try:
-            if target.archived or target.locked:
-                await target.edit(archived=False, locked=False)
-            await target.join()
+            if ch.archived or ch.locked:
+                try:
+                    await ch.edit(archived=False, locked=False)
+                except discord.Forbidden:
+                    pass
+            try:
+                await ch.join()
+            except discord.Forbidden:
+                pass
         except Exception:
             pass
 
-    perms = target.permissions_for(me)
+    perms = ch.permissions_for(me)
     if not (perms.view_channel and perms.send_messages and perms.embed_links):
         return await interaction.response.send_message(
-            "❌ I need **View Channel**, **Send Messages**, and **Embed Links** in that destination.",
+            "❌ I need **View Channel**, **Send Messages**, and **Embed Links** here.",
             ephemeral=True
         )
 
+    # Open modal; CustomEmbedModal stores channel id and the preview posts back here
     try:
-        await interaction.response.send_modal(CustomEmbedModal(key=None, target_id=target.id))
+        await interaction.response.send_modal(CustomEmbedModal(key=None, target_id=ch.id))
     except Exception as e:
         await interaction.followup.send(f"❌ Could not open modal: `{e}`", ephemeral=True)
 
