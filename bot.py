@@ -125,10 +125,7 @@ async def resolve_target(
 
 def find_text_channel_by_name(guild: discord.Guild, name: str) -> Optional[discord.TextChannel]:
     n = name.lower().strip()
-    for ch in guild.text_channels:
-        if ch.name.lower() == n:
-            return ch
-    return None
+    return discord.utils.find(lambda ch: ch.name.lower() == n, guild.text_channels)
 
 def make_embed(title: str, message: str) -> discord.Embed:
     embed = discord.Embed(title=title[:256], description=message[:4096], color=THEME_PRIMARY)
@@ -457,12 +454,6 @@ async def _audit_worker(bot: "ShadowSynBot"):
 
                 thumb = safe_avatar_url(member)
 
-                def mk(title: str):
-                    e = discord.Embed(title=title, color=0x2D7DFF, timestamp=utcnow())
-                    e.add_field(name="Member", value=f"{member.mention}\n`{member} / {member.id}`", inline=False)
-                    if thumb: e.set_thumbnail(url=thumb)
-                    return e
-
                 embed = None
                 moderator = None
 
@@ -479,18 +470,18 @@ async def _audit_worker(bot: "ShadowSynBot"):
                         return None
 
                 if etype == "join":
-                    embed = mk("🔊 Member Joined")
+                    embed = _member_card("🔊 Member Joined", member, thumb)
                     embed.add_field(name="To", value=chfmt(after_ch), inline=False)
                 elif etype == "leave":
                     moderator = await _find_moderator_for_move(guild, member)
                     title = "🔌 Member Disconnected" if moderator else "🔇 Member Left"
-                    embed = mk(title)
+                    embed = _member_card(title, member, thumb)
                     embed.add_field(name="From", value=chfmt(before_ch), inline=False)
                     if moderator:
                         embed.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator} / {moderator.id}`", inline=False)
                 elif etype == "move":
                     moderator = await _find_moderator_for_move(guild, member)
-                    embed = mk("↔️ Member Moved")
+                    embed = _member_card("↔️ Member Moved", member, thumb)
                     if moderator:
                         embed.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator} / {moderator.id}`", inline=False)
                     embed.add_field(name="From", value=chfmt(before_ch), inline=False)
@@ -503,7 +494,7 @@ async def _audit_worker(bot: "ShadowSynBot"):
                         "stream_start":"📺 Stream Started", "stream_stop":"🛑 Stream Stopped",
                         "video_start":"🎥 Video Started", "video_stop":"🧿 Video Stopped",
                     }
-                    embed = mk(titles.get(etype, "🎙️ Voice State"))
+                    embed = _member_card(titles.get(etype, "🎙️ Voice State"), member, thumb)
                     embed.add_field(name="Channel", value=chfmt(after_ch or before_ch), inline=False)
 
                 elif etype in ("server_mute","server_unmute","server_deaf","server_undeaf"):
@@ -511,7 +502,7 @@ async def _audit_worker(bot: "ShadowSynBot"):
                         "server_mute":"🚫 Server Muted", "server_unmute":"✅ Server Unmuted",
                         "server_deaf":"🚫 Server Deafened", "server_undeaf":"✅ Server Undeafened",
                     }
-                    embed = mk(titles.get(etype, "🛠️ Voice Moderation"))
+                    embed = _member_card(titles.get(etype, "🛠️ Voice Moderation"), member, thumb)
                     moderator = await _mod_for_member_update()
                     if moderator:
                         embed.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator} / {moderator.id}`", inline=False)
