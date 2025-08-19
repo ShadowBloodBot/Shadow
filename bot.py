@@ -2,7 +2,7 @@
 # + /speak voice TTS (hidden input, VC playback, auto-leave, translation, usage logs)
 # + Mee6 welcome replacement (arrivals card + Minion button) + Invite Attribution (member invite / vanity)
 # + Diagnostics: /welcome_diag, /welcome_test
-# + Voice Audit Logger: /set_audit_channel, /audit_diag, /audit_test
+# + Voice Audit Logger: /set_audit_channel, /audit_diag, /audit_test  (RESILIENT QUEUE + THREAD SUPPORT + FULL STATE COVERAGE)
 # + Departures Logger (leave/kick/ban) -> thread 960088192177029140 with de-dupe
 # Env: DISCORD_TOKEN
 
@@ -113,8 +113,8 @@ async def resolve_target(
 
     if isinstance(ch, discord.Thread):
         try:
-            if ch.archived:
-                await ch.edit(archived=False)
+            if ch.archived or ch.locked:
+                await ch.edit(archived=False, locked=False)
             await ch.join()
         except Exception:
             pass
@@ -375,11 +375,11 @@ class CustomEmbedModal(Modal, title="Send Custom Embed"):
 # ============================================================
 
 # ---------- AUDIT PIPELINE (SUPER FIX) ----------
-# A resilient queue + worker so audit logging never "sleeps"
-_AUDIT_QUEUE: "asyncio.Queue[tuple]" = asyncio.Queue(maxsize=1000)
+# Resilient queue + worker; supports TextChannel/Thread; full voice-state coverage.
+_AUDIT_QUEUE: asyncio.Queue = asyncio.Queue(maxsize=1000)
 _AUDIT_WORKER_TASK: Optional[asyncio.Task] = None
 
-async def _get_audit_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
+async def _get_audit_target(guild: discord.Guild) -> Optional[discord.abc.Messageable]:
     chan_id = config.get("audit_channel_id")
     if not chan_id:
         return None
@@ -389,10 +389,27 @@ async def _get_audit_channel(guild: discord.Guild) -> Optional[discord.TextChann
             ch = await guild.fetch_channel(chan_id)
         except Exception:
             return None
+
+    me = guild.me
+
+    if isinstance(ch, discord.Thread):
+        try:
+            if ch.archived or ch.locked:
+                try:
+                    await ch.edit(archived=False, locked=False)
+                except discord.Forbidden:
+                    pass
+            perms = ch.permissions_for(me)
+            if perms.view_channel and perms.send_messages:
+                return ch
+        except Exception:
+            return None
+
     if isinstance(ch, discord.TextChannel):
-        perms = ch.permissions_for(guild.me)
-        if perms.view_channel and perms.send_messages and perms.embed_links:
+        p = ch.permissions_for(me)
+        if p.view_channel and p.send_messages and p.embed_links:
             return ch
+
     return None
 
 def _member_card(title: str, member: discord.Member, thumb: Optional[str]=None) -> discord.Embed:
@@ -410,89 +427,115 @@ async def _find_moderator_for_move(guild: discord.Guild, target_member: discord.
         async for entry in guild.audit_logs(limit=6):
             if entry.action in (discord.AuditLogAction.member_move, discord.AuditLogAction.member_disconnect):
                 if getattr(entry.target, "id", None) == target_member.id:
-                    return entry.user if isinstance(entry.user, discord.Member) else guild.get_member(entry.user.id)
+                    return entry.user if isinstance(entry.user, discord.Member) else guild.get_member(getattr(entry.user, "id", 0))
     except Exception:
         return None
     return None
 
 async def _audit_worker(bot: "ShadowSynBot"):
-    """
-    Robust consumer:
-    - Never raises out (wrap everything)
-    - Re-fetches channel each send
-    - Backoff on transient HTTP exceptions
-    - Auto-restarts via done-callback in setup_hook
-    """
     backoff = 0.0
     while True:
         try:
-            item = await _AUDIT_QUEUE.get()
-            guild_id, member_id, before_ch_id, after_ch_id = item
-
-            guild = bot.get_guild(guild_id)
-            if guild is None:
-                _AUDIT_QUEUE.task_done()
-                continue
-
-            channel = await _get_audit_channel(guild)
-            if channel is None:
-                _AUDIT_QUEUE.task_done()
-                continue
-
-            member = guild.get_member(member_id)
-            if member is None:
-                try:
-                    member = await guild.fetch_member(member_id)
-                except Exception:
-                    _AUDIT_QUEUE.task_done()
-                    continue
-
-            # Rebuild pseudo VoiceState from ids
-            before_ch = guild.get_channel(before_ch_id) if before_ch_id else None
-            after_ch  = guild.get_channel(after_ch_id) if after_ch_id else None
-
-            thumb = safe_avatar_url(member)
-
-            # Determine event type
-            if before_ch is None and after_ch is not None:
-                e = _member_card("🔊 Member Joined", member, thumb)
-                e.add_field(name="To", value=f"{after_ch.mention} (`{after_ch.id}`)" if isinstance(after_ch, discord.VoiceChannel) else "`N/A`", inline=False)
-            elif before_ch is not None and after_ch is None:
-                moderator = await _find_moderator_for_move(guild, member)
-                title = "🔌 Member Disconnected" if moderator else "🔇 Member Left"
-                e = _member_card(title, member, thumb)
-                e.add_field(name="From", value=f"{before_ch.mention} (`{before_ch.id}`)" if isinstance(before_ch, discord.VoiceChannel) else "`N/A`", inline=False)
-                if moderator:
-                    e.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator} / {moderator.id}`", inline=False)
-            else:
-                if before_ch_id == after_ch_id:
-                    _AUDIT_QUEUE.task_done()
-                    continue
-                moderator = await _find_moderator_for_move(guild, member)
-                e = _member_card("↔️ Member Moved", member, thumb)
-                if moderator:
-                    e.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator} / {moderator.id}`", inline=False)
-                e.add_field(name="From", value=f"{before_ch.mention} (`{before_ch.id}`)" if isinstance(before_ch, discord.VoiceChannel) else "`N/A`", inline=False)
-                e.add_field(name="To", value=f"{after_ch.mention} (`{after_ch.id}`)" if isinstance(after_ch, discord.VoiceChannel) else "`N/A`", inline=False)
+            guild_id, member_id, etype, before_id, after_id = await _AUDIT_QUEUE.get()
 
             try:
-                await channel.send(embed=e)
-                backoff = 0.0  # successful send resets backoff
-            except discord.HTTPException as he:
-                # 429 or intermittent issues — apply capped backoff
-                backoff = min(10.0, (backoff + 1.0))
-                print(f"[AUDIT] HTTPException, backing off {backoff}s: {he}")
-                await asyncio.sleep(backoff)
-            except discord.Forbidden:
-                # perms changed; skip this item
-                pass
-            except Exception as send_err:
-                print(f"[AUDIT] Send error: {send_err}")
+                guild = bot.get_guild(guild_id)
+                if guild is None:
+                    _AUDIT_QUEUE.task_done(); continue
+                dest = await _get_audit_target(guild)
+                if dest is None:
+                    _AUDIT_QUEUE.task_done(); continue
+
+                member = guild.get_member(member_id) or await guild.fetch_member(member_id)
+                before_ch = guild.get_channel(before_id) if before_id else None
+                after_ch  = guild.get_channel(after_id)  if after_id  else None
+
+                def chfmt(ch):
+                    if ch is None: return "`N/A`"
+                    mention = getattr(ch, "mention", f"`{ch.id}`")
+                    return f"{mention} (`{ch.id}`)"
+
+                thumb = safe_avatar_url(member)
+
+                def mk(title: str):
+                    e = discord.Embed(title=title, color=0x2D7DFF, timestamp=utcnow())
+                    e.add_field(name="Member", value=f"{member.mention}\n`{member} / {member.id}`", inline=False)
+                    if thumb: e.set_thumbnail(url=thumb)
+                    return e
+
+                embed = None
+                moderator = None
+
+                async def _mod_for_member_update():
+                    try:
+                        if not guild.me.guild_permissions.view_audit_log:
+                            return None
+                        async for entry in guild.audit_logs(limit=6):
+                            if entry.action == discord.AuditLogAction.member_update and getattr(entry.target, "id", None) == member.id:
+                                created = entry.created_at.replace(tzinfo=timezone.utc) if entry.created_at.tzinfo is None else entry.created_at
+                                if (utcnow() - created).total_seconds() <= 15:
+                                    return entry.user if isinstance(entry.user, discord.Member) else guild.get_member(getattr(entry.user, "id", 0))
+                    except Exception:
+                        return None
+
+                if etype == "join":
+                    embed = mk("🔊 Member Joined")
+                    embed.add_field(name="To", value=chfmt(after_ch), inline=False)
+                elif etype == "leave":
+                    moderator = await _find_moderator_for_move(guild, member)
+                    title = "🔌 Member Disconnected" if moderator else "🔇 Member Left"
+                    embed = mk(title)
+                    embed.add_field(name="From", value=chfmt(before_ch), inline=False)
+                    if moderator:
+                        embed.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator} / {moderator.id}`", inline=False)
+                elif etype == "move":
+                    moderator = await _find_moderator_for_move(guild, member)
+                    embed = mk("↔️ Member Moved")
+                    if moderator:
+                        embed.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator} / {moderator.id}`", inline=False)
+                    embed.add_field(name="From", value=chfmt(before_ch), inline=False)
+                    embed.add_field(name="To", value=chfmt(after_ch), inline=False)
+
+                elif etype in ("self_mute","self_unmute","self_deaf","self_undeaf","stream_start","stream_stop","video_start","video_stop"):
+                    titles = {
+                        "self_mute":"🔈 Self Muted", "self_unmute":"🔊 Self Unmuted",
+                        "self_deaf":"🙉 Self Deafened", "self_undeaf":"👂 Self Undeafened",
+                        "stream_start":"📺 Stream Started", "stream_stop":"🛑 Stream Stopped",
+                        "video_start":"🎥 Video Started", "video_stop":"🧿 Video Stopped",
+                    }
+                    embed = mk(titles.get(etype, "🎙️ Voice State"))
+                    embed.add_field(name="Channel", value=chfmt(after_ch or before_ch), inline=False)
+
+                elif etype in ("server_mute","server_unmute","server_deaf","server_undeaf"):
+                    titles = {
+                        "server_mute":"🚫 Server Muted", "server_unmute":"✅ Server Unmuted",
+                        "server_deaf":"🚫 Server Deafened", "server_undeaf":"✅ Server Undeafened",
+                    }
+                    embed = mk(titles.get(etype, "🛠️ Voice Moderation"))
+                    moderator = await _mod_for_member_update()
+                    if moderator:
+                        embed.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator} / {moderator.id}`", inline=False)
+                    embed.add_field(name="Channel", value=chfmt(after_ch or before_ch), inline=False)
+
+                if embed is not None:
+                    try:
+                        await dest.send(embed=embed)
+                        backoff = 0.0
+                    except discord.HTTPException as he:
+                        backoff = min(10.0, (backoff + 1.0))
+                        print(f"[AUDIT] HTTPException, backoff {backoff}s: {he}")
+                        await asyncio.sleep(backoff)
+                    except discord.Forbidden:
+                        pass
+                    except Exception as send_err:
+                        print(f"[AUDIT] Send error: {send_err}")
+
+            except Exception as inner:
+                print(f"[AUDIT] Worker item error: {inner}")
 
             _AUDIT_QUEUE.task_done()
 
         except Exception as loop_err:
-            # Never exit; small pause to avoid hot loop if something is badly wrong
             print(f"[AUDIT] Worker loop error: {loop_err}")
             await asyncio.sleep(1.0)
 
@@ -502,7 +545,6 @@ def _start_audit_worker(bot: "ShadowSynBot"):
         return
     _AUDIT_WORKER_TASK = bot.loop.create_task(_audit_worker(bot))
     def _restart(t: asyncio.Task):
-        # Auto-restart if it ever stops
         try:
             exc = t.exception()
             if exc:
@@ -526,7 +568,7 @@ class ShadowSynBot(discord.Client):
         for g in self.guilds:
             await _prime_invites_cache(g)
         self.add_view(InviteFriendsView())  # persistent button view
-        _start_audit_worker(self)           # <<< start robust audit worker
+        _start_audit_worker(self)           # start robust audit worker
         await self.tree.sync()
 
 bot = ShadowSynBot()
@@ -627,8 +669,8 @@ def setup_welcome(bot: discord.Client):
 
         if isinstance(dest, discord.Thread):
             try:
-                if dest.archived:
-                    await dest.edit(archived=False)
+                if dest.archived or dest.locked:
+                    await dest.edit(archived=False, locked=False)
                 await dest.join()
             except Exception:
                 pass
@@ -695,32 +737,66 @@ def setup_welcome(bot: discord.Client):
 setup_welcome(bot)
 
 # ============================================================
-#                 VOICE AUDIT LOGGER (JOIN/LEAVE/MOVE)
+#                 VOICE AUDIT LOGGER (JOIN/LEAVE/MOVE + STATES)
 # ============================================================
 
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-    # Push to queue; never block or crash the listener
     try:
         if member.bot:
             return
-        if before.channel == after.channel:
+
+        events = []
+
+        # Channel transitions
+        if before.channel is None and after.channel is not None:
+            events.append({"type": "join", "before_id": None, "after_id": after.channel.id})
+        elif before.channel is not None and after.channel is None:
+            events.append({"type": "leave", "before_id": before.channel.id, "after_id": None})
+        elif (before.channel is not None and after.channel is not None and before.channel.id != after.channel.id):
+            events.append({"type": "move", "before_id": before.channel.id, "after_id": after.channel.id})
+
+        # Self state changes (don’t require channel swap)
+        if before.self_mute != after.self_mute:
+            events.append({"type": "self_mute" if after.self_mute else "self_unmute",
+                           "before_id": getattr(before.channel, "id", None), "after_id": getattr(after.channel, "id", None)})
+        if before.self_deaf != after.self_deaf:
+            events.append({"type": "self_deaf" if after.self_deaf else "self_undeaf",
+                           "before_id": getattr(before.channel, "id", None), "after_id": getattr(after.channel, "id", None)})
+        if before.self_stream != after.self_stream:
+            events.append({"type": "stream_start" if after.self_stream else "stream_stop",
+                           "before_id": getattr(before.channel, "id", None), "after_id": getattr(after.channel, "id", None)})
+        if getattr(before, "self_video", False) != getattr(after, "self_video", False):
+            events.append({"type": "video_start" if getattr(after, "self_video", False) else "video_stop",
+                           "before_id": getattr(before.channel, "id", None), "after_id": getattr(after.channel, "id", None)})
+
+        # Server state changes (moderators)
+        if before.mute != after.mute:
+            events.append({"type": "server_mute" if after.mute else "server_unmute",
+                           "before_id": getattr(before.channel, "id", None), "after_id": getattr(after.channel, "id", None)})
+        if before.deaf != after.deaf:
+            events.append({"type": "server_deaf" if after.deaf else "server_undeaf",
+                           "before_id": getattr(before.channel, "id", None), "after_id": getattr(after.channel, "id", None)})
+
+        if not events:
             return
-        before_id = before.channel.id if before.channel else None
-        after_id  = after.channel.id if after.channel else None
-        try:
-            _AUDIT_QUEUE.put_nowait((member.guild.id, member.id, before_id, after_id))
-        except asyncio.QueueFull:
-            # Drop oldest by draining one, then enqueue (keeps pipeline alive under burst)
+
+        for ev in events:
+            payload = (member.guild.id, member.id, ev["type"], ev["before_id"], ev["after_id"])
             try:
-                _ = _AUDIT_QUEUE.get_nowait()
-                _AUDIT_QUEUE.task_done()
-            except Exception:
-                pass
-            try:
-                _AUDIT_QUEUE.put_nowait((member.guild.id, member.id, before_id, after_id))
-            except Exception:
-                pass
+                _AUDIT_QUEUE.put_nowait(payload)
+            except asyncio.QueueFull:
+                # Drop oldest to keep pipeline alive under burst
+                try:
+                    _ = _AUDIT_QUEUE.get_nowait()
+                    _AUDIT_QUEUE.task_done()
+                except Exception:
+                    pass
+                try:
+                    _AUDIT_QUEUE.put_nowait(payload)
+                except Exception:
+                    pass
+
     except Exception as e:
         print(f"[VOICE] on_voice_state_update error: {e}")
 
@@ -728,11 +804,11 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 @app_commands.checks.has_permissions(administrator=True)
 async def set_audit_channel(interaction: discord.Interaction):
     ch = interaction.channel
-    if not isinstance(ch, discord.TextChannel):
-        return await interaction.response.send_message("Run this inside a text channel.", ephemeral=True)
+    if not isinstance(ch, (discord.TextChannel, discord.Thread)):
+        return await interaction.response.send_message("Run this inside a text channel or a thread.", ephemeral=True)
     config["audit_channel_id"] = ch.id
     save_config(config)
-    await interaction.response.send_message(f"✅ Audit channel set to **#{ch.name}** (`{ch.id}`).", ephemeral=True)
+    await interaction.response.send_message(f"✅ Audit destination set to **{getattr(ch,'name','unknown')}** (`{ch.id}`).", ephemeral=True)
 
 @bot.tree.command(name="audit_diag", description="Check audit log setup & permissions.")
 @app_commands.checks.has_permissions(administrator=True)
@@ -743,13 +819,20 @@ async def audit_diag(interaction: discord.Interaction):
         return await interaction.followup.send("Not in a guild.", ephemeral=True)
 
     chan_cfg = config.get("audit_channel_id")
-    ch = await _get_audit_channel(guild)
+    dest = await _get_audit_target(guild)
     e = discord.Embed(title="Audit Logger Diagnostics", color=THEME_PRIMARY)
-    e.add_field(name="Configured Channel ID", value=str(chan_cfg), inline=False)
-    e.add_field(name="Channel Resolved", value=str(bool(ch)), inline=True)
+    e.add_field(name="Configured ID", value=str(chan_cfg), inline=False)
+    e.add_field(name="Resolved", value=str(bool(dest)), inline=True)
     e.add_field(name="Can View Audit Log", value=str(guild.me.guild_permissions.view_audit_log), inline=True)
-    if isinstance(ch, discord.TextChannel):
-        p = ch.permissions_for(guild.me)
+    if isinstance(dest, discord.Thread):
+        p = dest.permissions_for(guild.me)
+        e.add_field(name="Type", value="Thread", inline=True)
+        e.add_field(name="archived", value=str(dest.archived), inline=True)
+        e.add_field(name="locked", value=str(dest.locked), inline=True)
+        e.add_field(name="send_messages", value=str(p.send_messages), inline=True)
+    elif isinstance(dest, discord.TextChannel):
+        p = dest.permissions_for(guild.me)
+        e.add_field(name="Type", value="TextChannel", inline=True)
         e.add_field(name="view_channel", value=str(p.view_channel), inline=True)
         e.add_field(name="send_messages", value=str(p.send_messages), inline=True)
         e.add_field(name="embed_links", value=str(p.embed_links), inline=True)
@@ -966,8 +1049,8 @@ async def welcome_test(interaction: discord.Interaction, member: discord.Member)
     target = None
     if isinstance(dest, discord.Thread):
         try:
-            if dest.archived:
-                await dest.edit(archived=False)
+            if dest.archived or dest.locked:
+                await dest.edit(archived=False, locked=False)
             await dest.join()
         except Exception:
             pass
@@ -1060,8 +1143,8 @@ async def set_welcome_target(interaction: discord.Interaction):
         return await interaction.followup.send("❌ Run this inside a text channel or a thread.", ephemeral=True)
     if isinstance(ch, discord.Thread):
         try:
-            if ch.archived:
-                await ch.edit(archived=False)
+            if ch.archived or ch.locked:
+                await ch.edit(archived=False, locked=False)
             await ch.join()
         except Exception:
             pass
