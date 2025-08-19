@@ -1,6 +1,6 @@
 # bot.py — ShadowSyn Welcome + Custom Embed Bot
 # + /speak voice TTS (hidden input, VC playback, auto-leave, translation, usage logs)
-# + Mee6 welcome replacement (arrivals card + Minion button)
+# + Mee6 welcome replacement (arrivals card + Minion button) + Invite Attribution (member invite / vanity)
 # + Diagnostics: /welcome_diag, /welcome_test
 # + Voice Audit Logger: /set_audit_channel, /audit_diag, /audit_test
 # + Departures Logger (leave/kick/ban) -> thread 960088192177029140 with de-dupe
@@ -50,6 +50,11 @@ SPEAK_LOG_THREAD_ID = 1400048671973703690
 # Departures (leave/kick/ban) log destination (thread)
 DEPARTURES_THREAD_ID = 960088192177029140
 
+# Token
+TOKEN = os.getenv("DISCORD_TOKEN")
+if not TOKEN:
+    raise SystemExit("❌ DISCORD_TOKEN is not set in the environment.")
+
 # Language options for /speak
 translator = Translator()
 LANG_CHOICES = [
@@ -58,11 +63,6 @@ LANG_CHOICES = [
     app_commands.Choice(name="German",   value="de"),
     app_commands.Choice(name="Spanish",  value="es"),
 ]
-
-# Token
-TOKEN = os.getenv("DISCORD_TOKEN")
-if not TOKEN:
-    raise SystemExit("❌ DISCORD_TOKEN is not set in the environment.")
 
 # ============================================================
 #                       CONFIG I/O
@@ -130,27 +130,6 @@ def find_text_channel_by_name(guild: discord.Guild, name: str) -> Optional[disco
             return ch
     return None
 
-def build_welcome_embed(lobby_mention: str) -> discord.Embed:
-    desc = (
-        "👋 **Welcome to all our new members!**\n"
-        "We’re thrilled to have you join our community! 🎉\n\n"
-        "🎮 **What we play:**\n"
-        "We’re into just about anything FPS or Survival, plus some RTS "
-        "(and yes — Age of Empires IV is goated) and MMO's.\n\n"
-        "💬 **Your first steps:**\n\n"
-        f"Head over to {lobby_mention} and introduce yourself — let us know where you came from or what brought you here.\n\n"
-        "Tag **@Blood** to get your role.\n\n"
-        "Enjoy your stay! If you have any questions, **@Gravy** will love hearing you yap yap yap.\n\n"
-        "Don’t be annoying, overly sensitive, or spammy. Avoid @mentioning or DMing people you don’t know, "
-        "and no self-promo unless approved. Keep personal info private and absolutely no vegans, piracy, NSFW, or other shady content. "
-        "Use common sense — it covers the rest.\n\n"
-        "Spread the love by sharing our server invite link\n"
-        f"{VANITY_INVITE}\n"
-    )
-    embed = discord.Embed(title="Welcome to ShadowSyn", description=desc, color=THEME_PRIMARY)
-    embed.set_footer(text="Be cool. Have fun. Bring friends.")
-    return embed
-
 def make_embed(title: str, message: str) -> discord.Embed:
     embed = discord.Embed(title=title[:256], description=message[:4096], color=THEME_PRIMARY)
     embed.set_footer(text="ShadowSyn")
@@ -167,6 +146,91 @@ def safe_avatar_url(member: Union[discord.Member, discord.User]) -> Optional[str
 
 def utcnow():
     return datetime.now(timezone.utc)
+
+# ============================================================
+#                   INVITE ATTRIBUTION (CACHE)
+# ============================================================
+
+# guild_id -> {invite_code: uses}
+_INVITES_CACHE: Dict[int, Dict[str, int]] = {}
+
+def _can_track_invites(guild: discord.Guild) -> bool:
+    me = guild.me
+    return bool(me and me.guild_permissions.manage_guild)
+
+async def _prime_invites_cache(guild: discord.Guild):
+    if not _can_track_invites(guild):
+        _INVITES_CACHE[guild.id] = {}
+        return
+    try:
+        invites = await guild.invites()
+        _INVITES_CACHE[guild.id] = {inv.code: (inv.uses or 0) for inv in invites}
+    except Exception:
+        _INVITES_CACHE[guild.id] = {}
+
+async def _detect_join_source(member: discord.Member) -> Optional[str]:
+    """
+    Returns a human-readable line summarizing how the member joined:
+    - "Joined via `CODE`, invited by **Name** (uses: N)"
+    - "Joined via Vanity: `vanitycode`"
+    - None if unknown or lacking permissions
+    """
+    guild = member.guild
+    if not guild:
+        return None
+
+    if not _can_track_invites(guild):
+        # Try a light vanity hint even without manage_guild
+        try:
+            vanity = guild.vanity_url_code  # requires manage_guild to fetch reliably; may be None
+        except Exception:
+            vanity = None
+        return f"Joined via Vanity: `{vanity}`" if vanity else None
+
+    # Compare cached uses vs fresh uses
+    try:
+        before = _INVITES_CACHE.get(guild.id, {})
+        current_invites = await guild.invites()
+        increased = None
+        for inv in current_invites:
+            prev_uses = before.get(inv.code, 0)
+            if (inv.uses or 0) > prev_uses:
+                increased = inv
+                break
+
+        # Update cache to latest snapshot
+        _INVITES_CACHE[guild.id] = {inv.code: (inv.uses or 0) for inv in current_invites}
+
+        if increased:
+            inviter = increased.inviter
+            inviter_name = f"{inviter}" if inviter else "Unknown"
+            return f"Joined via `{increased.code}`, invited by **{inviter_name}** (uses: {increased.uses or 0})"
+
+        # No invite increased; likely vanity or external
+        try:
+            vanity = guild.vanity_url_code
+        except Exception:
+            vanity = None
+        if vanity:
+            return f"Joined via Vanity: `{vanity}`"
+        return None
+    except Exception:
+        return None
+
+# Keep cache in sync when invites are created/deleted
+async def _on_invite_create(invite: discord.Invite):
+    try:
+        d = _INVITES_CACHE.setdefault(invite.guild.id, {})
+        d[invite.code] = invite.uses or 0
+    except Exception:
+        pass
+
+async def _on_invite_delete(invite: discord.Invite):
+    try:
+        d = _INVITES_CACHE.setdefault(invite.guild.id, {})
+        d.pop(invite.code, None)
+    except Exception:
+        pass
 
 # ============================================================
 #                       UI VIEWS
@@ -320,10 +384,29 @@ class ShadowSynBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
+        # Prime invite cache for all guilds before we start receiving joins
+        for g in self.guilds:
+            await _prime_invites_cache(g)
         self.add_view(InviteFriendsView())  # persistent button view
         await self.tree.sync()
 
 bot = ShadowSynBot()
+
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user} • Members intent={bot.intents.members} • Voice intent={bot.intents.voice_states}")
+
+@bot.event
+async def on_guild_join(guild: discord.Guild):
+    await _prime_invites_cache(guild)
+
+@bot.event
+async def on_invite_create(invite: discord.Invite):
+    await _on_invite_create(invite)
+
+@bot.event
+async def on_invite_delete(invite: discord.Invite):
+    await _on_invite_delete(invite)
 
 # ============================================================
 #                MEE6 WELCOME REPLACEMENT (AUTOMATED)
@@ -392,6 +475,7 @@ def setup_welcome(bot: discord.Client):
         if member.bot:
             return
 
+        # 1) Determine where to send
         dest = bot.get_channel(ARRIVALS_THREAD_ID)
         if dest is None:
             try:
@@ -410,7 +494,6 @@ def setup_welcome(bot: discord.Client):
             except Exception:
                 pass
             p = dest.permissions_for(me)
-            # Threads use send_messages; guard for embed_links + visibility
             if p.view_channel and p.send_messages and p.embed_links:
                 target = dest
 
@@ -426,16 +509,23 @@ def setup_welcome(bot: discord.Client):
             print("[ARRIVALS] No writable destination found.")
             return
 
+        # 2) Resolve invite attribution (member invite / vanity / unknown)
+        invite_line = await _detect_join_source(member)  # may be None
+
+        # 3) Build embed
         icon = safe_avatar_url(member)
         embed = discord.Embed(
             description=f"{member.mention} joined **{member.guild.name}**",
             color=discord.Color.dark_theme()
         )
         embed.set_author(name=str(member), icon_url=icon)
+        if invite_line:
+            embed.add_field(name="Joined Via", value=invite_line, inline=False)
         embed.set_footer(text="Tap the button below to grant Minion")
 
         view = MinionView(member.id)
 
+        # 4) Send
         try:
             await target.send(embed=embed, view=view)
             print(f"[ARRIVALS] Posted card for {member} in #{getattr(target, 'name', 'thread')}")
@@ -454,6 +544,12 @@ def setup_welcome(bot: discord.Client):
 
     @bot.event
     async def on_member_join(member: discord.Member):
+        # refresh snapshot once more (helps accuracy if many invites change quickly)
+        if _can_track_invites(member.guild):
+            try:
+                await _prime_invites_cache(member.guild)
+            except Exception:
+                pass
         print(f"[JOIN] {member} joined (id={member.id})")
         await _send_arrival_card(member)
 
@@ -487,13 +583,8 @@ def _member_card(title: str, member: discord.Member, thumb: Optional[str]=None) 
     return e
 
 async def _find_moderator_for_move(guild: discord.Guild, target_member: discord.Member) -> Optional[discord.Member]:
-    """
-    Try to attribute who moved/disconnected the member via Audit Log.
-    Requires View Audit Log.
-    """
     if not guild.me.guild_permissions.view_audit_log:
         return None
-    # Small delay to let the audit log entry land
     await asyncio.sleep(1.0)
     try:
         async for entry in guild.audit_logs(limit=6):
@@ -506,26 +597,22 @@ async def _find_moderator_for_move(guild: discord.Guild, target_member: discord.
 
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-    # Skip bots to reduce noise (flip to include if you want full trail)
     if member.bot:
         return
 
     guild = member.guild
     channel = await _get_audit_channel(guild)
     if channel is None:
-        return  # not configured yet
+        return
 
     thumb = safe_avatar_url(member)
 
-    # Determine event type
     if before.channel is None and after.channel is not None:
-        # Joined VC
         e = _member_card("🔊 Member Joined", member, thumb)
         e.add_field(name="To", value=f"{after.channel.mention} (`{after.channel.id}`)", inline=False)
         await channel.send(embed=e)
 
     elif before.channel is not None and after.channel is None:
-        # Left VC (or moderator disconnected)
         moderator = await _find_moderator_for_move(guild, member)
         title = "🔌 Member Disconnected" if moderator else "🔇 Member Left"
         e = _member_card(title, member, thumb)
@@ -535,7 +622,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         await channel.send(embed=e)
 
     elif before.channel is not None and after.channel is not None and before.channel.id != after.channel.id:
-        # Moved VC
         moderator = await _find_moderator_for_move(guild, member)
         e = _member_card("↔️ Member Moved", member, thumb)
         if moderator:
@@ -544,7 +630,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         e.add_field(name="To", value=f"{after.channel.mention} (`{after.channel.id}`)", inline=False)
         await channel.send(embed=e)
 
-# Commands to configure & test audit logging
 @bot.tree.command(name="set_audit_channel", description="Bind audit logs to this channel.")
 @app_commands.checks.has_permissions(administrator=True)
 async def set_audit_channel(interaction: discord.Interaction):
@@ -588,8 +673,7 @@ async def audit_test(interaction: discord.Interaction):
 #                       DEPARTURES LOGGER
 # ============================================================
 
-# small in-memory cache to prevent double logs when both events fire
-_RECENT_DEPARTURES: Dict[int, datetime] = {}  # target_id -> last_log_time (UTC)
+_RECENT_DEPARTURES: Dict[int, datetime] = {}
 
 def _recently_logged(user_id: int, window_secs: int = 10) -> bool:
     now = utcnow()
@@ -600,11 +684,6 @@ def _recently_logged(user_id: int, window_secs: int = 10) -> bool:
     return False
 
 async def _resolve_kick_or_ban(guild: discord.Guild, target_id: int, window_seconds: int = 45):
-    """
-    Returns tuple: (action: 'kick'|'ban'|None, moderator: Union[discord.Member, discord.User, None], reason: Optional[str])
-    Scans recent audit logs within a short window for matching target.
-    Requires 'View Audit Log' permission; otherwise returns (None, None, None).
-    """
     if not guild.me.guild_permissions.view_audit_log:
         return (None, None, None)
     try:
@@ -632,7 +711,6 @@ async def _send_departure_card(bot: discord.Client, guild: discord.Guild, user: 
                                title: str, details: str, color: int):
     target, _ = await resolve_target(bot, DEPARTURES_THREAD_ID)
     if not target:
-        # Silent fallback: don't crash features if thread missing
         return
     try:
         embed = _departure_embed_base(title, color)
@@ -640,7 +718,6 @@ async def _send_departure_card(bot: discord.Client, guild: discord.Guild, user: 
         if avatar:
             embed.set_thumbnail(url=avatar)
 
-        # Common fields
         if isinstance(user, discord.Member):
             joined = user.joined_at or utcnow()
             top_role = user.top_role.mention if user.top_role else "None"
@@ -667,11 +744,6 @@ async def _send_departure_card(bot: discord.Client, guild: discord.Guild, user: 
 
 @bot.event
 async def on_member_remove(member: discord.Member):
-    """
-    Fires on voluntary leave, kick, and sometimes ban.
-    We audit-log match to distinguish, with dedupe against on_member_ban.
-    """
-    # give audit log a moment to record
     await asyncio.sleep(1.2)
     if _recently_logged(member.id):
         return
@@ -704,25 +776,16 @@ async def on_member_remove(member: discord.Member):
 
 @bot.event
 async def on_member_ban(guild: discord.Guild, user: discord.User):
-    """
-    Confirms bans that may or may not be captured by on_member_remove.
-    """
     await asyncio.sleep(0.8)
     if _recently_logged(user.id):
         return
 
     action, moderator, reason = await _resolve_kick_or_ban(guild, user.id, window_seconds=60)
-    if action != "ban":
-        # Still log a ban if audit search failed; Discord sometimes delays entries
-        title = "⛔ Member Banned"
-    else:
-        title = "⛔ Member Banned"
-
     mod_txt = f" by **{moderator}**" if moderator else ""
     reason_txt = f"\n**Reason:** {reason}" if reason else ""
     await _send_departure_card(
         bot, guild, user,
-        title=title,
+        title="⛔ Member Banned",
         details=f"{user} was banned{mod_txt}.{reason_txt}",
         color=discord.Color.red().value
     )
@@ -730,6 +793,27 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
 # ============================================================
 #                       COMMANDS (WELCOME & CUSTOM)
 # ============================================================
+
+def build_welcome_embed(lobby_mention: str) -> discord.Embed:
+    desc = (
+        "👋 **Welcome to all our new members!**\n"
+        "We’re thrilled to have you join our community! 🎉\n\n"
+        "🎮 **What we play:**\n"
+        "We’re into just about anything FPS or Survival, plus some RTS "
+        "(and yes — Age of Empires IV is goated) and MMO's.\n\n"
+        "💬 **Your first steps:**\n\n"
+        f"Head over to {lobby_mention} and introduce yourself — let us know where you came from or what brought you here.\n\n"
+        "Tag **@Blood** to get your role.\n\n"
+        "Enjoy your stay! If you have any questions, **@Gravy** will love hearing you yap yap yap.\n\n"
+        "Don’t be annoying, overly sensitive, or spammy. Avoid @mentioning or DMing people you don’t know, "
+        "and no self-promo unless approved. Keep personal info private and absolutely no vegans, piracy, NSFW, or other shady content. "
+        "Use common sense — it covers the rest.\n\n"
+        "Spread the love by sharing our server invite link\n"
+        f"{VANITY_INVITE}\n"
+    )
+    embed = discord.Embed(title="Welcome to ShadowSyn", description=desc, color=THEME_PRIMARY)
+    embed.set_footer(text="Be cool. Have fun. Bring friends.")
+    return embed
 
 @bot.tree.command(name="welcome_diag", description="Diagnose arrivals permissions & config.")
 @app_commands.checks.has_permissions(administrator=True)
@@ -765,12 +849,12 @@ async def welcome_diag(interaction: discord.Interaction):
     fields.append(("minion_role_found", bool(r)))
     fields.append(("bot_above_minion", me.top_role > r if r else False))
     fields.append(("manage_roles", me.guild_permissions.manage_roles))
+    fields.append(("manage_guild (invite tracking)", me.guild_permissions.manage_guild))
 
     e = discord.Embed(title="Welcome Diagnostics", color=THEME_PRIMARY)
     e.add_field(name="Arrivals target", value=where, inline=False)
     for k, v in fields:
-        e.add_field(name=k, value=str(v), inline=True)
-
+        e.add_field(name=k, value=str(v)), 
     await interaction.followup.send(embed=e, ephemeral=True)
 
 @bot.tree.command(name="welcome_test", description="Post a Minion-button card for a member to the arrivals channel.")
@@ -805,6 +889,18 @@ async def welcome_test(interaction: discord.Interaction, member: discord.Member)
     if target is None:
         return await interaction.followup.send("No writable destination found.", ephemeral=True)
 
+    # Include a sample "Joined Via" line if we can detect it for the selected member’s guild
+    join_via = await _detect_join_source(member)
+    icon = safe_avatar_url(member)
+    embed = discord.Embed(
+        description=f"{member.mention} joined **{interaction.guild.name}**",
+        color=discord.Color.dark_theme()
+    )
+    embed.set_author(name=str(member), icon_url=icon)
+    if join_via:
+        embed.add_field(name="Joined Via", value=join_via, inline=False)
+    embed.set_footer(text="Tap the button below to grant Minion")
+
     class MinionView(View):
         def __init__(self, target_member_id: int):
             super().__init__(timeout=60*60*24)
@@ -828,14 +924,6 @@ async def welcome_test(interaction: discord.Interaction, member: discord.Member)
                 await inter.response.send_message(f"✅ Gave **{role.name}** to {tgt.mention}.", ephemeral=True)
             except Exception as e:
                 await inter.response.send_message(f"Error: {e}", ephemeral=True)
-
-    icon = safe_avatar_url(member)
-    embed = discord.Embed(
-        description=f"{member.mention} joined **{interaction.guild.name}**",
-        color=discord.Color.dark_theme()
-    )
-    embed.set_author(name=str(member), icon_url=icon)
-    embed.set_footer(text="Tap the button below to grant Minion")
 
     await target.send(embed=embed, view=MinionView(member.id))
     await interaction.followup.send("Posted test card.", ephemeral=True)
@@ -913,7 +1001,7 @@ async def ensure_voice(interaction: discord.Interaction) -> Optional[discord.Voi
 async def log_speak_usage(interaction: discord.Interaction, original_text: str, lang_code: str):
     target, _ = await resolve_target(bot, SPEAK_LOG_THREAD_ID)
     if not target:
-        return  # can't access the thread
+        return
 
     pretty = next((c.name for c in LANG_CHOICES if c.value == lang_code), lang_code)
     vc_name = (
@@ -941,14 +1029,13 @@ async def log_speak_usage(interaction: discord.Interaction, original_text: str, 
     language="Target language to speak"
 )
 @app_commands.choices(language=LANG_CHOICES)
-@app_commands.check(has_member_role)   # require Member role
+@app_commands.check(has_member_role)
 @app_commands.guild_only()
 async def speak(
     interaction: discord.Interaction,
     text: str,
     language: app_commands.Choice[str] = None
 ):
-    # Hidden interaction
     try:
         await interaction.response.defer(ephemeral=True)
     except discord.InteractionResponded:
@@ -962,11 +1049,9 @@ async def speak(
     if vc is None:
         return
 
-    # Determine language, log usage, and translate EN -> target if needed
     lang_code = (language.value if language else "en").lower()
     to_say = text[:5000]
 
-    # Log usage to the thread
     await log_speak_usage(interaction, original_text=text, lang_code=lang_code)
 
     if lang_code != "en":
@@ -976,7 +1061,6 @@ async def speak(
         except Exception as e:
             await interaction.followup.send(f"⚠️ Translation failed ({e}); speaking original English.", ephemeral=True)
 
-    # Synthesize to temp mp3 via gTTS with the target language
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
             tmp_path = f.name
@@ -986,7 +1070,6 @@ async def speak(
         await interaction.followup.send(f"❌ TTS failed: `{e}`", ephemeral=True)
         return
 
-    # Play and wait; auto-leave
     try:
         audio = discord.FFmpegPCMAudio(tmp_path, before_options="-nostdin")
         vc.play(audio)
@@ -1024,12 +1107,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
                 ephemeral=True
             )
 
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user} • Members intent={bot.intents.members} • Voice intent={bot.intents.voice_states}")
-
 def main():
-    # Optional: log ffmpeg path for sanity during deploys
     print("FFMPEG PATH:", which("ffmpeg"))
     bot.run(TOKEN)
 
