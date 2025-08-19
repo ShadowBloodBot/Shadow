@@ -3,6 +3,7 @@
 # + Mee6 welcome replacement (arrivals card + Minion button)
 # + Diagnostics: /welcome_diag, /welcome_test
 # + Voice Audit Logger: /set_audit_channel, /audit_diag, /audit_test
+# + Departures Logger (leave/kick/ban) -> thread 960088192177029140 with de-dupe
 # Env: DISCORD_TOKEN
 
 import os
@@ -12,7 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional, Tuple, Union, Dict
 from uuid import uuid4
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import discord
 from discord import app_commands
@@ -45,6 +46,9 @@ MEMBER_ROLE_ID = 955600320287887400  # users must have this to run /speak
 
 # /speak usage log destination (thread)
 SPEAK_LOG_THREAD_ID = 1400048671973703690
+
+# Departures (leave/kick/ban) log destination (thread)
+DEPARTURES_THREAD_ID = 960088192177029140
 
 # Language options for /speak
 translator = Translator()
@@ -155,7 +159,7 @@ def make_embed(title: str, message: str) -> discord.Embed:
 def ffmpeg_available() -> bool:
     return which("ffmpeg") is not None
 
-def safe_avatar_url(member: discord.Member) -> Optional[str]:
+def safe_avatar_url(member: Union[discord.Member, discord.User]) -> Optional[str]:
     try:
         return member.display_avatar.url
     except Exception:
@@ -311,7 +315,7 @@ class ShadowSynBot(discord.Client):
         intents = discord.Intents.default()
         intents.guilds = True
         intents.voice_states = True   # REQUIRED for audit logs
-        intents.members = True        # REQUIRED for on_member_join
+        intents.members = True        # REQUIRED for on_member_join/remove
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
 
@@ -579,6 +583,149 @@ async def audit_test(interaction: discord.Interaction):
     e.add_field(name="From", value="`#unknown`", inline=False)
     e.add_field(name="To", value="`#unknown`", inline=False)
     await interaction.response.send_message(embed=e, ephemeral=False)
+
+# ============================================================
+#                       DEPARTURES LOGGER
+# ============================================================
+
+# small in-memory cache to prevent double logs when both events fire
+_RECENT_DEPARTURES: Dict[int, datetime] = {}  # target_id -> last_log_time (UTC)
+
+def _recently_logged(user_id: int, window_secs: int = 10) -> bool:
+    now = utcnow()
+    ts = _RECENT_DEPARTURES.get(user_id)
+    if ts and (now - ts) <= timedelta(seconds=window_secs):
+        return True
+    _RECENT_DEPARTURES[user_id] = now
+    return False
+
+async def _resolve_kick_or_ban(guild: discord.Guild, target_id: int, window_seconds: int = 45):
+    """
+    Returns tuple: (action: 'kick'|'ban'|None, moderator: Union[discord.Member, discord.User, None], reason: Optional[str])
+    Scans recent audit logs within a short window for matching target.
+    Requires 'View Audit Log' permission; otherwise returns (None, None, None).
+    """
+    if not guild.me.guild_permissions.view_audit_log:
+        return (None, None, None)
+    try:
+        now = utcnow()
+        async for entry in guild.audit_logs(limit=10, oldest_first=False):
+            if not entry.target or getattr(entry.target, "id", None) != target_id:
+                continue
+            created = entry.created_at.replace(tzinfo=timezone.utc) if entry.created_at.tzinfo is None else entry.created_at
+            if (now - created).total_seconds() > window_seconds:
+                continue
+            if entry.action == discord.AuditLogAction.kick:
+                return ("kick", entry.user, entry.reason)
+            if entry.action == discord.AuditLogAction.ban:
+                return ("ban", entry.user, entry.reason)
+    except Exception:
+        pass
+    return (None, None, None)
+
+def _departure_embed_base(title: str, color: int) -> discord.Embed:
+    e = discord.Embed(title=title, color=color, timestamp=utcnow())
+    e.set_footer(text="ShadowSyn • Departures")
+    return e
+
+async def _send_departure_card(bot: discord.Client, guild: discord.Guild, user: Union[discord.Member, discord.User],
+                               title: str, details: str, color: int):
+    target, _ = await resolve_target(bot, DEPARTURES_THREAD_ID)
+    if not target:
+        # Silent fallback: don't crash features if thread missing
+        return
+    try:
+        embed = _departure_embed_base(title, color)
+        avatar = safe_avatar_url(user)
+        if avatar:
+            embed.set_thumbnail(url=avatar)
+
+        # Common fields
+        if isinstance(user, discord.Member):
+            joined = user.joined_at or utcnow()
+            top_role = user.top_role.mention if user.top_role else "None"
+            embed.add_field(name="User", value=f"{user.mention}\n`{user} / {user.id}`", inline=False)
+            embed.add_field(name="Joined", value=f"<t:{int(joined.timestamp())}:R>", inline=True)
+            embed.add_field(name="Top Role", value=top_role, inline=True)
+            role_count = len([r for r in user.roles if r.name != "@everyone"])
+            embed.add_field(name="# Roles", value=str(role_count), inline=True)
+        else:
+            embed.add_field(name="User", value=f"`{user} / {user.id}`", inline=False)
+
+        try:
+            created = user.created_at
+            if created:
+                created = created.replace(tzinfo=timezone.utc) if created.tzinfo is None else created
+                embed.add_field(name="Account Age", value=f"<t:{int(created.timestamp())}:R>", inline=True)
+        except Exception:
+            pass
+
+        embed.add_field(name="Details", value=details or "`(none)`", inline=False)
+        await target.send(embed=embed)
+    except Exception:
+        pass
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    """
+    Fires on voluntary leave, kick, and sometimes ban.
+    We audit-log match to distinguish, with dedupe against on_member_ban.
+    """
+    # give audit log a moment to record
+    await asyncio.sleep(1.2)
+    if _recently_logged(member.id):
+        return
+
+    action, moderator, reason = await _resolve_kick_or_ban(member.guild, member.id, window_seconds=45)
+    mod_txt = f" by **{moderator}**" if moderator else ""
+    reason_txt = f"\n**Reason:** {reason}" if reason else ""
+
+    if action == "kick":
+        await _send_departure_card(
+            bot, member.guild, member,
+            title="🚪 Member Kicked",
+            details=f"{member.mention} was kicked{mod_txt}.{reason_txt}",
+            color=discord.Color.orange().value
+        )
+    elif action == "ban":
+        await _send_departure_card(
+            bot, member.guild, member,
+            title="⛔ Member Banned",
+            details=f"{member} was banned{mod_txt}.{reason_txt}",
+            color=discord.Color.red().value
+        )
+    else:
+        await _send_departure_card(
+            bot, member.guild, member,
+            title="👋 Member Left",
+            details=f"{member.mention} left the server.",
+            color=discord.Color.dark_grey().value
+        )
+
+@bot.event
+async def on_member_ban(guild: discord.Guild, user: discord.User):
+    """
+    Confirms bans that may or may not be captured by on_member_remove.
+    """
+    await asyncio.sleep(0.8)
+    if _recently_logged(user.id):
+        return
+
+    action, moderator, reason = await _resolve_kick_or_ban(guild, user.id, window_seconds=60)
+    if action != "ban":
+        # Still log a ban if audit search failed; Discord sometimes delays entries
+        title = "⛔ Member Banned"
+    else:
+        title = "⛔ Member Banned"
+
+    mod_txt = f" by **{moderator}**" if moderator else ""
+    reason_txt = f"\n**Reason:** {reason}" if reason else ""
+    await _send_departure_card(
+        bot, guild, user,
+        title=title,
+        details=f"{user} was banned{mod_txt}.{reason_txt}",
+        color=discord.Color.red().value
+    )
 
 # ============================================================
 #                       COMMANDS (WELCOME & CUSTOM)
