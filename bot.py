@@ -6,6 +6,7 @@ import re
 import json
 import asyncio
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional, Tuple, Union, Dict, List, Set
 from datetime import datetime, timezone
@@ -26,7 +27,7 @@ THEME_PRIMARY  = 0x2B0B35
 
 ARRIVALS_THREAD_ID      = 959629903186259978
 ROLE_MINION_ID          = 955600021502431233
-ROLE_ADMIN_ID           = 1214794734770323466
+ROLE_ADMIN_ID           = 1214794734770323466  # Admin lock for role manager commands
 
 DEFAULT_TARGET_ID       = 1166874144395247757
 SPEAK_LOG_THREAD_ID     = 1400048671973703690
@@ -439,10 +440,7 @@ async def on_member_ban(guild, user): await _log_departure(user, "Banned")
 # ============================================================
 
 def build_role_selects(options: List[dict]) -> List[Select]:
-    """
-    Build one or more Selects (Discord cap 25 options per select).
-    No emojis; labels from options.
-    """
+    """Build one or more Selects (Discord cap 25 options per select)."""
     selects: List[Select] = []
     chunk_size = 25
     for i in range(0, len(options), chunk_size):
@@ -451,10 +449,8 @@ def build_role_selects(options: List[dict]) -> List[Select]:
             placeholder="Select roles…",
             min_values=0,
             max_values=len(chunk),
-            options=[
-                discord.SelectOption(label=opt["label"], value=str(opt["role_id"]))
-                for opt in chunk
-            ]
+            options=[discord.SelectOption(label=o["label"], value=str(o["role_id"])) for o in chunk],
+            row=0  # keep neat, Discord will stack if >1
         )
         selects.append(sel)
     return selects
@@ -462,55 +458,65 @@ def build_role_selects(options: List[dict]) -> List[Select]:
 class RolePickerView(View):
     """
     Minimal: one (or more) multi-selects + Confirm.
-    Users select; we stage per-user; Confirm applies add/remove deltas.
+    Confirm reads the live values of all selects so no second click needed.
     """
     def __init__(self, guild: discord.Guild, options: List[dict]):
         super().__init__(timeout=None)
         self.guild = guild
         self.options = options
-        self.staged: Dict[int, Set[int]] = {}  # user_id -> set(role_ids)
+        self._last_confirm_ts: Dict[int, float] = {}  # anti-spam per user
 
         for sel in build_role_selects(options):
-            sel.callback = self._on_select  # type: ignore
+            # no per-select callback needed; Confirm will read values live
             self.add_item(sel)
 
-        confirm = Button(label="Confirm", style=discord.ButtonStyle.success)
+        confirm = Button(label="Confirm", style=discord.ButtonStyle.success, row=2)
         confirm.callback = self._on_confirm  # type: ignore
         self.add_item(confirm)
 
-    async def _on_select(self, interaction: discord.Interaction):
-        # Collect all select values in this view for the user and stage them
+    def _gather_live_values(self) -> Set[int]:
         picked: Set[int] = set()
         for item in self.children:
             if isinstance(item, Select):
-                # If user hasn't touched a select, its values may be []
                 picked.update(int(v) for v in item.values)
-        self.staged[interaction.user.id] = picked
-        await safe_reply(interaction, "☑️ Staged. Press **Confirm** to apply.", ephemeral=True)
+        return picked
 
     async def _on_confirm(self, interaction: discord.Interaction):
+        now = time.time()
+        last = self._last_confirm_ts.get(interaction.user.id, 0)
+        if now - last < 1.5:
+            await safe_reply(interaction, "⏱️ Already applied. Give it a sec.", ephemeral=True)
+            return
+        self._last_confirm_ts[interaction.user.id] = now
+
         member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
         if not member:
             await safe_reply(interaction, "❌ Could not resolve member.", ephemeral=True)
             return
 
-        desired: Set[int] = self.staged.get(member.id, set())
+        desired: Set[int] = self._gather_live_values()
         allowed_ids: Set[int] = {int(o["role_id"]) for o in self.options}
-
-        # Current roles filtered to allowed set
         current_ids: Set[int] = {r.id for r in member.roles if r.id in allowed_ids}
 
         to_add_ids = list(desired - current_ids)
         to_remove_ids = list(current_ids - desired)
 
         bot_member = interaction.guild.me
-        # Safety: only manage roles below bot
         def manageable(r: discord.Role) -> bool:
             return bot_member.top_role > r and interaction.guild.me.guild_permissions.manage_roles
 
         added, removed, skipped = [], [], []
 
-        # Add
+        # Disable Confirm during apply (prevents rapid double clicks)
+        for c in self.children:
+            if isinstance(c, Button) and c.label == "Confirm":
+                c.disabled = True
+        try:
+            await interaction.message.edit(view=self)
+        except Exception:
+            pass
+
+        # Add roles
         for rid in to_add_ids:
             role = interaction.guild.get_role(rid)
             if role and manageable(role):
@@ -521,8 +527,7 @@ class RolePickerView(View):
                     skipped.append(role.name if role else str(rid))
             elif role:
                 skipped.append(role.name)
-
-        # Remove
+        # Remove roles
         for rid in to_remove_ids:
             role = interaction.guild.get_role(rid)
             if role and manageable(role):
@@ -534,13 +539,24 @@ class RolePickerView(View):
             elif role:
                 skipped.append(role.name)
 
-        summary = []
-        if added: summary.append(f"➕ {', '.join(added)}")
-        if removed: summary.append(f"➖ {', '.join(removed)}")
-        if skipped: summary.append(f"⛔ {', '.join(skipped)} (unmanageable)")
-        if not summary: summary = ["No changes."]
+        summary_parts = []
+        if added: summary_parts.append(f"➕ {', '.join(added)}")
+        if removed: summary_parts.append(f"➖ {', '.join(removed)}")
+        if skipped: summary_parts.append(f"⛔ {', '.join(skipped)} (unmanageable)")
+        if not summary_parts:
+            summary_parts = ["No changes."]
 
-        await safe_reply(interaction, " | ".join(summary), ephemeral=True)
+        await safe_reply(interaction, f"✅ Updated: {' | '.join(summary_parts)}", ephemeral=True)
+
+        # Re-enable Confirm after short debounce
+        await asyncio.sleep(1.5)
+        for c in self.children:
+            if isinstance(c, Button) and c.label == "Confirm":
+                c.disabled = False
+        try:
+            await interaction.message.edit(view=self)
+        except Exception:
+            pass
 
 def role_picker_embed() -> discord.Embed:
     e = discord.Embed(
@@ -570,15 +586,21 @@ async def rehydrate_role_panel(bot: discord.Client, guild: discord.Guild):
         pass
 
 # ============================================================
-#            SELF-ASSIGN ROLES: ADMIN COMMANDS
+#            SELF-ASSIGN ROLES: ADMIN COMMANDS (LOCKED)
 # ============================================================
 
-ROLE_MENTION_RE = re.compile(r"<@&(\d+)>")
+def admin_only():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if not isinstance(interaction.user, discord.Member):
+            return False
+        return any(r.id == ROLE_ADMIN_ID for r in interaction.user.roles)
+    return app_commands.check(predicate)
 
+ROLE_MENTION_RE = re.compile(r"<@&(\d+)>")
 def _parse_role_mentions(text: str) -> List[int]:
     return [int(m) for m in ROLE_MENTION_RE.findall(text or "")]
 
-@app_commands.default_permissions(manage_guild=True)
+@admin_only()
 @bot.tree.command(name="roles_post", description="Post the persistent Select Roles panel here or in a target channel/thread.")
 @app_commands.describe(target="Optional channel/thread to post in (defaults to here)")
 async def roles_post(
@@ -602,7 +624,7 @@ async def roles_post(
     except Exception as e:
         await safe_reply(interaction, f"❌ Failed: `{e}`", ephemeral=True)
 
-@app_commands.default_permissions(manage_guild=True)
+@admin_only()
 @bot.tree.command(name="roles_add", description="Add one or more roles to the picker (paste role mentions).")
 @app_commands.describe(roles="Role mentions, e.g., @Rust @Battlefield @AoE4")
 async def roles_add(interaction: discord.Interaction, roles: str):
@@ -634,7 +656,7 @@ async def roles_add(interaction: discord.Interaction, roles: str):
     set_guild_role_cfg(guild.id, cfg)
     await safe_reply(interaction, f"✅ Added: {', '.join(added_labels) or 'None'}", ephemeral=True)
 
-@app_commands.default_permissions(manage_guild=True)
+@admin_only()
 @bot.tree.command(name="roles_remove", description="Remove one or more roles from the picker (paste role mentions).")
 @app_commands.describe(roles="Role mentions, e.g., @Rust @AoE4")
 async def roles_remove(interaction: discord.Interaction, roles: str):
@@ -656,7 +678,7 @@ async def roles_remove(interaction: discord.Interaction, roles: str):
 
     await safe_reply(interaction, f"✅ Removed {before - len(opts)} role(s). Use `/roles_sync` to refresh panel.", ephemeral=True)
 
-@app_commands.default_permissions(manage_guild=True)
+@admin_only()
 @bot.tree.command(name="roles_list", description="List current picker roles.")
 async def roles_list(interaction: discord.Interaction):
     await safe_defer(interaction, ephemeral=True)
@@ -668,7 +690,7 @@ async def roles_list(interaction: discord.Interaction):
     lines = [f"- {o['label']} (`{o['role_id']}`)" for o in opts]
     await safe_reply(interaction, "\n".join(lines), ephemeral=True)
 
-@app_commands.default_permissions(manage_guild=True)
+@admin_only()
 @bot.tree.command(name="roles_clear", description="Clear all roles from the picker (panel remains).")
 async def roles_clear(interaction: discord.Interaction):
     await safe_defer(interaction, ephemeral=True)
@@ -678,7 +700,7 @@ async def roles_clear(interaction: discord.Interaction):
     set_guild_role_cfg(guild.id, cfg)
     await safe_reply(interaction, "✅ Cleared options. Use `/roles_sync` to refresh panel.", ephemeral=True)
 
-@app_commands.default_permissions(manage_guild=True)
+@admin_only()
 @bot.tree.command(name="roles_sync", description="Rebuild the posted panel with current options.")
 async def roles_sync(interaction: discord.Interaction):
     await safe_defer(interaction, ephemeral=True)
