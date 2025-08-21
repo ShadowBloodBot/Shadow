@@ -25,12 +25,12 @@ VANITY_INVITE  = "https://discord.gg/shadowsyn"
 THEME_PRIMARY  = 0x2B0B35
 LOBBY_NAME     = "lobby"
 
-ARRIVALS_THREAD_ID = 959629903186259978
-ROLE_MINION_ID     = 955600021502431233
-ROLE_ADMIN_ID      = 1214794734770323466
+ARRIVALS_THREAD_ID   = 959629903186259978
+ROLE_MINION_ID       = 955600021502431233
+ROLE_ADMIN_ID        = 1214794734770323466
 
-DEFAULT_TARGET_ID  = 1166874144395247757
-SPEAK_LOG_THREAD_ID = 1400048671973703690
+DEFAULT_TARGET_ID    = 1166874144395247757
+SPEAK_LOG_THREAD_ID  = 1400048671973703690
 DEPARTURES_THREAD_ID = 960088192177029140
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
 
@@ -73,6 +73,32 @@ def save_config(cfg: dict) -> None:
         pass
 
 config = load_config()
+
+# ============================================================
+#                       SAFE REPLY HELPERS
+# ============================================================
+
+async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = False):
+    """Defer once if not already responded."""
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=ephemeral)
+    except Exception:
+        pass
+
+async def safe_reply(interaction: discord.Interaction, *args, **kwargs):
+    """
+    Reply to an interaction regardless of prior response state.
+    Uses followup if already responded/deferred.
+    """
+    try:
+        if not interaction.response.is_done():
+            return await interaction.response.send_message(*args, **kwargs)
+        else:
+            return await interaction.followup.send(*args, **kwargs)
+    except Exception:
+        # swallow to avoid InteractionResponded crashes
+        return None
 
 # ============================================================
 #                       HELPERS
@@ -181,10 +207,7 @@ class InviteFriendsView(View):
 
     async def send_invite_ephemeral(self, interaction: discord.Interaction):
         text = f"📨 Invite link:\n{VANITY_INVITE}"
-        try:
-            await interaction.response.send_message(text, ephemeral=True)
-        except Exception:
-            pass
+        await safe_reply(interaction, text, ephemeral=True)
 
 # ============================================================
 #                   BOT CORE
@@ -227,6 +250,7 @@ def setup_welcome(bot: discord.Client):
             btn = Button(label="Minion", style=discord.ButtonStyle.success)
             btn.callback = self._grant_minion
             self.add_item(btn)
+
         async def _grant_minion(self, interaction: discord.Interaction):
             guild = interaction.guild
             if not guild:
@@ -234,11 +258,15 @@ def setup_welcome(bot: discord.Client):
             member = guild.get_member(self.target_member_id)
             role = guild.get_role(ROLE_MINION_ID)
             if member and role:
-                await member.add_roles(role, reason=f"Granted by {interaction.user}")
-                await interaction.response.send_message(f"✅ Gave {role.name} to {member.mention}", ephemeral=True)
+                try:
+                    await member.add_roles(role, reason=f"Granted by {interaction.user}")
+                    await safe_reply(interaction, f"✅ Gave {role.name} to {member.mention}", ephemeral=True)
+                except Exception as e:
+                    await safe_reply(interaction, f"❌ Failed to grant role: `{e}`", ephemeral=True)
 
     async def _send_arrival_card(member: discord.Member):
-        if member.bot: return
+        if member.bot:
+            return
         dest = bot.get_channel(ARRIVALS_THREAD_ID)
         if not dest:
             return
@@ -252,7 +280,10 @@ def setup_welcome(bot: discord.Client):
         if invite_line:
             embed.add_field(name="Joined Via", value=invite_line, inline=False)
         embed.set_footer(text="Tap to grant Minion")
-        await dest.send(embed=embed, view=MinionView(member.id))
+        try:
+            await dest.send(embed=embed, view=MinionView(member.id))
+        except Exception:
+            pass
 
     @bot.event
     async def on_member_join(member: discord.Member):
@@ -265,16 +296,40 @@ setup_welcome(bot)
 # ============================================================
 
 async def ensure_voice(interaction: discord.Interaction) -> Optional[discord.VoiceClient]:
-    if not interaction.guild or not isinstance(interaction.user, discord.Member):
-        return None
-    state = interaction.user.voice
-    if not state or not state.channel:
-        await interaction.response.send_message("❌ Join a VC first.", ephemeral=True)
-        return None
+    """
+    Ensure the bot joins the caller's VC. Uses safe_reply for errors to avoid double-respond issues.
+    """
     try:
-        return await state.channel.connect(reconnect=True, timeout=15)
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await safe_reply(interaction, "❌ Guild/member not resolved.", ephemeral=True)
+            return None
+
+        state = interaction.user.voice
+        if not state or not state.channel:
+            await safe_reply(interaction, "❌ Join a VC first.", ephemeral=True)
+            return None
+
+        # If already connected in guild, move to user's channel if different
+        vc: Optional[discord.VoiceClient] = discord.utils.get(bot.voice_clients, guild=interaction.guild)
+        if vc and vc.is_connected():
+            if vc.channel and vc.channel.id == state.channel.id:
+                return vc
+            try:
+                await vc.move_to(state.channel)
+                return vc
+            except Exception as e:
+                await safe_reply(interaction, f"❌ Could not move to your VC: `{e}`", ephemeral=True)
+                return None
+
+        # Fresh connect
+        try:
+            vc = await state.channel.connect(reconnect=True, timeout=15)
+            return vc
+        except Exception as e:
+            await safe_reply(interaction, f"❌ Could not join VC: `{e}`", ephemeral=True)
+            return None
     except Exception as e:
-        await interaction.response.send_message(f"❌ VC error: {e}", ephemeral=True)
+        await safe_reply(interaction, f"❌ VC error: `{e}`", ephemeral=True)
         return None
 
 async def log_speak_usage(interaction: discord.Interaction, text: str, lang: str):
@@ -284,24 +339,35 @@ async def log_speak_usage(interaction: discord.Interaction, text: str, lang: str
         embed.add_field(name="User", value=str(interaction.user), inline=False)
         embed.add_field(name="Language", value=lang, inline=True)
         embed.add_field(name="Text", value=text[:1024], inline=False)
-        await target.send(embed=embed)
+        try:
+            await target.send(embed=embed)
+        except Exception:
+            pass
 
 @bot.tree.command(name="speak", description="Speak text in your VC")
 @app_commands.describe(text="Message in English", language="Target language")
 @app_commands.choices(language=LANG_CHOICES)
 async def speak(interaction: discord.Interaction, text: str, language: app_commands.Choice[str] = None):
-    await interaction.response.defer(ephemeral=True)
+    # Defer once; thereafter use followup/safe_reply
+    await safe_defer(interaction, ephemeral=True)
+
     if not ffmpeg_available():
-        return await interaction.followup.send("❌ FFmpeg missing", ephemeral=True)
+        await safe_reply(interaction, "❌ FFmpeg missing", ephemeral=True)
+        return
+
     vc = await ensure_voice(interaction)
-    if vc is None: return
+    if vc is None:
+        return
+
     lang_code = (language.value if language else "en").lower()
     to_say = text
     if lang_code != "en":
         try:
             result = translator.translate(text, src="en", dest=lang_code)
             to_say = result.text
-        except Exception: pass
+        except Exception as e:
+            await safe_reply(interaction, f"⚠️ Translate failed, using original: `{e}`", ephemeral=True)
+
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
             tmp = f.name
@@ -309,9 +375,9 @@ async def speak(interaction: discord.Interaction, text: str, language: app_comma
         audio = discord.FFmpegPCMAudio(tmp)
         vc.play(audio)
         await log_speak_usage(interaction, text, lang_code)
-        await interaction.followup.send("✅ Spoke text", ephemeral=True)
+        await safe_reply(interaction, "✅ Spoke text", ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+        await safe_reply(interaction, f"❌ Error: `{e}`", ephemeral=True)
 
 # ============================================================
 #                CUSTOM EMBED COMMAND
@@ -322,17 +388,38 @@ class CustomEmbedModal(Modal, title="Send Custom Embed"):
         super().__init__(timeout=300)
         self.target_id = target_id
         self.title_input = TextInput(label="Title", max_length=256)
-        self.message_input = TextInput(label="Message", style=discord.TextStyle.paragraph, max_length=4000)
-        self.add_item(self.title_input); self.add_item(self.message_input)
+        self.message_input = TextInput(
+            label="Message",
+            style=discord.TextStyle.paragraph,
+            max_length=4000,
+            placeholder="Type your message. Use Enter for new lines."
+        )
+        self.add_item(self.title_input)
+        self.add_item(self.message_input)
+
     async def on_submit(self, interaction: discord.Interaction):
-        embed = discord.Embed(title=self.title_input.value, description=self.message_input.value, color=THEME_PRIMARY)
+        embed = discord.Embed(
+            title=self.title_input.value,
+            description=self.message_input.value,
+            color=THEME_PRIMARY
+        )
         ch = interaction.client.get_channel(self.target_id)
-        if ch: await ch.send(embed=embed)
-        await interaction.response.send_message("✅ Posted", ephemeral=True)
+        if ch:
+            try:
+                await ch.send(embed=embed)
+            except Exception as e:
+                await safe_reply(interaction, f"❌ Failed to post: `{e}`", ephemeral=True)
+                return
+        await safe_reply(interaction, "✅ Posted", ephemeral=True)
 
 @bot.tree.command(name="send_custom", description="Send a custom embed here")
 async def send_custom(interaction: discord.Interaction):
-    await interaction.response.send_modal(CustomEmbedModal(interaction.channel.id))
+    # No defer here; we need a pristine response state to open the modal
+    try:
+        await interaction.response.send_modal(CustomEmbedModal(interaction.channel.id))
+    except Exception:
+        # Fallback if something already responded (rare)
+        await safe_reply(interaction, "❌ Couldn't open modal.", ephemeral=True)
 
 # ============================================================
 #                RUN
