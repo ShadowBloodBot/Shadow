@@ -5,3 +5,4 @@ gTTS>=2.5.1
 googletrans==4.0.0-rc1
 yt-dlp
 pynacl
+wavelink==2.6.3
