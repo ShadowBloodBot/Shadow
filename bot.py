@@ -445,58 +445,95 @@ def build_role_selects(options: List[dict]) -> List[Select]:
     chunk_size = 25
     for i in range(0, len(options), chunk_size):
         chunk = options[i:i+chunk_size]
+        chunk_ids = [int(o["role_id"]) for o in chunk]
         sel = Select(
             placeholder="Select roles…",
             min_values=0,
             max_values=len(chunk),
             options=[discord.SelectOption(label=o["label"], value=str(o["role_id"])) for o in chunk],
-            row=0  # keep neat, Discord will stack if >1
+            row=0
         )
+        # store chunk ids for staging
+        sel._chunk_ids = set(chunk_ids)  # type: ignore[attr-defined]
         selects.append(sel)
     return selects
 
 class RolePickerView(View):
     """
-    Minimal: one (or more) multi-selects + Confirm.
-    Confirm reads the live values of all selects so no second click needed.
+    Ultra-minimal:
+    - Multi-select dropdown(s)
+    - Single Confirm button
+    - Select events silently defer and STAGE picks (no auto-apply)
+    - Confirm applies staged deltas once (debounced) with a success summary
     """
     def __init__(self, guild: discord.Guild, options: List[dict]):
         super().__init__(timeout=None)
         self.guild = guild
         self.options = options
-        self._last_confirm_ts: Dict[int, float] = {}  # anti-spam per user
+        self.staged: Dict[int, Set[int]] = {}        # user_id -> staged role_ids
+        self._last_confirm_ts: Dict[int, float] = {} # anti-spam per user
 
         for sel in build_role_selects(options):
-            # no per-select callback needed; Confirm will read values live
+            sel.callback = self._on_select  # type: ignore
             self.add_item(sel)
 
-        confirm = Button(label="Confirm", style=discord.ButtonStyle.success, row=2)
-        confirm.callback = self._on_confirm  # type: ignore
-        self.add_item(confirm)
+        btn_conf = Button(label="Confirm", style=discord.ButtonStyle.success, row=2)
+        btn_conf.callback = self._on_confirm  # type: ignore
+        self.add_item(btn_conf)
+
+    def _allowed_ids(self) -> Set[int]:
+        return {int(o["role_id"]) for o in self.options}
+
+    def _member_current_allowed(self, member: discord.Member) -> Set[int]:
+        allowed = self._allowed_ids()
+        return {r.id for r in member.roles if r.id in allowed}
 
     def _gather_live_values(self) -> Set[int]:
         picked: Set[int] = set()
         for item in self.children:
-            if isinstance(item, Select):
+            if isinstance(item, Select) and item.values:
                 picked.update(int(v) for v in item.values)
         return picked
 
+    async def _on_select(self, interaction: discord.Interaction):
+        # Quietly acknowledge to avoid "Interaction failed"
+        try:
+            await interaction.response.defer()
+        except Exception:
+            pass
+
+        user_id = interaction.user.id
+        current: Set[int] = set(self.staged.get(user_id, set()))
+
+        # Rebuild staged for the chunk that changed
+        for item in self.children:
+            if isinstance(item, Select):
+                chunk_ids: Set[int] = getattr(item, "_chunk_ids", set())  # type: ignore[attr-defined]
+                current -= chunk_ids
+                if item.values:
+                    current |= {int(v) for v in item.values}
+
+        self.staged[user_id] = current
+
     async def _on_confirm(self, interaction: discord.Interaction):
         now = time.time()
-        last = self._last_confirm_ts.get(interaction.user.id, 0)
+        last = self._last_confirm_ts.get(interaction.user.id, 0.0)
         if now - last < 1.5:
-            await safe_reply(interaction, "⏱️ Already applied. Give it a sec.", ephemeral=True)
-            return
+            return await safe_reply(interaction, "⏱️ Already applied. Give it a sec.", ephemeral=True)
         self._last_confirm_ts[interaction.user.id] = now
 
         member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
         if not member:
-            await safe_reply(interaction, "❌ Could not resolve member.", ephemeral=True)
-            return
+            return await safe_reply(interaction, "❌ Could not resolve member.", ephemeral=True)
 
-        desired: Set[int] = self._gather_live_values()
-        allowed_ids: Set[int] = {int(o["role_id"]) for o in self.options}
-        current_ids: Set[int] = {r.id for r in member.roles if r.id in allowed_ids}
+        # If user never staged, use live values from selects
+        desired: Set[int] = set(self.staged.get(member.id, set()))
+        if not desired:
+            desired = self._gather_live_values()
+            self.staged[member.id] = desired
+
+        allowed_ids: Set[int] = self._allowed_ids()
+        current_ids: Set[int] = self._member_current_allowed(member)
 
         to_add_ids = list(desired - current_ids)
         to_remove_ids = list(current_ids - desired)
@@ -505,9 +542,7 @@ class RolePickerView(View):
         def manageable(r: discord.Role) -> bool:
             return bot_member.top_role > r and interaction.guild.me.guild_permissions.manage_roles
 
-        added, removed, skipped = [], [], []
-
-        # Disable Confirm during apply (prevents rapid double clicks)
+        # Disable Confirm during apply
         for c in self.children:
             if isinstance(c, Button) and c.label == "Confirm":
                 c.disabled = True
@@ -516,7 +551,9 @@ class RolePickerView(View):
         except Exception:
             pass
 
-        # Add roles
+        added, removed, skipped = [], [], []
+
+        # Adds
         for rid in to_add_ids:
             role = interaction.guild.get_role(rid)
             if role and manageable(role):
@@ -527,7 +564,7 @@ class RolePickerView(View):
                     skipped.append(role.name if role else str(rid))
             elif role:
                 skipped.append(role.name)
-        # Remove roles
+        # Removes
         for rid in to_remove_ids:
             role = interaction.guild.get_role(rid)
             if role and manageable(role):
@@ -539,14 +576,16 @@ class RolePickerView(View):
             elif role:
                 skipped.append(role.name)
 
-        summary_parts = []
-        if added: summary_parts.append(f"➕ {', '.join(added)}")
-        if removed: summary_parts.append(f"➖ {', '.join(removed)}")
-        if skipped: summary_parts.append(f"⛔ {', '.join(skipped)} (unmanageable)")
-        if not summary_parts:
-            summary_parts = ["No changes."]
+        # reset staged for this user
+        self.staged.pop(member.id, None)
 
-        await safe_reply(interaction, f"✅ Updated: {' | '.join(summary_parts)}", ephemeral=True)
+        parts = []
+        if added: parts.append(f"➕ {', '.join(added)}")
+        if removed: parts.append(f"➖ {', '.join(removed)}")
+        if skipped: parts.append(f"⛔ {', '.join(skipped)} (unmanageable)")
+        if not parts: parts = ["No changes."]
+
+        await safe_reply(interaction, f"✅ Updated: {' | '.join(parts)}", ephemeral=True)
 
         # Re-enable Confirm after short debounce
         await asyncio.sleep(1.5)
@@ -559,12 +598,11 @@ class RolePickerView(View):
             pass
 
 def role_picker_embed() -> discord.Embed:
-    e = discord.Embed(
+    return discord.Embed(
         title="SELECT ROLES",
         description="Tick what you want via the dropdown(s), then press **Confirm**.",
         color=THEME_PRIMARY,
     )
-    return e
 
 async def rehydrate_role_panel(bot: discord.Client, guild: discord.Guild):
     cfg = get_guild_role_cfg(guild.id)
@@ -582,7 +620,7 @@ async def rehydrate_role_panel(bot: discord.Client, guild: discord.Guild):
         msg = await channel.fetch_message(panel.get("message_id"))
         await msg.edit(embed=role_picker_embed(), view=RolePickerView(guild, options))
     except Exception:
-        # If message was deleted, silently skip; admin can /roles_post again
+        # Message deleted? Admin can /roles_post again.
         pass
 
 # ============================================================
