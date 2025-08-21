@@ -55,6 +55,18 @@ DEPARTURES_THREAD_ID = 960088192177029140
 # >>> Default Audit Destination (YOUR REQUIRED THREAD)
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
 
+# ===== NEW: Role system gate (only this user can use any Role Picker feature) =====
+ALLOWED_ROLE_USER_ID = 482463400929263627  # <— your user id
+
+def role_user_only(interaction: discord.Interaction) -> bool:
+    return bool(interaction.user and interaction.user.id == ALLOWED_ROLE_USER_ID)
+
+async def _deny_role_access(interaction: discord.Interaction):
+    try:
+        await interaction.response.send_message("❌ You’re not allowed to use the Role Picker.", ephemeral=True)
+    except discord.InteractionResponded:
+        await interaction.followup.send("❌ You’re not allowed to use the Role Picker.", ephemeral=True)
+
 # Token
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
@@ -446,6 +458,12 @@ class RolePickerEphemeral(View):
             self.add_item(prev_btn)
             self.add_item(next_btn)
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not role_user_only(interaction):
+            await _deny_role_access(interaction)
+            return False
+        return True
+
     async def _noop(self, interaction: discord.Interaction):
         # No-op so users can change selections before applying
         await interaction.response.defer(ephemeral=True)
@@ -530,6 +548,8 @@ class RolePanelPersistent(View):
         self.add_item(open_btn)
 
     async def _open_picker(self, interaction: discord.Interaction):
+        if not role_user_only(interaction):
+            return await _deny_role_access(interaction)
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Not in a guild.", ephemeral=True)
         title = config.get("role_picker_title", "Pick Your Game Roles")
@@ -1382,7 +1402,7 @@ def _admin_check(member: discord.Member) -> bool:
     return bool(member.guild_permissions.administrator or any(r.id == ROLE_ADMIN_ID for r in member.roles))
 
 @bot.tree.command(name="roles_panel", description="Post the Role Picker panel here.")
-@app_commands.checks.has_permissions(administrator=True)
+@app_commands.check(role_user_only)   # <— only your ID can run
 @app_commands.guild_only()
 async def roles_panel(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
@@ -1397,7 +1417,7 @@ async def roles_panel(interaction: discord.Interaction):
 
 @bot.tree.command(name="roles_add", description="Add a role to the Role Picker allowlist.")
 @app_commands.describe(role="The role to make selectable")
-@app_commands.checks.has_permissions(administrator=True)
+@app_commands.check(role_user_only)   # <— only your ID can run
 @app_commands.guild_only()
 async def roles_add(interaction: discord.Interaction, role: discord.Role):
     ids = ensure_assignable_ids(interaction.guild)
@@ -1411,7 +1431,7 @@ async def roles_add(interaction: discord.Interaction, role: discord.Role):
 
 @bot.tree.command(name="roles_remove", description="Remove a role from the Role Picker allowlist.")
 @app_commands.describe(role="The role to remove from the picker")
-@app_commands.checks.has_permissions(administrator=True)
+@app_commands.check(role_user_only)   # <— only your ID can run
 @app_commands.guild_only()
 async def roles_remove(interaction: discord.Interaction, role: discord.Role):
     ids = ensure_assignable_ids(interaction.guild)
@@ -1424,7 +1444,7 @@ async def roles_remove(interaction: discord.Interaction, role: discord.Role):
         await interaction.response.send_message("That role is not in the picker list.", ephemeral=True)
 
 @bot.tree.command(name="roles_list", description="Show current Role Picker roles.")
-@app_commands.checks.has_permissions(administrator=True)
+@app_commands.check(role_user_only)   # <— only your ID can run
 @app_commands.guild_only()
 async def roles_list(interaction: discord.Interaction):
     ids = ensure_assignable_ids(interaction.guild)
@@ -1440,7 +1460,7 @@ async def roles_list(interaction: discord.Interaction):
 
 @bot.tree.command(name="roles_sync_tag", description="Auto-add all roles containing a tag (default: [Game]).")
 @app_commands.describe(tag="Case-insensitive substring to match in role names, e.g. [Game]")
-@app_commands.checks.has_permissions(administrator=True)
+@app_commands.check(role_user_only)   # <— only your ID can run
 @app_commands.guild_only()
 async def roles_sync_tag(interaction: discord.Interaction, tag: Optional[str] = None):
     await interaction.response.defer(ephemeral=True, thinking=True)
