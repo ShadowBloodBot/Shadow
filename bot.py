@@ -1584,106 +1584,162 @@ async def speak(interaction: discord.Interaction, text: str, language: app_comma
 #                       🎵 MUSIC: /play (YouTube)
 # ============================================================
 
-YOUTUBE_URL_RE = re.compile(r"^(https?://)?(www\.)?(youtube\.com|youtu\.be)/", re.I)
+# ============================================================
+#                       MUSIC: /play (YouTube)
+# ============================================================
 
-def _yt_dlp_opts():
-    return {
-        "format": "bestaudio/best",
-        "quiet": True,
-        "nocheckcertificate": True,
-        "ignoreerrors": True,
-        "geo_bypass": True,
-        "noplaylist": True,
-        "default_search": "auto",
-        "extract_flat": False,
-        "cachedir": False,
-    }
+import yt_dlp
 
-async def _extract_yt_info(url: str) -> Optional[dict]:
-    if yt_dlp is None:
+# A simple per-guild lock so we don't double-start ffmpeg
+_PLAY_LOCKS: Dict[int, asyncio.Lock] = {}
+
+def _play_lock(guild_id: int) -> asyncio.Lock:
+    if guild_id not in _PLAY_LOCKS:
+        _PLAY_LOCKS[guild_id] = asyncio.Lock()
+    return _PLAY_LOCKS[guild_id]
+
+YTDLP_OPTS = {
+    "format": "bestaudio/best",
+    "quiet": True,
+    "noprogress": True,
+    "nocheckcertificate": True,
+    "ignoreerrors": True,
+    "default_search": "ytsearch",
+    "extract_flat": False,
+    "geo_bypass": True,
+}
+
+FFMPEG_BEFORE_OPTS = (
+    "-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+)
+FFMPEG_OPTS = "-vn"
+
+async def ensure_voice_simple(interaction: discord.Interaction) -> Optional[discord.VoiceClient]:
+    """Join/move to the user's VC without disconnecting existing sessions."""
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message("❌ Not in a guild.", ephemeral=True)
         return None
-    def _run():
-        with yt_dlp.YoutubeDL(_yt_dlp_opts()) as ydl:
-            return ydl.extract_info(url, download=False)
+    state = interaction.user.voice
+    if not state or not state.channel:
+        await interaction.response.send_message("❌ Join a voice channel first.", ephemeral=True)
+        return None
     try:
-        return await asyncio.to_thread(_run)
-    except Exception:
+        if interaction.guild.voice_client and interaction.guild.voice_client.channel != state.channel:
+            await interaction.guild.voice_client.move_to(state.channel)
+            return interaction.guild.voice_client
+        if interaction.guild.voice_client:
+            return interaction.guild.voice_client
+        return await state.channel.connect(reconnect=True, timeout=15)
+    except Exception as e:
+        try:
+            await interaction.response.send_message(f"❌ Can’t join VC: `{e}`", ephemeral=True)
+        except discord.InteractionResponded:
+            await interaction.followup.send(f"❌ Can’t join VC: `{e}`", ephemeral=True)
         return None
 
-def _ffmpeg_stream_source(stream_url: str) -> discord.AudioSource:
-    before = (
-        "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin"
-    )
-    return discord.FFmpegPCMAudio(stream_url, before_options=before)
+def ytdlp_extract(url: str) -> Tuple[str, str]:
+    """
+    Returns (stream_url, title) for the given YouTube URL or search.
+    Raises on failure.
+    """
+    with yt_dlp.YoutubeDL(YTDLP_OPTS) as ydl:
+        info = ydl.extract_info(url, download=False)
+        if info is None:
+            raise RuntimeError("No info extracted")
 
-@bot.tree.command(name="play", description="Play a YouTube link in your current voice channel.")
-@app_commands.describe(youtube_url="Paste a YouTube link")
-@app_commands.check(has_member_role)
+        # Handle playlists/search results by picking the first entry
+        if "entries" in info:
+            info = next((e for e in info["entries"] if e), None)
+            if info is None:
+                raise RuntimeError("No playable entries found")
+
+        # Prefer direct audio URL (webm/opus or m4a)
+        stream_url = info.get("url")
+        title = info.get("title") or "Unknown"
+        if not stream_url:
+            # Fallback to best format url
+            fmts = info.get("formats") or []
+            best = next((f for f in fmts if f.get("acodec") and f.get("url")), None)
+            if not best:
+                raise RuntimeError("No playable audio formats")
+            stream_url = best["url"]
+        return stream_url, title
+
+@bot.tree.command(name="play", description="Play a YouTube link (audio only) in your VC.")
+@app_commands.describe(url="YouTube URL (or search text)")
 @app_commands.guild_only()
-async def play(interaction: discord.Interaction, youtube_url: str):
+async def play(interaction: discord.Interaction, url: str):
+    # Let the user see immediate feedback
     try:
         await interaction.response.defer(ephemeral=True, thinking=True)
     except discord.InteractionResponded:
         pass
 
+    # Hard dependency checks
     if not ffmpeg_available():
-        return await interaction.followup.send("❌ FFmpeg is not available on this host.", ephemeral=True)
-    if yt_dlp is None:
-        return await interaction.followup.send("❌ `yt-dlp` is not installed. Run `pip install yt-dlp` on the host.", ephemeral=True)
-    if not YOUTUBE_URL_RE.match(youtube_url.strip()):
-        return await interaction.followup.send("❌ Please paste a valid **YouTube** URL.", ephemeral=True)
+        return await interaction.followup.send("❌ FFmpeg is not available on the host.", ephemeral=True)
+    try:
+        import yt_dlp  # noqa: F401
+    except Exception:
+        return await interaction.followup.send("❌ `yt-dlp` is not installed. Add it to requirements and redeploy.", ephemeral=True)
 
-    vc = await ensure_voice(interaction)
+    vc = await ensure_voice_simple(interaction)
     if vc is None:
         return
 
-    # If something is already playing, stop it
-    try:
-        if vc.is_playing():
-            vc.stop()
-    except Exception:
-        pass
-
-    info = await _extract_yt_info(youtube_url.strip())
-    if not info:
+    # Prevent overlapping starts
+    lock = _play_lock(interaction.guild.id)
+    async with lock:
         try:
-            await vc.disconnect(force=False)
-        except Exception:
-            pass
-        return await interaction.followup.send("❌ Couldn’t extract that YouTube link.", ephemeral=True)
+            stream_url, title = await asyncio.get_event_loop().run_in_executor(None, ytdlp_extract, url)
+        except Exception as e:
+            return await interaction.followup.send(f"❌ Could not get audio stream: `{e}`", ephemeral=True)
 
-    # For videos with multiple formats, find the best audio URL
-    stream_url = None
-    if "url" in info:
-        stream_url = info["url"]
-    else:
-        fmts = info.get("formats") or []
-        # pick bestaudio
-        for f in fmts[::-1]:
-            if f.get("acodec") != "none" and f.get("url"):
-                stream_url = f["url"]; break
-
-    title = info.get("title") or "Unknown"
-    if not stream_url:
+        # Build FFmpeg source with robust reconnect flags
         try:
-            await vc.disconnect(force=False)
-        except Exception:
-            pass
-        return await interaction.followup.send("❌ No playable audio stream was found.", ephemeral=True)
+            source = discord.FFmpegPCMAudio(
+                stream_url,
+                before_options=FFMPEG_BEFORE_OPTS,
+                options=FFMPEG_OPTS,
+            )
+        except Exception as e:
+            return await interaction.followup.send(f"❌ FFmpeg init failed: `{e}`", ephemeral=True)
 
-    try:
-        source = _ffmpeg_stream_source(stream_url)
-        vc.play(source)
-        await interaction.followup.send(f"▶️ **Now playing:** {title}", ephemeral=True)
-        while vc.is_playing():
-            await asyncio.sleep(0.5)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Playback error: `{e}`", ephemeral=True)
-    finally:
+        # Keep a handle so GC doesn't kill the stream
+        vc.source = source
+
+        # Start playback
         try:
-            await vc.disconnect(force=False)
-        except Exception:
-            pass
+            # Small helper to notify when finished
+            finished = asyncio.get_event_loop().create_future()
+
+            def _after_play(err: Optional[Exception]):
+                if err and not finished.done():
+                    finished.set_exception(err)
+                elif not finished.done():
+                    finished.set_result(True)
+
+            vc.play(source, after=_after_play)
+
+            await interaction.followup.send(f"▶️ **Now playing:** {title}", ephemeral=True)
+
+            # Wait until playback completes
+            try:
+                await finished
+            except Exception as e:
+                await interaction.followup.send(f"⚠️ Playback error: `{e}`", ephemeral=True)
+        finally:
+            # Clean up the source and leave VC
+            try:
+                if vc.is_playing():
+                    vc.stop()
+            except Exception:
+                pass
+            try:
+                await vc.disconnect(force=False)
+            except Exception:
+                pass
+
 
 # ============================================================
 #                       ERROR HANDLING & RUN
