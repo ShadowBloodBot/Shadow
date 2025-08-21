@@ -14,3 +14,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 CMD ["python", "-u", "bot.py"]
+
+run -d --name lavalink -p 2333:2333 \
+  -v $(pwd)/lavalink:/opt/Lavalink \
+  -e _JAVA_OPTIONS="-Xmx512M -Xms256M" \
+  ghcr.io/lavalink-devs/lavalink:4
