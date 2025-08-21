@@ -1,21 +1,26 @@
+# ---- Base image
 FROM python:3.11-slim
 
-# FFmpeg for decoding + libopus for Discord voice encoding
+# ---- System deps: FFmpeg + Opus for Discord voice
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libopus0 \
  && rm -rf /var/lib/apt/lists/*
 
+# ---- Make Python output unbuffered (better logs)
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# ---- Workdir
 WORKDIR /app
 
+# ---- Install Python deps first (better layer caching)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --upgrade pip setuptools wheel \
+ && pip install -r requirements.txt
 
+# ---- Copy the rest of your code
 COPY . .
 
+# ---- Start the bot
 CMD ["python", "-u", "bot.py"]
-
-run -d --name lavalink -p 2333:2333 \
-  -v $(pwd)/lavalink:/opt/Lavalink \
-  -e _JAVA_OPTIONS="-Xmx512M -Xms256M" \
-  ghcr.io/lavalink-devs/lavalink:4
