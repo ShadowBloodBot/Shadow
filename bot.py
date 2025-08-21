@@ -37,7 +37,7 @@ LOBBY_NAME     = "lobby"
 # Mee6 replacement targets/roles
 ARRIVALS_THREAD_ID = 959629903186259978  # where the join card is posted
 ROLE_MINION_ID     = 955600021502431233  # Minion role granted by the button
-ROLE_ADMIN_ID      = 1214794734770323466 # Admin role allowed to press
+ROLE_ADMIN_ID      = 1214794734770323466 # Admin role allowed to press (and Role Picker access)
 
 # Persistence
 CONFIG_PATH        = Path("welcome_config.json")
@@ -55,11 +55,19 @@ DEPARTURES_THREAD_ID = 960088192177029140
 # >>> Default Audit Destination (YOUR REQUIRED THREAD)
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
 
-# ===== NEW: Role system gate (only this user can use any Role Picker feature) =====
-ALLOWED_ROLE_USER_ID = 482463400929263627  # <— your user id
+# ===== Role system gate: only this user OR members with ROLE_ADMIN_ID can use Role Picker =====
+ALLOWED_ROLE_USER_ID = 482463400929263627  # your user id
 
-def role_user_only(interaction: discord.Interaction) -> bool:
-    return bool(interaction.user and interaction.user.id == ALLOWED_ROLE_USER_ID)
+def role_feature_allowed(interaction: discord.Interaction) -> bool:
+    """Only allow Role Picker if invoker is the whitelisted user or has ROLE_ADMIN_ID."""
+    try:
+        if interaction.user and interaction.user.id == ALLOWED_ROLE_USER_ID:
+            return True
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return False
+        return any(r.id == ROLE_ADMIN_ID for r in interaction.user.roles)
+    except Exception:
+        return False
 
 async def _deny_role_access(interaction: discord.Interaction):
     try:
@@ -459,7 +467,7 @@ class RolePickerEphemeral(View):
             self.add_item(next_btn)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if not role_user_only(interaction):
+        if not role_feature_allowed(interaction):
             await _deny_role_access(interaction)
             return False
         return True
@@ -548,7 +556,7 @@ class RolePanelPersistent(View):
         self.add_item(open_btn)
 
     async def _open_picker(self, interaction: discord.Interaction):
-        if not role_user_only(interaction):
+        if not role_feature_allowed(interaction):
             return await _deny_role_access(interaction)
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Not in a guild.", ephemeral=True)
@@ -1402,7 +1410,7 @@ def _admin_check(member: discord.Member) -> bool:
     return bool(member.guild_permissions.administrator or any(r.id == ROLE_ADMIN_ID for r in member.roles))
 
 @bot.tree.command(name="roles_panel", description="Post the Role Picker panel here.")
-@app_commands.check(role_user_only)   # <— only your ID can run
+@app_commands.check(role_feature_allowed)   # only your user OR ROLE_ADMIN_ID
 @app_commands.guild_only()
 async def roles_panel(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
@@ -1417,7 +1425,7 @@ async def roles_panel(interaction: discord.Interaction):
 
 @bot.tree.command(name="roles_add", description="Add a role to the Role Picker allowlist.")
 @app_commands.describe(role="The role to make selectable")
-@app_commands.check(role_user_only)   # <— only your ID can run
+@app_commands.check(role_feature_allowed)
 @app_commands.guild_only()
 async def roles_add(interaction: discord.Interaction, role: discord.Role):
     ids = ensure_assignable_ids(interaction.guild)
@@ -1431,7 +1439,7 @@ async def roles_add(interaction: discord.Interaction, role: discord.Role):
 
 @bot.tree.command(name="roles_remove", description="Remove a role from the Role Picker allowlist.")
 @app_commands.describe(role="The role to remove from the picker")
-@app_commands.check(role_user_only)   # <— only your ID can run
+@app_commands.check(role_feature_allowed)
 @app_commands.guild_only()
 async def roles_remove(interaction: discord.Interaction, role: discord.Role):
     ids = ensure_assignable_ids(interaction.guild)
@@ -1444,7 +1452,7 @@ async def roles_remove(interaction: discord.Interaction, role: discord.Role):
         await interaction.response.send_message("That role is not in the picker list.", ephemeral=True)
 
 @bot.tree.command(name="roles_list", description="Show current Role Picker roles.")
-@app_commands.check(role_user_only)   # <— only your ID can run
+@app_commands.check(role_feature_allowed)
 @app_commands.guild_only()
 async def roles_list(interaction: discord.Interaction):
     ids = ensure_assignable_ids(interaction.guild)
@@ -1460,7 +1468,7 @@ async def roles_list(interaction: discord.Interaction):
 
 @bot.tree.command(name="roles_sync_tag", description="Auto-add all roles containing a tag (default: [Game]).")
 @app_commands.describe(tag="Case-insensitive substring to match in role names, e.g. [Game]")
-@app_commands.check(role_user_only)   # <— only your ID can run
+@app_commands.check(role_feature_allowed)
 @app_commands.guild_only()
 async def roles_sync_tag(interaction: discord.Interaction, tag: Optional[str] = None):
     await interaction.response.defer(ephemeral=True, thinking=True)
@@ -1575,26 +1583,25 @@ async def speak(
         tts.save(tmp_path)
     except Exception as e:
         await interaction.followup.send(f"❌ TTS failed: `{e}`", ephemeral=True)
-        return
-
-    try:
-        audio = discord.FFmpegPCMAudio(tmp_path, before_options="-nostdin")
-        vc.play(audio)
-        while vc.is_playing():
-            await asyncio.sleep(0.25)
-        pretty = next((c.name for c in LANG_CHOICES if c.value == lang_code), lang_code)
-        await interaction.followup.send(f"✅ Spoke in **{pretty}**.", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"❌ Playback error: `{e}`", ephemeral=True)
-    finally:
+    else:
         try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-        try:
-            await vc.disconnect(force=False)
-        except Exception:
-            pass
+            audio = discord.FFmpegPCMAudio(tmp_path, before_options="-nostdin")
+            vc.play(audio)
+            while vc.is_playing():
+                await asyncio.sleep(0.25)
+            pretty = next((c.name for c in LANG_CHOICES if c.value == lang_code), lang_code)
+            await interaction.followup.send(f"✅ Spoke in **{pretty}**.", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Playback error: `{e}`", ephemeral=True)
+        finally:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+            try:
+                await vc.disconnect(force=False)
+            except Exception:
+                pass
 
 # ============================================================
 #                       ERROR HANDLING & RUN
@@ -1602,17 +1609,19 @@ async def speak(
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    # Tailored error copy so Role Picker checks don't show the /speak message.
     if isinstance(error, app_commands.CheckFailure):
         try:
-            await interaction.response.send_message(
-                "❌ You need the **Member** role to use `/speak`.",
-                ephemeral=True
-            )
+            cmd = getattr(interaction.command, "name", "") if interaction.command else ""
+            if cmd.startswith("roles"):
+                msg = "❌ You’re not allowed to use the Role Picker."
+            elif cmd == "speak":
+                msg = "❌ You need the **Member** role to use `/speak`."
+            else:
+                msg = "❌ You don’t have permission to use this command."
+            await interaction.response.send_message(msg, ephemeral=True)
         except discord.InteractionResponded:
-            await interaction.followup.send(
-                "❌ You need the **Member** role to use `/speak`.",
-                ephemeral=True
-            )
+            await interaction.followup.send(msg, ephemeral=True)
 
 def main():
     print("FFMPEG PATH:", which("ffmpeg"))
