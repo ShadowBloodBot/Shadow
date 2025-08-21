@@ -6,6 +6,8 @@
 # + Departures Logger (leave/kick/ban) -> thread 960088192177029140 with de-dupe
 # + /send_custom (auto-posts in the channel/thread used)
 # + 🎮 Role Picker panel (reaction-role replacement) with dropdown + admin management (/roles_panel, /roles_add, /roles_remove, /roles_list, /roles_sync_tag)
+# + 🛡️ Role Picker access gate: only user 482463400929263627 OR role 1214794734770323466
+# + 💾 Config auto-backup/restore (no role loss on update)
 # Env: DISCORD_TOKEN
 
 import os
@@ -37,11 +39,12 @@ LOBBY_NAME     = "lobby"
 # Mee6 replacement targets/roles
 ARRIVALS_THREAD_ID = 959629903186259978  # where the join card is posted
 ROLE_MINION_ID     = 955600021502431233  # Minion role granted by the button
-ROLE_ADMIN_ID      = 1214794734770323466 # Admin role allowed to press (and Role Picker access)
+ROLE_ADMIN_ID      = 1214794734770323466 # Admin role allowed to press (also allowed to use Role Picker system)
 
 # Persistence
-CONFIG_PATH        = Path("welcome_config.json")
-DEFAULT_TARGET_ID  = 1166874144395247757  # initial welcome thread for /send_welcome
+CONFIG_PATH         = Path("welcome_config.json")
+CONFIG_BACKUP_PATH  = Path("welcome_config.backup.json")
+DEFAULT_TARGET_ID   = 1166874144395247757  # initial welcome thread for /send_welcome
 
 # Permissions / role-gates
 MEMBER_ROLE_ID = 955600320287887400  # users must have this to run /speak
@@ -55,25 +58,8 @@ DEPARTURES_THREAD_ID = 960088192177029140
 # >>> Default Audit Destination (YOUR REQUIRED THREAD)
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
 
-# ===== Role system gate: only this user OR members with ROLE_ADMIN_ID can use Role Picker =====
+# ===== Role system gate =====
 ALLOWED_ROLE_USER_ID = 482463400929263627  # your user id
-
-def role_feature_allowed(interaction: discord.Interaction) -> bool:
-    """Only allow Role Picker if invoker is the whitelisted user or has ROLE_ADMIN_ID."""
-    try:
-        if interaction.user and interaction.user.id == ALLOWED_ROLE_USER_ID:
-            return True
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            return False
-        return any(r.id == ROLE_ADMIN_ID for r in interaction.user.roles)
-    except Exception:
-        return False
-
-async def _deny_role_access(interaction: discord.Interaction):
-    try:
-        await interaction.response.send_message("❌ You’re not allowed to use the Role Picker.", ephemeral=True)
-    except discord.InteractionResponded:
-        await interaction.followup.send("❌ You’re not allowed to use the Role Picker.", ephemeral=True)
 
 # Token
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -90,32 +76,93 @@ LANG_CHOICES = [
 ]
 
 # ============================================================
-#                       CONFIG I/O
+#                       CONFIG I/O (with BACKUP)
 # ============================================================
 
+_DEFAULT_CFG = {
+    "welcome_target_id": DEFAULT_TARGET_ID,
+    "audit_channel_id": DEFAULT_AUDIT_THREAD_ID,
+    # 🎮 Role Picker persistence
+    "assignable_roles": [],   # list of role IDs
+    "role_tag": "[Game]",     # /roles_sync_tag scans role names containing this
+    "role_picker_title": "Pick Your Game Roles",
+    "role_picker_desc": "Select the games you play to get access. Use **Add** or **Remove**.",
+    "role_picker_max_select": 10,
+}
+
+def _validate_cfg(obj: dict) -> dict:
+    """Ensure required keys exist and types are sane; fill defaults if missing."""
+    cfg = dict(_DEFAULT_CFG)
+    if not isinstance(obj, dict):
+        return cfg
+    cfg.update({
+        "welcome_target_id": int(obj.get("welcome_target_id", cfg["welcome_target_id"])),
+        "audit_channel_id": int(obj.get("audit_channel_id", cfg["audit_channel_id"])),
+        "assignable_roles": [int(x) for x in obj.get("assignable_roles", cfg["assignable_roles"]) if str(x).isdigit()],
+        "role_tag": str(obj.get("role_tag", cfg["role_tag"])),
+        "role_picker_title": str(obj.get("role_picker_title", cfg["role_picker_title"])),
+        "role_picker_desc": str(obj.get("role_picker_desc", cfg["role_picker_desc"])),
+        "role_picker_max_select": int(obj.get("role_picker_max_select", cfg["role_picker_max_select"])),
+    })
+    # bounds
+    if cfg["role_picker_max_select"] < 1: cfg["role_picker_max_select"] = 1
+    if cfg["role_picker_max_select"] > 25: cfg["role_picker_max_select"] = 25
+    return cfg
+
+def _atomic_write(path: Path, data: str) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(data, encoding="utf-8")
+    tmp.replace(path)
+
 def load_config() -> dict:
-    base = {
-        "welcome_target_id": DEFAULT_TARGET_ID,
-        "audit_channel_id": DEFAULT_AUDIT_THREAD_ID,
-        # 🎮 Role Picker persistence
-        "assignable_roles": [],   # list of role IDs
-        "role_tag": "[Game]",     # /roles_sync_tag scans role names containing this
-        "role_picker_title": "Pick Your Game Roles",
-        "role_picker_desc": "Select the games you play to get access. Use **Add** or **Remove**.",
-        "role_picker_max_select": 10,
-    }
+    """Load config with backup fallback and default fill; auto-repair if needed."""
+    # Try primary
+    primary = None
     if CONFIG_PATH.exists():
         try:
-            data = json.loads(CONFIG_PATH.read_text())
-            if isinstance(data, dict):
-                base.update(data)
+            primary = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            primary = None
+    if isinstance(primary, dict):
+        cfg = _validate_cfg(primary)
+        # also refresh backup if missing
+        try:
+            _atomic_write(CONFIG_BACKUP_PATH, json.dumps(cfg, indent=2))
         except Exception:
             pass
-    return base
+        return cfg
+
+    # Fallback to backup
+    backup = None
+    if CONFIG_BACKUP_PATH.exists():
+        try:
+            backup = json.loads(CONFIG_BACKUP_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            backup = None
+    if isinstance(backup, dict):
+        cfg = _validate_cfg(backup)
+        # write back repaired primary
+        try:
+            _atomic_write(CONFIG_PATH, json.dumps(cfg, indent=2))
+        except Exception:
+            pass
+        return cfg
+
+    # Nothing valid -> defaults
+    try:
+        _atomic_write(CONFIG_PATH, json.dumps(_DEFAULT_CFG, indent=2))
+        _atomic_write(CONFIG_BACKUP_PATH, json.dumps(_DEFAULT_CFG, indent=2))
+    except Exception:
+        pass
+    return dict(_DEFAULT_CFG)
 
 def save_config(cfg: dict) -> None:
+    """Atomic save to primary + mirrored backup to avoid losing roles on update."""
     try:
-        CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+        clean = _validate_cfg(cfg)
+        data = json.dumps(clean, indent=2)
+        _atomic_write(CONFIG_PATH, data)
+        _atomic_write(CONFIG_BACKUP_PATH, data)
     except Exception:
         pass
 
@@ -128,6 +175,25 @@ config = load_config()
 def has_member_role(interaction: discord.Interaction) -> bool:
     m = interaction.user
     return isinstance(m, discord.Member) and any(r.id == MEMBER_ROLE_ID for r in m.roles)
+
+def role_gate_user_or_adminrole(interaction: discord.Interaction) -> bool:
+    """Allow Role Picker usage to specific user or anyone with ROLE_ADMIN_ID."""
+    if not interaction or not interaction.user or not isinstance(interaction.user, (discord.Member, discord.User)):
+        return False
+    if interaction.user.id == ALLOWED_ROLE_USER_ID:
+        return True
+    if isinstance(interaction.user, discord.Member):
+        return any(r.id == ROLE_ADMIN_ID for r in interaction.user.roles)
+    return False
+
+async def role_gate_or_deny(interaction: discord.Interaction) -> bool:
+    if role_gate_user_or_adminrole(interaction):
+        return True
+    try:
+        await interaction.response.send_message("❌ You’re not allowed to use the Role Picker.", ephemeral=True)
+    except discord.InteractionResponded:
+        await interaction.followup.send("❌ You’re not allowed to use the Role Picker.", ephemeral=True)
+    return False
 
 async def resolve_target(
     bot: discord.Client, target_id: int
@@ -467,13 +533,9 @@ class RolePickerEphemeral(View):
             self.add_item(next_btn)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if not role_feature_allowed(interaction):
-            await _deny_role_access(interaction)
-            return False
-        return True
+        return await role_gate_or_deny(interaction)
 
     async def _noop(self, interaction: discord.Interaction):
-        # No-op so users can change selections before applying
         await interaction.response.defer(ephemeral=True)
 
     async def _apply(self, interaction: discord.Interaction, add: bool):
@@ -556,8 +618,8 @@ class RolePanelPersistent(View):
         self.add_item(open_btn)
 
     async def _open_picker(self, interaction: discord.Interaction):
-        if not role_feature_allowed(interaction):
-            return await _deny_role_access(interaction)
+        if not await role_gate_or_deny(interaction):
+            return
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Not in a guild.", ephemeral=True)
         title = config.get("role_picker_title", "Pick Your Game Roles")
@@ -773,6 +835,7 @@ class ShadowSynBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
+        # Prime invite cache for all guilds
         for g in self.guilds:
             await _prime_invites_cache(g)
         # persistent views
@@ -961,6 +1024,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
         events = []
 
+        # Channel transitions
         if before.channel is None and after.channel is not None:
             events.append({"type": "join", "before_id": None, "after_id": after.channel.id})
         elif before.channel is not None and after.channel is None:
@@ -968,6 +1032,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         elif (before.channel is not None and after.channel is not None and before.channel.id != after.channel.id):
             events.append({"type": "move", "before_id": before.channel.id, "after_id": after.channel.id})
 
+        # Self state changes
         if before.self_mute != after.self_mute:
             events.append({"type": "self_mute" if after.self_mute else "self_unmute",
                            "before_id": getattr(before.channel, "id", None), "after_id": getattr(after.channel, "id", None)})
@@ -981,6 +1046,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             events.append({"type": "video_start" if getattr(after, "self_video", False) else "video_stop",
                            "before_id": getattr(before.channel, "id", None), "after_id": getattr(after.channel, "id", None)})
 
+        # Server state changes
         if before.mute != after.mute:
             events.append({"type": "server_mute" if after.mute else "server_unmute",
                            "before_id": getattr(before.channel, "id", None), "after_id": getattr(after.channel, "id", None)})
@@ -996,6 +1062,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             try:
                 _AUDIT_QUEUE.put_nowait(payload)
             except asyncio.QueueFull:
+                # Drop oldest to keep pipeline alive under burst
                 try:
                     _ = _AUDIT_QUEUE.get_nowait()
                     _AUDIT_QUEUE.task_done()
@@ -1406,11 +1473,11 @@ async def send_custom(interaction: discord.Interaction):
 #                       🎮 ROLE PICKER COMMANDS
 # ============================================================
 
-def _admin_check(member: discord.Member) -> bool:
-    return bool(member.guild_permissions.administrator or any(r.id == ROLE_ADMIN_ID for r in member.roles))
+def _role_gate_check(interaction: discord.Interaction) -> bool:
+    return role_gate_user_or_adminrole(interaction)
 
 @bot.tree.command(name="roles_panel", description="Post the Role Picker panel here.")
-@app_commands.check(role_feature_allowed)   # only your user OR ROLE_ADMIN_ID
+@app_commands.check(_role_gate_check)   # gate
 @app_commands.guild_only()
 async def roles_panel(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
@@ -1425,7 +1492,7 @@ async def roles_panel(interaction: discord.Interaction):
 
 @bot.tree.command(name="roles_add", description="Add a role to the Role Picker allowlist.")
 @app_commands.describe(role="The role to make selectable")
-@app_commands.check(role_feature_allowed)
+@app_commands.check(_role_gate_check)   # gate
 @app_commands.guild_only()
 async def roles_add(interaction: discord.Interaction, role: discord.Role):
     ids = ensure_assignable_ids(interaction.guild)
@@ -1439,7 +1506,7 @@ async def roles_add(interaction: discord.Interaction, role: discord.Role):
 
 @bot.tree.command(name="roles_remove", description="Remove a role from the Role Picker allowlist.")
 @app_commands.describe(role="The role to remove from the picker")
-@app_commands.check(role_feature_allowed)
+@app_commands.check(_role_gate_check)   # gate
 @app_commands.guild_only()
 async def roles_remove(interaction: discord.Interaction, role: discord.Role):
     ids = ensure_assignable_ids(interaction.guild)
@@ -1452,7 +1519,7 @@ async def roles_remove(interaction: discord.Interaction, role: discord.Role):
         await interaction.response.send_message("That role is not in the picker list.", ephemeral=True)
 
 @bot.tree.command(name="roles_list", description="Show current Role Picker roles.")
-@app_commands.check(role_feature_allowed)
+@app_commands.check(_role_gate_check)   # gate
 @app_commands.guild_only()
 async def roles_list(interaction: discord.Interaction):
     ids = ensure_assignable_ids(interaction.guild)
@@ -1468,7 +1535,7 @@ async def roles_list(interaction: discord.Interaction):
 
 @bot.tree.command(name="roles_sync_tag", description="Auto-add all roles containing a tag (default: [Game]).")
 @app_commands.describe(tag="Case-insensitive substring to match in role names, e.g. [Game]")
-@app_commands.check(role_feature_allowed)
+@app_commands.check(_role_gate_check)   # gate
 @app_commands.guild_only()
 async def roles_sync_tag(interaction: discord.Interaction, tag: Optional[str] = None):
     await interaction.response.defer(ephemeral=True, thinking=True)
@@ -1583,25 +1650,26 @@ async def speak(
         tts.save(tmp_path)
     except Exception as e:
         await interaction.followup.send(f"❌ TTS failed: `{e}`", ephemeral=True)
-    else:
+        return
+
+    try:
+        audio = discord.FFmpegPCMAudio(tmp_path, before_options="-nostdin")
+        vc.play(audio)
+        while vc.is_playing():
+            await asyncio.sleep(0.25)
+        pretty = next((c.name for c in LANG_CHOICES if c.value == lang_code), lang_code)
+        await interaction.followup.send(f"✅ Spoke in **{pretty}**.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Playback error: `{e}`", ephemeral=True)
+    finally:
         try:
-            audio = discord.FFmpegPCMAudio(tmp_path, before_options="-nostdin")
-            vc.play(audio)
-            while vc.is_playing():
-                await asyncio.sleep(0.25)
-            pretty = next((c.name for c in LANG_CHOICES if c.value == lang_code), lang_code)
-            await interaction.followup.send(f"✅ Spoke in **{pretty}**.", ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"❌ Playback error: `{e}`", ephemeral=True)
-        finally:
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
-            try:
-                await vc.disconnect(force=False)
-            except Exception:
-                pass
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        try:
+            await vc.disconnect(force=False)
+        except Exception:
+            pass
 
 # ============================================================
 #                       ERROR HANDLING & RUN
@@ -1609,19 +1677,18 @@ async def speak(
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    # Tailored error copy so Role Picker checks don't show the /speak message.
     if isinstance(error, app_commands.CheckFailure):
+        # Only the /speak check uses this path; Role Picker checks send their own message
         try:
-            cmd = getattr(interaction.command, "name", "") if interaction.command else ""
-            if cmd.startswith("roles"):
-                msg = "❌ You’re not allowed to use the Role Picker."
-            elif cmd == "speak":
-                msg = "❌ You need the **Member** role to use `/speak`."
-            else:
-                msg = "❌ You don’t have permission to use this command."
-            await interaction.response.send_message(msg, ephemeral=True)
+            await interaction.response.send_message(
+                "❌ You need the **Member** role to use `/speak`.",
+                ephemeral=True
+            )
         except discord.InteractionResponded:
-            await interaction.followup.send(msg, ephemeral=True)
+            await interaction.followup.send(
+                "❌ You need the **Member** role to use `/speak`.",
+                ephemeral=True
+            )
 
 def main():
     print("FFMPEG PATH:", which("ffmpeg"))
