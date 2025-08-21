@@ -1,18 +1,15 @@
-# bot.py — ShadowSyn Welcome + Custom Embed Bot
+# bot.py — ShadowSyn Welcome + Custom Embed + Music Bot
 # + /speak voice TTS (hidden input, VC playback, auto-leave, translation, usage logs)
 # + Mee6 welcome replacement (arrivals card + Minion button) + Invite Attribution (member invite / vanity)
 # + Diagnostics: /welcome_diag, /welcome_test
 # + Voice Audit Logger: /set_audit_channel, /audit_diag, /audit_test  (RESILIENT QUEUE + THREAD SUPPORT + FULL STATE COVERAGE)
-# + Departures Logger (leave/kick/ban) -> thread 960088192177029140 with de-dupe
+# + Departures Logger (leave/kick/ban)
 # + /send_custom (auto-posts in the channel/thread used)
-# + 🎮 Role Picker panel (reaction-role replacement) with dropdown + admin management (/roles_panel, /roles_add, /roles_remove, /roles_list, /roles_sync_tag)
-# + 🛡️ Role Picker access gate: only user 482463400929263627 OR role 1214794734770323466
-# + 💾 Config auto-backup/restore (no role loss on update)
-# + 🎵 Music: /play <YouTube URL> (yt-dlp + FFmpeg)
+# + 🎮 Role Picker panel (reaction-role replacement) with dropdown + admin management
+# + 🎵 /play (YouTube music streaming via yt-dlp + FFmpeg) with fast timeout, reconnect, and clean errors
 # Env: DISCORD_TOKEN
 
 import os
-import re
 import json
 import asyncio
 import tempfile
@@ -28,11 +25,13 @@ from gtts import gTTS
 from shutil import which
 from googletrans import Translator
 
-# NEW: yt-dlp for YouTube audio
+# -------------------- Optional import: yt_dlp --------------------
 try:
-    import yt_dlp
+    import yt_dlp  # type: ignore
+    YTDLP_AVAILABLE = True
 except Exception:
-    yt_dlp = None  # we’ll error nicely if missing
+    yt_dlp = None  # type: ignore
+    YTDLP_AVAILABLE = False
 
 # ============================================================
 #                       CONSTANTS
@@ -47,15 +46,14 @@ LOBBY_NAME     = "lobby"
 # Mee6 replacement targets/roles
 ARRIVALS_THREAD_ID = 959629903186259978  # where the join card is posted
 ROLE_MINION_ID     = 955600021502431233  # Minion role granted by the button
-ROLE_ADMIN_ID      = 1214794734770323466 # Admin role allowed to press (also allowed to use Role Picker system)
+ROLE_ADMIN_ID      = 1214794734770323466 # Admin role allowed to press (and Role Manager for picker)
 
 # Persistence
-CONFIG_PATH         = Path("welcome_config.json")
-CONFIG_BACKUP_PATH  = Path("welcome_config.backup.json")
-DEFAULT_TARGET_ID   = 1166874144395247757  # initial welcome thread for /send_welcome
+CONFIG_PATH        = Path("welcome_config.json")
+DEFAULT_TARGET_ID  = 1166874144395247757  # initial welcome thread for /send_welcome
 
 # Permissions / role-gates
-MEMBER_ROLE_ID = 955600320287887400  # users must have this to run /speak and /play
+MEMBER_ROLE_ID = 955600320287887400  # users must have this to run /speak (and /play for sanity)
 
 # /speak usage log destination (thread)
 SPEAK_LOG_THREAD_ID = 1400048671973703690
@@ -66,8 +64,28 @@ DEPARTURES_THREAD_ID = 960088192177029140
 # >>> Default Audit Destination (YOUR REQUIRED THREAD)
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
 
-# ===== Role system gate =====
-ALLOWED_ROLE_USER_ID = 482463400929263627  # your user id
+# ===== Role Picker gate: only this user OR ROLE_ADMIN_ID (or Admin perm) can manage/use picker =====
+ALLOWED_ROLE_USER_ID = 482463400929263627  # <— your user id
+
+def is_role_manager(member: discord.Member) -> bool:
+    try:
+        return (
+            member.id == ALLOWED_ROLE_USER_ID
+            or member.guild_permissions.administrator
+            or any(r.id == ROLE_ADMIN_ID for r in member.roles)
+        )
+    except Exception:
+        return False
+
+def role_user_only(interaction: discord.Interaction) -> bool:
+    m = interaction.user if isinstance(interaction.user, discord.Member) else None
+    return bool(m and is_role_manager(m))
+
+async def _deny_role_access(interaction: discord.Interaction):
+    try:
+        await interaction.response.send_message("❌ You’re not allowed to use the Role Picker.", ephemeral=True)
+    except discord.InteractionResponded:
+        await interaction.followup.send("❌ You’re not allowed to use the Role Picker.", ephemeral=True)
 
 # Token
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -84,84 +102,32 @@ LANG_CHOICES = [
 ]
 
 # ============================================================
-#                       CONFIG I/O (with BACKUP)
+#                       CONFIG I/O
 # ============================================================
 
-_DEFAULT_CFG = {
-    "welcome_target_id": DEFAULT_TARGET_ID,
-    "audit_channel_id": DEFAULT_AUDIT_THREAD_ID,
-    # 🎮 Role Picker persistence
-    "assignable_roles": [],   # list of role IDs
-    "role_tag": "[Game]",     # /roles_sync_tag scans role names containing this
-    "role_picker_title": "Pick Your Game Roles",
-    "role_picker_desc": "Select the games you play to get access. Use **Add** or **Remove**.",
-    "role_picker_max_select": 10,
-}
-
-def _validate_cfg(obj: dict) -> dict:
-    cfg = dict(_DEFAULT_CFG)
-    if not isinstance(obj, dict):
-        return cfg
-    cfg.update({
-        "welcome_target_id": int(obj.get("welcome_target_id", cfg["welcome_target_id"])),
-        "audit_channel_id": int(obj.get("audit_channel_id", cfg["audit_channel_id"])),
-        "assignable_roles": [int(x) for x in obj.get("assignable_roles", cfg["assignable_roles"]) if str(x).isdigit()],
-        "role_tag": str(obj.get("role_tag", cfg["role_tag"])),
-        "role_picker_title": str(obj.get("role_picker_title", cfg["role_picker_title"])),
-        "role_picker_desc": str(obj.get("role_picker_desc", cfg["role_picker_desc"])),
-        "role_picker_max_select": int(obj.get("role_picker_max_select", cfg["role_picker_max_select"])),
-    })
-    if cfg["role_picker_max_select"] < 1: cfg["role_picker_max_select"] = 1
-    if cfg["role_picker_max_select"] > 25: cfg["role_picker_max_select"] = 25
-    return cfg
-
-def _atomic_write(path: Path, data: str) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(data, encoding="utf-8")
-    tmp.replace(path)
-
 def load_config() -> dict:
-    primary = None
+    base = {
+        "welcome_target_id": DEFAULT_TARGET_ID,
+        "audit_channel_id": DEFAULT_AUDIT_THREAD_ID,
+        # 🎮 Role Picker persistence
+        "assignable_roles": [],   # list of role IDs (persisted)
+        "role_tag": "[Game]",     # /roles_sync_tag scans role names containing this
+        "role_picker_title": "Pick Your Game Roles",
+        "role_picker_desc": "Select the games you play to get access. Use **Add** or **Remove**.",
+        "role_picker_max_select": 10,
+    }
     if CONFIG_PATH.exists():
         try:
-            primary = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            primary = None
-    if isinstance(primary, dict):
-        cfg = _validate_cfg(primary)
-        try:
-            _atomic_write(CONFIG_BACKUP_PATH, json.dumps(cfg, indent=2))
+            data = json.loads(CONFIG_PATH.read_text())
+            if isinstance(data, dict):
+                base.update(data)
         except Exception:
             pass
-        return cfg
-
-    backup = None
-    if CONFIG_BACKUP_PATH.exists():
-        try:
-            backup = json.loads(CONFIG_BACKUP_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            backup = None
-    if isinstance(backup, dict):
-        cfg = _validate_cfg(backup)
-        try:
-            _atomic_write(CONFIG_PATH, json.dumps(cfg, indent=2))
-        except Exception:
-            pass
-        return cfg
-
-    try:
-        _atomic_write(CONFIG_PATH, json.dumps(_DEFAULT_CFG, indent=2))
-        _atomic_write(CONFIG_BACKUP_PATH, json.dumps(_DEFAULT_CFG, indent=2))
-    except Exception:
-        pass
-    return dict(_DEFAULT_CFG)
+    return base
 
 def save_config(cfg: dict) -> None:
     try:
-        clean = _validate_cfg(cfg)
-        data = json.dumps(clean, indent=2)
-        _atomic_write(CONFIG_PATH, data)
-        _atomic_write(CONFIG_BACKUP_PATH, data)
+        CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
     except Exception:
         pass
 
@@ -174,24 +140,6 @@ config = load_config()
 def has_member_role(interaction: discord.Interaction) -> bool:
     m = interaction.user
     return isinstance(m, discord.Member) and any(r.id == MEMBER_ROLE_ID for r in m.roles)
-
-def role_gate_user_or_adminrole(interaction: discord.Interaction) -> bool:
-    if not interaction or not interaction.user or not isinstance(interaction.user, (discord.Member, discord.User)):
-        return False
-    if interaction.user.id == ALLOWED_ROLE_USER_ID:
-        return True
-    if isinstance(interaction.user, discord.Member):
-        return any(r.id == ROLE_ADMIN_ID for r in interaction.user.roles)
-    return False
-
-async def role_gate_or_deny(interaction: discord.Interaction) -> bool:
-    if role_gate_user_or_adminrole(interaction):
-        return True
-    try:
-        await interaction.response.send_message("❌ You’re not allowed to use the Role Picker.", ephemeral=True)
-    except discord.InteractionResponded:
-        await interaction.followup.send("❌ You’re not allowed to use the Role Picker.", ephemeral=True)
-    return False
 
 async def resolve_target(
     bot: discord.Client, target_id: int
@@ -246,6 +194,7 @@ def role_by_id(guild: discord.Guild, rid: int) -> Optional[discord.Role]:
         return None
 
 def ensure_assignable_ids(guild: discord.Guild) -> List[int]:
+    """Filter config['assignable_roles'] to those that still exist; save back if pruned."""
     ids = list(dict.fromkeys(int(x) for x in config.get("assignable_roles", []) if isinstance(x, int) or str(x).isdigit()))
     existing = []
     changed = False
@@ -263,6 +212,7 @@ def ensure_assignable_ids(guild: discord.Guild) -> List[int]:
 #                   INVITE ATTRIBUTION (CACHE)
 # ============================================================
 
+# guild_id -> {invite_code: uses}
 _INVITES_CACHE: Dict[int, Dict[str, int]] = {}
 
 def _can_track_invites(guild: discord.Guild) -> bool:
@@ -283,12 +233,14 @@ async def _detect_join_source(member: discord.Member) -> Optional[str]:
     guild = member.guild
     if not guild:
         return None
+
     if not _can_track_invites(guild):
         try:
             vanity = guild.vanity_url_code
         except Exception:
             vanity = None
         return f"Joined via Vanity: `{vanity}`" if vanity else None
+
     try:
         before = _INVITES_CACHE.get(guild.id, {})
         current_invites = await guild.invites()
@@ -298,11 +250,14 @@ async def _detect_join_source(member: discord.Member) -> Optional[str]:
             if (inv.uses or 0) > prev_uses:
                 increased = inv
                 break
+
         _INVITES_CACHE[guild.id] = {inv.code: (inv.uses or 0) for inv in current_invites}
+
         if increased:
             inviter = increased.inviter
             inviter_name = f"{inviter}" if inviter else "Unknown"
             return f"Joined via `{increased.code}`, invited by **{inviter_name}** (uses: {increased.uses or 0})"
+
         try:
             vanity = guild.vanity_url_code
         except Exception:
@@ -323,9 +278,9 @@ async def _on_invite_create(invite: discord.Invite):
 async def _on_invite_delete(invite: discord.Invite):
     try:
         d = _INVITES_CACHE.setdefault(invite.guild.id, {})
+        d.pop(invite.code, None)
     except Exception:
-        return
-    d.pop(invite.code, None)
+        pass
 
 # ============================================================
 #                       UI VIEWS (INVITE & CUSTOM)
@@ -335,7 +290,7 @@ INVITE_BTN_ID = "invite_friends_ephemeral"
 
 class InviteFriendsView(View):
     def __init__(self):
-        super().__init__(timeout=None)
+        super().__init__(timeout=None)  # persistent across restarts
         btn = Button(label="Invite Friends", style=discord.ButtonStyle.primary, custom_id=INVITE_BTN_ID)
         btn.callback = self.send_invite_ephemeral
         self.add_item(btn)
@@ -482,6 +437,7 @@ def _assignable_role_objects(guild: discord.Guild) -> List[discord.Role]:
     return roles
 
 class RolePickerEphemeral(View):
+    """Ephemeral dynamic picker with multi-select + Add/Remove buttons."""
     def __init__(self, guild: discord.Guild, member: discord.Member, page: int = 0):
         super().__init__(timeout=300)
         self.guild = guild
@@ -521,7 +477,10 @@ class RolePickerEphemeral(View):
             self.add_item(next_btn)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return await role_gate_or_deny(interaction)
+        if not role_user_only(interaction):
+            await _deny_role_access(interaction)
+            return False
+        return True
 
     async def _noop(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -597,6 +556,7 @@ class RolePickerEphemeral(View):
         await interaction.response.edit_message(embed=embed, view=view)
 
 class RolePanelPersistent(View):
+    """Persistent panel with a single button that opens the ephemeral picker."""
     def __init__(self):
         super().__init__(timeout=None)
         open_btn = Button(label="🎮 Open Role Picker", style=discord.ButtonStyle.primary, custom_id=ROLE_PANEL_BUTTON_ID)
@@ -604,8 +564,8 @@ class RolePanelPersistent(View):
         self.add_item(open_btn)
 
     async def _open_picker(self, interaction: discord.Interaction):
-        if not await role_gate_or_deny(interaction):
-            return
+        if not role_user_only(interaction):
+            return await _deny_role_access(interaction)
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("Not in a guild.", ephemeral=True)
         title = config.get("role_picker_title", "Pick Your Game Roles")
@@ -620,6 +580,7 @@ class RolePanelPersistent(View):
 #                       BOT CORE
 # ============================================================
 
+# ---------- AUDIT PIPELINE (SUPER FIX) ----------
 _AUDIT_QUEUE: asyncio.Queue = asyncio.Queue(maxsize=1000)
 _AUDIT_WORKER_TASK: Optional[asyncio.Task] = None
 
@@ -627,31 +588,40 @@ async def _get_audit_target(guild: discord.Guild) -> Optional[discord.abc.Messag
     chan_id = config.get("audit_channel_id") or DEFAULT_AUDIT_THREAD_ID
     if not chan_id:
         return None
+
     ch = guild.get_channel(chan_id)
     if ch is None:
         try:
             ch = await guild.fetch_channel(chan_id)
         except Exception:
             return None
+
     me = guild.me
     if not me:
         return None
+
     if isinstance(ch, discord.Thread):
         try:
             if ch.archived or ch.locked:
-                try: await ch.edit(archived=False, locked=False)
-                except discord.Forbidden: pass
-            try: await ch.join()
-            except discord.Forbidden: pass
+                try:
+                    await ch.edit(archived=False, locked=False)
+                except discord.Forbidden:
+                    pass
+            try:
+                await ch.join()
+            except discord.Forbidden:
+                pass
             perms = ch.permissions_for(me)
             if perms.view_channel and perms.send_messages:
                 return ch
         except Exception:
             return None
+
     if isinstance(ch, discord.TextChannel):
         p = ch.permissions_for(me)
         if p.view_channel and p.send_messages and p.embed_links:
             return ch
+
     return None
 
 def _member_card(title: str, member: discord.Member, thumb: Optional[str]=None) -> discord.Embed:
@@ -679,6 +649,7 @@ async def _audit_worker(bot: "ShadowSynBot"):
     while True:
         try:
             guild_id, member_id, etype, before_id, after_id = await _AUDIT_QUEUE.get()
+
             try:
                 guild = bot.get_guild(guild_id)
                 if guild is None:
@@ -686,6 +657,7 @@ async def _audit_worker(bot: "ShadowSynBot"):
                 dest = await _get_audit_target(guild)
                 if dest is None:
                     _AUDIT_QUEUE.task_done(); continue
+
                 try:
                     member = guild.get_member(member_id) or await guild.fetch_member(member_id)
                 except discord.NotFound:
@@ -705,6 +677,7 @@ async def _audit_worker(bot: "ShadowSynBot"):
                     return base
 
                 thumb = safe_avatar_url(member)
+
                 embed = None
                 moderator = None
 
@@ -723,6 +696,7 @@ async def _audit_worker(bot: "ShadowSynBot"):
                 if etype == "join":
                     embed = _member_card("🔊 Member Joined", member, thumb)
                     embed.add_field(name="To", value=chfmt(after_ch), inline=False)
+
                 elif etype == "leave":
                     moderator = await _find_moderator_for_move(guild, member)
                     title = "🔌 Member Disconnected" if moderator else "🔇 Member Left"
@@ -730,6 +704,7 @@ async def _audit_worker(bot: "ShadowSynBot"):
                     embed.add_field(name="From", value=chfmt(before_ch), inline=False)
                     if moderator:
                         embed.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator} / {moderator.id}`", inline=False)
+
                 elif etype == "move":
                     moderator = await _find_moderator_for_move(guild, member)
                     embed = _member_card("↔️ Member Moved", member, thumb)
@@ -737,6 +712,7 @@ async def _audit_worker(bot: "ShadowSynBot"):
                         embed.add_field(name="Moderator", value=f"{moderator.mention}\n`{moderator} / {moderator.id}`", inline=False)
                     embed.add_field(name="From", value=chfmt(before_ch), inline=False)
                     embed.add_field(name="To", value=chfmt(after_ch), inline=False)
+
                 elif etype in ("self_mute","self_unmute","self_deaf","self_undeaf","stream_start","stream_stop","video_start","video_stop"):
                     titles = {
                         "self_mute":"🔈 Self Muted", "self_unmute":"🔊 Self Unmuted",
@@ -746,6 +722,7 @@ async def _audit_worker(bot: "ShadowSynBot"):
                     }
                     embed = _member_card(titles.get(etype, "🎙️ Voice State"), member, thumb)
                     embed.add_field(name="Channel", value=chfmt(after_ch or before_ch), inline=False)
+
                 elif etype in ("server_mute","server_unmute","server_deaf","server_undeaf"):
                     titles = {
                         "server_mute":"🚫 Server Muted", "server_unmute":"✅ Server Unmuted",
@@ -806,6 +783,7 @@ class ShadowSynBot(discord.Client):
     async def setup_hook(self):
         for g in self.guilds:
             await _prime_invites_cache(g)
+        # persistent views
         self.add_view(InviteFriendsView())
         self.add_view(RolePanelPersistent())
         _start_audit_worker(self)
@@ -822,6 +800,7 @@ async def on_ready():
             print(f"[AUDIT] Guild: {g.name} -> audit target resolved: {bool(dest)} ({type(dest).__name__ if dest else 'None'}) • {name}")
     except Exception as e:
         print(f"[AUDIT] on_ready diag error: {e}")
+
     print(f"Logged in as {bot.user} • Members intent={bot.intents.members} • Voice intent={bot.intents.voice_states}")
 
 @bot.event
@@ -852,14 +831,17 @@ def setup_welcome(bot: discord.Client):
         async def interaction_check(self, interaction: discord.Interaction) -> bool:
             guild = interaction.guild
             if not guild:
-                await interaction.response.send_message("Guild not found.", ephemeral=True); return False
+                await interaction.response.send_message("Guild not found.", ephemeral=True)
+                return False
             invoker = guild.get_member(interaction.user.id)
             if not invoker:
-                await interaction.response.send_message("Member not found.", ephemeral=True); return False
+                await interaction.response.send_message("Member not found.", ephemeral=True)
+                return False
             has_admin_role = any(r.id == ROLE_ADMIN_ID for r in invoker.roles)
             if has_admin_role or invoker.guild_permissions.manage_roles:
                 return True
-            await interaction.response.send_message("You don’t have permission to give roles.", ephemeral=True); return False
+            await interaction.response.send_message("You don’t have permission to give roles.", ephemeral=True)
+            return False
 
         async def _grant_minion(self, interaction: discord.Interaction):
             guild = interaction.guild
@@ -899,10 +881,13 @@ def setup_welcome(bot: discord.Client):
     async def _send_arrival_card(member: discord.Member):
         if member.bot:
             return
+
         dest = bot.get_channel(ARRIVALS_THREAD_ID)
         if dest is None:
-            try: dest = await bot.fetch_channel(ARRIVALS_THREAD_ID)
-            except Exception: dest = None
+            try:
+                dest = await bot.fetch_channel(ARRIVALS_THREAD_ID)
+            except Exception:
+                dest = None
 
         me = member.guild.me
         target: Optional[discord.abc.Messageable] = None
@@ -917,6 +902,7 @@ def setup_welcome(bot: discord.Client):
             p = dest.permissions_for(me)
             if p.view_channel and p.send_messages and p.embed_links:
                 target = dest
+
         elif isinstance(dest, discord.TextChannel):
             p = dest.permissions_for(me)
             if p.view_channel and p.send_messages and p.embed_links:
@@ -924,10 +910,13 @@ def setup_welcome(bot: discord.Client):
 
         if target is None:
             target = member.guild.system_channel
-        if target is None:
-            print("[ARRIVALS] No writable destination found."); return
 
-        invite_line = await _detect_join_source(member)
+        if target is None:
+            print("[ARRIVALS] No writable destination found.")
+            return
+
+        invite_line = await _detect_join_source(member)  # may be None
+
         icon = safe_avatar_url(member)
         embed = discord.Embed(
             description=f"{member.mention} joined **{member.guild.name}**",
@@ -939,6 +928,7 @@ def setup_welcome(bot: discord.Client):
         embed.set_footer(text="Tap the button below to grant Minion")
 
         view = MinionView(member.id)
+
         try:
             await target.send(embed=embed, view=view)
             print(f"[ARRIVALS] Posted card for {member} in #{getattr(target, 'name', 'thread')}")
@@ -958,8 +948,10 @@ def setup_welcome(bot: discord.Client):
     @bot.event
     async def on_member_join(member: discord.Member):
         if _can_track_invites(member.guild):
-            try: await _prime_invites_cache(member.guild)
-            except Exception: pass
+            try:
+                await _prime_invites_cache(member.guild)
+            except Exception:
+                pass
         print(f"[JOIN] {member} joined (id={member.id})")
         await _send_arrival_card(member)
 
@@ -974,7 +966,9 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     try:
         if member.bot:
             return
+
         events = []
+
         if before.channel is None and after.channel is not None:
             events.append({"type": "join", "before_id": None, "after_id": after.channel.id})
         elif before.channel is not None and after.channel is None:
@@ -1011,7 +1005,8 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                 _AUDIT_QUEUE.put_nowait(payload)
             except asyncio.QueueFull:
                 try:
-                    _ = _AUDIT_QUEUE.get_nowait(); _AUDIT_QUEUE.task_done()
+                    _ = _AUDIT_QUEUE.get_nowait()
+                    _AUDIT_QUEUE.task_done()
                 except Exception:
                     pass
                 try:
@@ -1039,6 +1034,7 @@ async def audit_diag(interaction: discord.Interaction):
     guild = interaction.guild
     if not guild:
         return await interaction.followup.send("Not in a guild.", ephemeral=True)
+
     chan_cfg = config.get("audit_channel_id") or DEFAULT_AUDIT_THREAD_ID
     dest = await _get_audit_target(guild)
     e = discord.Embed(title="Audit Logger Diagnostics", color=THEME_PRIMARY)
@@ -1145,33 +1141,48 @@ async def on_member_remove(member: discord.Member):
     await asyncio.sleep(1.2)
     if _recently_logged(member.id):
         return
+
     action, moderator, reason = await _resolve_kick_or_ban(member.guild, member.id, window_seconds=45)
     mod_txt = f" by **{moderator}**" if moderator else ""
     reason_txt = f"\n**Reason:** {reason}" if reason else ""
+
     if action == "kick":
-        await _send_departure_card(bot, member.guild, member,
-            title="🚪 Member Kicked", details=f"{member.mention} was kicked{mod_txt}.{reason_txt}",
-            color=discord.Color.orange().value)
+        await _send_departure_card(
+            bot, member.guild, member,
+            title="🚪 Member Kicked",
+            details=f"{member.mention} was kicked{mod_txt}.{reason_txt}",
+            color=discord.Color.orange().value
+        )
     elif action == "ban":
-        await _send_departure_card(bot, member.guild, member,
-            title="⛔ Member Banned", details=f"{member} was banned{mod_txt}.{reason_txt}",
-            color=discord.Color.red().value)
+        await _send_departure_card(
+            bot, member.guild, member,
+            title="⛔ Member Banned",
+            details=f"{member} was banned{mod_txt}.{reason_txt}",
+            color=discord.Color.red().value
+        )
     else:
-        await _send_departure_card(bot, member.guild, member,
-            title="👋 Member Left", details=f"{member.mention} left the server.",
-            color=discord.Color.dark_grey().value)
+        await _send_departure_card(
+            bot, member.guild, member,
+            title="👋 Member Left",
+            details=f"{member.mention} left the server.",
+            color=discord.Color.dark_grey().value
+        )
 
 @bot.event
 async def on_member_ban(guild: discord.Guild, user: discord.User):
     await asyncio.sleep(0.8)
     if _recently_logged(user.id):
         return
+
     action, moderator, reason = await _resolve_kick_or_ban(guild, user.id, window_seconds=60)
     mod_txt = f" by **{moderator}**" if moderator else ""
     reason_txt = f"\n**Reason:** {reason}" if reason else ""
-    await _send_departure_card(bot, guild, user,
-        title="⛔ Member Banned", details=f"{user} was banned{mod_txt}.{reason_txt}",
-        color=discord.Color.red().value)
+    await _send_departure_card(
+        bot, guild, user,
+        title="⛔ Member Banned",
+        details=f"{user} was banned{mod_txt}.{reason_txt}",
+        color=discord.Color.red().value
+    )
 
 # ============================================================
 #                       COMMANDS (WELCOME & CUSTOM)
@@ -1205,6 +1216,7 @@ async def welcome_diag(interaction: discord.Interaction):
     guild = interaction.guild
     if not guild:
         return await interaction.followup.send("Not in a guild.", ephemeral=True)
+
     me = guild.me
     try:
         dest = bot.get_channel(ARRIVALS_THREAD_ID) or await bot.fetch_channel(ARRIVALS_THREAD_ID)
@@ -1213,6 +1225,7 @@ async def welcome_diag(interaction: discord.Interaction):
 
     where = f"{type(dest).__name__} `{getattr(dest,'name','?')}` ({ARRIVALS_THREAD_ID})" if dest else f"(missing) {ARRIVALS_THREAD_ID}"
     fields = []
+
     if isinstance(dest, discord.Thread):
         p = dest.permissions_for(me)
         fields += [("view_channel", p.view_channel),
@@ -1235,7 +1248,7 @@ async def welcome_diag(interaction: discord.Interaction):
     e = discord.Embed(title="Welcome Diagnostics", color=THEME_PRIMARY)
     e.add_field(name="Arrivals target", value=where, inline=False)
     for k, v in fields:
-        e.add_field(name=k, value=str(v)),
+        e.add_field(name=k, value=str(v)), 
     await interaction.followup.send(embed=e, ephemeral=True)
 
 @bot.tree.command(name="welcome_test", description="Post a Minion-button card for a member to the arrivals channel.")
@@ -1376,10 +1389,14 @@ async def send_custom(interaction: discord.Interaction):
     if isinstance(ch, discord.Thread):
         try:
             if ch.archived or ch.locked:
-                try: await ch.edit(archived=False, locked=False)
-                except discord.Forbidden: pass
-            try: await ch.join()
-            except discord.Forbidden: pass
+                try:
+                    await ch.edit(archived=False, locked=False)
+                except discord.Forbidden:
+                    pass
+            try:
+                await ch.join()
+            except discord.Forbidden:
+                pass
         except Exception:
             pass
     perms = ch.permissions_for(me)
@@ -1397,11 +1414,11 @@ async def send_custom(interaction: discord.Interaction):
 #                       🎮 ROLE PICKER COMMANDS
 # ============================================================
 
-def _role_gate_check(interaction: discord.Interaction) -> bool:
-    return role_gate_user_or_adminrole(interaction)
+def _admin_check(member: discord.Member) -> bool:
+    return is_role_manager(member)
 
 @bot.tree.command(name="roles_panel", description="Post the Role Picker panel here.")
-@app_commands.check(_role_gate_check)
+@app_commands.check(role_user_only)
 @app_commands.guild_only()
 async def roles_panel(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
@@ -1416,7 +1433,7 @@ async def roles_panel(interaction: discord.Interaction):
 
 @bot.tree.command(name="roles_add", description="Add a role to the Role Picker allowlist.")
 @app_commands.describe(role="The role to make selectable")
-@app_commands.check(_role_gate_check)
+@app_commands.check(role_user_only)
 @app_commands.guild_only()
 async def roles_add(interaction: discord.Interaction, role: discord.Role):
     ids = ensure_assignable_ids(interaction.guild)
@@ -1430,7 +1447,7 @@ async def roles_add(interaction: discord.Interaction, role: discord.Role):
 
 @bot.tree.command(name="roles_remove", description="Remove a role from the Role Picker allowlist.")
 @app_commands.describe(role="The role to remove from the picker")
-@app_commands.check(_role_gate_check)
+@app_commands.check(role_user_only)
 @app_commands.guild_only()
 async def roles_remove(interaction: discord.Interaction, role: discord.Role):
     ids = ensure_assignable_ids(interaction.guild)
@@ -1443,7 +1460,7 @@ async def roles_remove(interaction: discord.Interaction, role: discord.Role):
         await interaction.response.send_message("That role is not in the picker list.", ephemeral=True)
 
 @bot.tree.command(name="roles_list", description="Show current Role Picker roles.")
-@app_commands.check(_role_gate_check)
+@app_commands.check(role_user_only)
 @app_commands.guild_only()
 async def roles_list(interaction: discord.Interaction):
     ids = ensure_assignable_ids(interaction.guild)
@@ -1459,7 +1476,7 @@ async def roles_list(interaction: discord.Interaction):
 
 @bot.tree.command(name="roles_sync_tag", description="Auto-add all roles containing a tag (default: [Game]).")
 @app_commands.describe(tag="Case-insensitive substring to match in role names, e.g. [Game]")
-@app_commands.check(_role_gate_check)
+@app_commands.check(role_user_only)
 @app_commands.guild_only()
 async def roles_sync_tag(interaction: discord.Interaction, tag: Optional[str] = None):
     await interaction.response.defer(ephemeral=True, thinking=True)
@@ -1508,6 +1525,7 @@ async def log_speak_usage(interaction: discord.Interaction, original_text: str, 
     target, _ = await resolve_target(bot, SPEAK_LOG_THREAD_ID)
     if not target:
         return
+
     pretty = next((c.name for c in LANG_CHOICES if c.value == lang_code), lang_code)
     vc_name = (
         interaction.user.voice.channel.mention
@@ -1515,23 +1533,32 @@ async def log_speak_usage(interaction: discord.Interaction, original_text: str, 
         else "`N/A`"
     )
     text_channel = interaction.channel.mention if isinstance(interaction.channel, discord.TextChannel) else "`N/A`"
+
     embed = discord.Embed(title="🗣️ /speak used", color=THEME_PRIMARY)
     embed.add_field(name="User", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=False)
     embed.add_field(name="Language", value=pretty, inline=True)
     embed.add_field(name="Voice Channel", value=vc_name, inline=True)
     embed.add_field(name="Typed Text (EN)", value=(original_text[:1024] or "`(empty)`"), inline=False)
     embed.set_footer(text=f"Invoked in {text_channel}")
+
     try:
         await target.send(embed=embed)
     except Exception:
         pass
 
 @bot.tree.command(name="speak", description="Bot joins your VC and speaks the text (no message posted).")
-@app_commands.describe(text="Type your message in English", language="Target language to speak")
+@app_commands.describe(
+    text="Type your message in English",
+    language="Target language to speak"
+)
 @app_commands.choices(language=LANG_CHOICES)
 @app_commands.check(has_member_role)
 @app_commands.guild_only()
-async def speak(interaction: discord.Interaction, text: str, language: app_commands.Choice[str] = None):
+async def speak(
+    interaction: discord.Interaction,
+    text: str,
+    language: app_commands.Choice[str] = None
+):
     try:
         await interaction.response.defer(ephemeral=True)
     except discord.InteractionResponded:
@@ -1547,6 +1574,7 @@ async def speak(interaction: discord.Interaction, text: str, language: app_comma
 
     lang_code = (language.value if language else "en").lower()
     to_say = text[:5000]
+
     await log_speak_usage(interaction, original_text=text, lang_code=lang_code)
 
     if lang_code != "en":
@@ -1575,29 +1603,20 @@ async def speak(interaction: discord.Interaction, text: str, language: app_comma
     except Exception as e:
         await interaction.followup.send(f"❌ Playback error: `{e}`", ephemeral=True)
     finally:
-        try: os.remove(tmp_path)
-        except Exception: pass
-        try: await vc.disconnect(force=False)
-        except Exception: pass
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        try:
+            await vc.disconnect(force=False)
+        except Exception:
+            pass
 
 # ============================================================
-#                       🎵 MUSIC: /play (YouTube)
+#                       🎵 MUSIC: /play (yt-dlp)
 # ============================================================
 
-# ============================================================
-#                       MUSIC: /play (YouTube)
-# ============================================================
-
-import yt_dlp
-
-# A simple per-guild lock so we don't double-start ffmpeg
-_PLAY_LOCKS: Dict[int, asyncio.Lock] = {}
-
-def _play_lock(guild_id: int) -> asyncio.Lock:
-    if guild_id not in _PLAY_LOCKS:
-        _PLAY_LOCKS[guild_id] = asyncio.Lock()
-    return _PLAY_LOCKS[guild_id]
-
+# Conservative yt-dlp options to avoid long stalls and extra probing.
 YTDLP_OPTS = {
     "format": "bestaudio/best",
     "quiet": True,
@@ -1607,139 +1626,77 @@ YTDLP_OPTS = {
     "default_search": "ytsearch",
     "extract_flat": False,
     "geo_bypass": True,
+    "cachedir": False,
+    "noplaylist": True,
+    "socket_timeout": 10,
+    "no_warnings": True,
+    "source_address": "0.0.0.0",  # avoid IPv6 stalls on some hosts
 }
 
-FFMPEG_BEFORE_OPTS = (
-    "-nostdin -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-)
-FFMPEG_OPTS = "-vn"
-
-async def ensure_voice_simple(interaction: discord.Interaction) -> Optional[discord.VoiceClient]:
-    """Join/move to the user's VC without disconnecting existing sessions."""
-    if not interaction.guild or not isinstance(interaction.user, discord.Member):
-        await interaction.response.send_message("❌ Not in a guild.", ephemeral=True)
-        return None
-    state = interaction.user.voice
-    if not state or not state.channel:
-        await interaction.response.send_message("❌ Join a voice channel first.", ephemeral=True)
-        return None
-    try:
-        if interaction.guild.voice_client and interaction.guild.voice_client.channel != state.channel:
-            await interaction.guild.voice_client.move_to(state.channel)
-            return interaction.guild.voice_client
-        if interaction.guild.voice_client:
-            return interaction.guild.voice_client
-        return await state.channel.connect(reconnect=True, timeout=15)
-    except Exception as e:
-        try:
-            await interaction.response.send_message(f"❌ Can’t join VC: `{e}`", ephemeral=True)
-        except discord.InteractionResponded:
-            await interaction.followup.send(f"❌ Can’t join VC: `{e}`", ephemeral=True)
-        return None
-
-def ytdlp_extract(url: str) -> Tuple[str, str]:
-    """
-    Returns (stream_url, title) for the given YouTube URL or search.
-    Raises on failure.
-    """
-    with yt_dlp.YoutubeDL(YTDLP_OPTS) as ydl:
+def _ytdlp_extract(url: str) -> Tuple[str, str]:
+    """Blocking helper run in executor: returns (stream_url, title)."""
+    with yt_dlp.YoutubeDL(YTDLP_OPTS) as ydl:  # type: ignore
         info = ydl.extract_info(url, download=False)
         if info is None:
-            raise RuntimeError("No info extracted")
-
-        # Handle playlists/search results by picking the first entry
-        if "entries" in info:
+            raise RuntimeError("No info returned.")
+        # If a search term was used, pick the first entry.
+        if "entries" in info and isinstance(info["entries"], list):
             info = next((e for e in info["entries"] if e), None)
             if info is None:
-                raise RuntimeError("No playable entries found")
-
-        # Prefer direct audio URL (webm/opus or m4a)
+                raise RuntimeError("No results.")
+        # Prefer direct URL in 'url' or format URL in formats[0]['url']
         stream_url = info.get("url")
-        title = info.get("title") or "Unknown"
+        if not stream_url and "formats" in info and info["formats"]:
+            stream_url = info["formats"][0].get("url")
         if not stream_url:
-            # Fallback to best format url
-            fmts = info.get("formats") or []
-            best = next((f for f in fmts if f.get("acodec") and f.get("url")), None)
-            if not best:
-                raise RuntimeError("No playable audio formats")
-            stream_url = best["url"]
+            raise RuntimeError("No stream URL.")
+        title = info.get("title") or "Unknown"
         return stream_url, title
 
-@bot.tree.command(name="play", description="Play a YouTube link (audio only) in your VC.")
-@app_commands.describe(url="YouTube URL (or search text)")
+@bot.tree.command(name="play", description="Play a YouTube link (or search) in your current voice channel.")
+@app_commands.describe(url="YouTube URL or search text")
+@app_commands.check(has_member_role)
 @app_commands.guild_only()
 async def play(interaction: discord.Interaction, url: str):
-    # Let the user see immediate feedback
     try:
         await interaction.response.defer(ephemeral=True, thinking=True)
     except discord.InteractionResponded:
         pass
 
-    # Hard dependency checks
     if not ffmpeg_available():
-        return await interaction.followup.send("❌ FFmpeg is not available on the host.", ephemeral=True)
-    try:
-        import yt_dlp  # noqa: F401
-    except Exception:
-        return await interaction.followup.send("❌ `yt-dlp` is not installed. Add it to requirements and redeploy.", ephemeral=True)
+        return await interaction.followup.send("❌ FFmpeg is not installed on the host/container.", ephemeral=True)
+    if not YTDLP_AVAILABLE:
+        return await interaction.followup.send("❌ `yt-dlp` is not installed. Add `yt-dlp` to requirements and redeploy.", ephemeral=True)
 
-    vc = await ensure_voice_simple(interaction)
+    vc = await ensure_voice(interaction)
     if vc is None:
         return
 
-    # Prevent overlapping starts
-    lock = _play_lock(interaction.guild.id)
-    async with lock:
+    # Resolve stream URL off the event loop with a fast timeout
+    loop = asyncio.get_event_loop()
+    try:
+        stream_url, title = await asyncio.wait_for(loop.run_in_executor(None, _ytdlp_extract, url), timeout=15)
+    except asyncio.TimeoutError:
+        return await interaction.followup.send("❌ Timed out fetching YouTube info.", ephemeral=True)
+    except Exception as e:
+        return await interaction.followup.send(f"❌ Could not get audio stream: `{e}`", ephemeral=True)
+
+    # Play via FFmpeg (use reconnect flags for HLS)
+    try:
+        before = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin"
+        ffmpeg_audio = discord.FFmpegPCMAudio(stream_url, before_options=before, options="-vn")
+        vc.play(ffmpeg_audio)
+        await interaction.followup.send(f"▶️ **Now playing:** {title}", ephemeral=True)
+
+        while vc.is_playing():
+            await asyncio.sleep(0.5)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Playback error: `{e}`", ephemeral=True)
+    finally:
         try:
-            stream_url, title = await asyncio.get_event_loop().run_in_executor(None, ytdlp_extract, url)
-        except Exception as e:
-            return await interaction.followup.send(f"❌ Could not get audio stream: `{e}`", ephemeral=True)
-
-        # Build FFmpeg source with robust reconnect flags
-        try:
-            source = discord.FFmpegPCMAudio(
-                stream_url,
-                before_options=FFMPEG_BEFORE_OPTS,
-                options=FFMPEG_OPTS,
-            )
-        except Exception as e:
-            return await interaction.followup.send(f"❌ FFmpeg init failed: `{e}`", ephemeral=True)
-
-        # Keep a handle so GC doesn't kill the stream
-        vc.source = source
-
-        # Start playback
-        try:
-            # Small helper to notify when finished
-            finished = asyncio.get_event_loop().create_future()
-
-            def _after_play(err: Optional[Exception]):
-                if err and not finished.done():
-                    finished.set_exception(err)
-                elif not finished.done():
-                    finished.set_result(True)
-
-            vc.play(source, after=_after_play)
-
-            await interaction.followup.send(f"▶️ **Now playing:** {title}", ephemeral=True)
-
-            # Wait until playback completes
-            try:
-                await finished
-            except Exception as e:
-                await interaction.followup.send(f"⚠️ Playback error: `{e}`", ephemeral=True)
-        finally:
-            # Clean up the source and leave VC
-            try:
-                if vc.is_playing():
-                    vc.stop()
-            except Exception:
-                pass
-            try:
-                await vc.disconnect(force=False)
-            except Exception:
-                pass
-
+            await vc.disconnect(force=False)
+        except Exception:
+            pass
 
 # ============================================================
 #                       ERROR HANDLING & RUN
@@ -1748,20 +1705,22 @@ async def play(interaction: discord.Interaction, url: str):
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CheckFailure):
-        # This path is used by /speak and /play member-role checks
+        # Figure out which check failed to tailor the message a bit
         try:
-            await interaction.response.send_message(
-                "❌ You need the **Member** role to use this command.",
-                ephemeral=True
-            )
+            cmd = interaction.command.name if interaction and interaction.command else ""
+        except Exception:
+            cmd = ""
+        msg = "❌ You don't have permission to use this."
+        if cmd in ("speak", "play"):
+            msg = "❌ You need the **Member** role to use this command."
+        try:
+            await interaction.response.send_message(msg, ephemeral=True)
         except discord.InteractionResponded:
-            await interaction.followup.send(
-                "❌ You need the **Member** role to use this command.",
-                ephemeral=True
-            )
+            await interaction.followup.send(msg, ephemeral=True)
 
 def main():
     print("FFMPEG PATH:", which("ffmpeg"))
+    print("yt-dlp available:", YTDLP_AVAILABLE)
     bot.run(TOKEN)
 
 if __name__ == "__main__":
