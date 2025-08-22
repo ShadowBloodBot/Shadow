@@ -484,36 +484,31 @@ def build_role_selects(options: List[dict], *, placeholder: str, mode: str) -> L
 class DualRolePickerView(View):
     """
     Persistent public panel:
-    - Multi-selects for ➕ Add and ➖ Remove (global list)
-    - Confirm applies staged adds and staged removals ONLY (no implicit removals)
-    - Button opens a private, personalized manager (filtered lists)
+    - Multi-selects for ➕ Add (global list)
+    - Confirm applies staged adds ONLY (no implicit removals)
+    - "Remove My Roles" button opens a private, filtered remove view (shows only roles the member has)
     """
     def __init__(self, guild: discord.Guild, options: List[dict]):
         super().__init__(timeout=None)
         self.guild = guild
         self.options = _sorted_opts(options)
         self.stage_add: Dict[int, Set[int]] = {}     # user_id -> staged adds
-        self.stage_remove: Dict[int, Set[int]] = {}  # user_id -> staged removes
         self._last_confirm_ts: Dict[int, float] = {} # anti-spam per user
 
-        # ADD selects
+        # ADD selects (public)
         for sel in build_role_selects(self.options, placeholder="➕ Add roles…", mode="add"):
             sel.callback = self._on_select  # type: ignore
             self.add_item(sel)
 
-        # REMOVE selects (global; we'll filter on confirm)
-        for sel in build_role_selects(self.options, placeholder="➖ Remove roles…", mode="remove"):
-            sel.callback = self._on_select  # type: ignore
-            self.add_item(sel)
-
-        # Confirm + Private Manager
+        # Confirm (applies only staged public adds)
         btn_conf = Button(label="Confirm", style=discord.ButtonStyle.success, row=2)
         btn_conf.callback = self._on_confirm  # type: ignore
         self.add_item(btn_conf)
 
-        btn_priv = Button(label="Manage My Roles (private)", style=discord.ButtonStyle.secondary, row=2)
-        btn_priv.callback = self._open_private  # type: ignore
-        self.add_item(btn_priv)
+        # Private remove manager (filtered per user)
+        btn_remove = Button(label="Remove My Roles", style=discord.ButtonStyle.secondary, row=2)
+        btn_remove.callback = self._open_remove_private  # type: ignore
+        self.add_item(btn_remove)
 
     def _allowed_ids(self) -> Set[int]:
         return {int(o["role_id"]) for o in self.options}
@@ -530,22 +525,12 @@ class DualRolePickerView(View):
             pass
 
         uid = interaction.user.id
+        # rebuild staged from all selects
+        staged = set()
         for item in self.children:
             if isinstance(item, Select):
-                picks = {int(v) for v in (item.values or [])}
-                mode = getattr(item, "_mode", "add")  # type: ignore[attr-defined]
-                chunk_ids: Set[int] = getattr(item, "_chunk_ids", set())  # type: ignore[attr-defined]
-
-                if mode == "add":
-                    curr = self.stage_add.get(uid, set())
-                    curr -= chunk_ids
-                    curr |= picks
-                    self.stage_add[uid] = curr
-                else:
-                    curr = self.stage_remove.get(uid, set())
-                    curr -= chunk_ids
-                    curr |= picks
-                    self.stage_remove[uid] = curr
+                staged |= {int(v) for v in (item.values or [])}
+        self.stage_add[uid] = staged
 
     async def _on_confirm(self, interaction: discord.Interaction):
         now = time.time()
@@ -564,11 +549,7 @@ class DualRolePickerView(View):
         current_ids = self._member_current_allowed(member)
 
         staged_add = set(self.stage_add.get(member.id, set())) & allowed_ids
-        staged_remove = set(self.stage_remove.get(member.id, set())) & allowed_ids
-
-        # Only remove roles the member actually has
         to_add_ids = list(staged_add - current_ids)
-        to_remove_ids = list(staged_remove & current_ids)
 
         bot_member = interaction.guild.me
         def manageable(r: discord.Role) -> bool:
@@ -583,7 +564,7 @@ class DualRolePickerView(View):
         except Exception:
             pass
 
-        added, removed, skipped = [], [], []
+        added, skipped = [], []
 
         for rid in to_add_ids:
             role = interaction.guild.get_role(rid)
@@ -596,24 +577,11 @@ class DualRolePickerView(View):
             elif role:
                 skipped.append(role.name)
 
-        for rid in to_remove_ids:
-            role = interaction.guild.get_role(rid)
-            if role and manageable(role):
-                try:
-                    await member.remove_roles(role, reason="Self-assign roles panel (remove)")
-                    removed.append(role.name)
-                except Exception:
-                    skipped.append(role.name if role else str(rid))
-            elif role:
-                skipped.append(role.name)
-
-        # clear stages for this user
+        # clear staged adds for this user
         self.stage_add.pop(member.id, None)
-        self.stage_remove.pop(member.id, None)
 
         # Confirm-success EMBED
         if added:   added   = sorted(added,   key=lambda s: s.casefold())
-        if removed: removed = sorted(removed, key=lambda s: s.casefold())
         if skipped: skipped = sorted(skipped, key=lambda s: s.casefold())
 
         embed = discord.Embed(
@@ -623,11 +591,9 @@ class DualRolePickerView(View):
         )
         if added:
             embed.add_field(name="Added", value=", ".join(added)[:1024], inline=False)
-        if removed:
-            embed.add_field(name="Removed", value=", ".join(removed)[:1024], inline=False)
         if skipped:
             embed.add_field(name="Skipped", value=", ".join(skipped)[:1024] + " (unmanageable)", inline=False)
-        if not (added or removed or skipped):
+        if not (added or skipped):
             embed.description = "No changes."
         embed.set_footer(text="ShadowSyn Role Manager")
 
@@ -643,43 +609,34 @@ class DualRolePickerView(View):
         except Exception:
             pass
 
-    async def _open_private(self, interaction: discord.Interaction):
-        # Build a per-user ephemeral manager with filtered lists
+    async def _open_remove_private(self, interaction: discord.Interaction):
+        # Ephemeral per-user remove manager with only the roles they have
         if not interaction.guild:
             return await safe_reply(interaction, "❌ Guild not found.", ephemeral=True)
         member = interaction.guild.get_member(interaction.user.id)
         if not member:
             return await safe_reply(interaction, "❌ Could not resolve member.", ephemeral=True)
 
-        allowed_ids = self._allowed_ids()
         current_ids = self._member_current_allowed(member)
-        # Options user can add: allowed minus current
-        add_opts = [o for o in self.options if int(o["role_id"]) in (allowed_ids - current_ids)]
-        # Options user can remove: intersection with current
         remove_opts = [o for o in self.options if int(o["role_id"]) in current_ids]
 
-        view = PrivateRoleManager(interaction.guild, add_opts, remove_opts)
+        view = PrivateRemoveManager(interaction.guild, remove_opts)
         embed = discord.Embed(
-            title="Manage My Roles",
-            description="Use the dropdowns below, then **Confirm**.",
+            title="Remove My Roles",
+            description="Select the roles you want to remove, then **Confirm**.",
             color=THEME_PRIMARY,
         )
         try:
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
         except Exception:
-            await safe_reply(interaction, "❌ Couldn't open private manager.", ephemeral=True)
+            await safe_reply(interaction, "❌ Couldn't open remove manager.", ephemeral=True)
 
-class PrivateRoleManager(View):
-    """Ephemeral per-user view with filtered add/remove lists."""
-    def __init__(self, guild: discord.Guild, add_options: List[dict], remove_options: List[dict]):
+class PrivateRemoveManager(View):
+    """Ephemeral per-user remove-only view with filtered list (multi-select)."""
+    def __init__(self, guild: discord.Guild, remove_options: List[dict]):
         super().__init__(timeout=300)
         self.guild = guild
-        self.add_stage: Set[int] = set()
         self.remove_stage: Set[int] = set()
-
-        for sel in build_role_selects(add_options, placeholder="➕ Add roles…", mode="add"):
-            sel.callback = self._on_select  # type: ignore
-            self.add_item(sel)
 
         for sel in build_role_selects(remove_options, placeholder="➖ Remove roles…", mode="remove"):
             sel.callback = self._on_select  # type: ignore
@@ -694,14 +651,12 @@ class PrivateRoleManager(View):
             await interaction.response.defer()
         except Exception:
             pass
+        # union of all selected values in this ephemeral view
+        staged = set()
         for item in self.children:
             if isinstance(item, Select):
-                picks = {int(v) for v in (item.values or [])}
-                mode = getattr(item, "_mode", "add")  # type: ignore[attr-defined]
-                if mode == "add":
-                    self.add_stage |= picks
-                else:
-                    self.remove_stage |= picks
+                staged |= {int(v) for v in (item.values or [])}
+        self.remove_stage = staged
 
     async def _on_confirm(self, interaction: discord.Interaction):
         if not interaction.guild:
@@ -715,21 +670,9 @@ class PrivateRoleManager(View):
             return bot_member.top_role > r and interaction.guild.me.guild_permissions.manage_roles
 
         current_ids = {r.id for r in member.roles}
-        to_add_ids = list(self.add_stage - current_ids)
         to_remove_ids = list(self.remove_stage & current_ids)
 
-        added, removed, skipped = [], [], []
-
-        for rid in to_add_ids:
-            role = interaction.guild.get_role(rid)
-            if role and manageable(role):
-                try:
-                    await member.add_roles(role, reason="Self-assign roles panel (private add)")
-                    added.append(role.name)
-                except Exception:
-                    skipped.append(role.name if role else str(rid))
-            elif role:
-                skipped.append(role.name)
+        removed, skipped = [], []
 
         for rid in to_remove_ids:
             role = interaction.guild.get_role(rid)
@@ -742,18 +685,15 @@ class PrivateRoleManager(View):
             elif role:
                 skipped.append(role.name)
 
-        if added:   added   = sorted(added,   key=lambda s: s.casefold())
         if removed: removed = sorted(removed, key=lambda s: s.casefold())
-        if skipped: skipped = sorted(skipped, key=lambda s: s.casefold())
+        if skipped:  skipped  = sorted(skipped,  key=lambda s: s.casefold())
 
         embed = discord.Embed(title="✅ Roles Updated", color=THEME_PRIMARY, timestamp=utcnow())
-        if added:
-            embed.add_field(name="Added", value=", ".join(added)[:1024], inline=False)
         if removed:
             embed.add_field(name="Removed", value=", ".join(removed)[:1024], inline=False)
         if skipped:
             embed.add_field(name="Skipped", value=", ".join(skipped)[:1024] + " (unmanageable)", inline=False)
-        if not (added or removed or skipped):
+        if not (removed or skipped):
             embed.description = "No changes."
         embed.set_footer(text="ShadowSyn Role Manager")
 
@@ -764,7 +704,7 @@ class PrivateRoleManager(View):
 def role_picker_embed() -> discord.Embed:
     return discord.Embed(
         title="SELECT ROLES",
-        description="Use the dropdowns: **Add** only adds; **Remove** only removes.\nOr open **Manage My Roles (private)** for a filtered list.",
+        description="Use the dropdowns to **Add** roles, then press **Confirm**.\nNeed to remove something? Tap **Remove My Roles** for a filtered list.",
         color=THEME_PRIMARY,
     )
 
@@ -856,7 +796,7 @@ async def roles_add(interaction: discord.Interaction, roles: str):
         cfg.setdefault("options", []).append({"role_id": role.id, "label": role.name})
         added_labels.append(role.name)
 
-    set_guild_role_cfg(guild.id, cfg)  # persists sorted
+    set_guild_role_cfg(guild_id=guild.id, cfg=cfg)  # persists sorted
     await safe_reply(interaction, f"✅ Added: {', '.join(sorted(added_labels, key=str.casefold)) or 'None'}", ephemeral=True)
 
 @admin_only()
