@@ -102,9 +102,20 @@ def _save_role_store(data: Dict[str, dict]) -> None:
 
 def get_guild_role_cfg(guild_id: int) -> dict:
     store = _load_role_store()
-    return store.get(str(guild_id), {"panel": None, "options": []})
+    cfg = store.get(str(guild_id), {"panel": None, "options": []})
+    # Always present options sorted by label (case-insensitive)
+    cfg["options"] = sorted(
+        cfg.get("options", []),
+        key=lambda o: str(o.get("label", "")).casefold()
+    )
+    return cfg
 
 def set_guild_role_cfg(guild_id: int, cfg: dict) -> None:
+    # Sort before saving to persist alphabetical order
+    cfg["options"] = sorted(
+        cfg.get("options", []),
+        key=lambda o: str(o.get("label", "")).casefold()
+    )
     store = _load_role_store()
     store[str(guild_id)] = cfg
     _save_role_store(store)
@@ -441,6 +452,8 @@ async def on_member_ban(guild, user): await _log_departure(user, "Banned")
 
 def build_role_selects(options: List[dict]) -> List[Select]:
     """Build one or more Selects (Discord cap 25 options per select)."""
+    # Sort options alphabetically by label for the UI
+    options = sorted(options, key=lambda o: str(o.get("label", "")).casefold())
     selects: List[Select] = []
     chunk_size = 25
     for i in range(0, len(options), chunk_size):
@@ -464,16 +477,17 @@ class RolePickerView(View):
     - Multi-select dropdown(s)
     - Single Confirm button
     - Select events silently defer and STAGE picks (no auto-apply)
-    - Confirm applies staged deltas once (debounced) with a success summary
+    - Confirm applies staged deltas once (debounced) with a success summary (EMBED)
     """
     def __init__(self, guild: discord.Guild, options: List[dict]):
         super().__init__(timeout=None)
         self.guild = guild
-        self.options = options
+        # Keep options sorted
+        self.options = sorted(options, key=lambda o: str(o.get("label", "")).casefold())
         self.staged: Dict[int, Set[int]] = {}        # user_id -> staged role_ids
         self._last_confirm_ts: Dict[int, float] = {} # anti-spam per user
 
-        for sel in build_role_selects(options):
+        for sel in build_role_selects(self.options):
             sel.callback = self._on_select  # type: ignore
             self.add_item(sel)
 
@@ -579,13 +593,29 @@ class RolePickerView(View):
         # reset staged for this user
         self.staged.pop(member.id, None)
 
-        parts = []
-        if added: parts.append(f"➕ {', '.join(added)}")
-        if removed: parts.append(f"➖ {', '.join(removed)}")
-        if skipped: parts.append(f"⛔ {', '.join(skipped)} (unmanageable)")
-        if not parts: parts = ["No changes."]
+        # ===== NEW: Confirm-success EMBED =====
+        # Sort names in the summary for readability
+        if added:  added  = sorted(added,  key=lambda s: s.casefold())
+        if removed: removed = sorted(removed, key=lambda s: s.casefold())
+        if skipped: skipped = sorted(skipped, key=lambda s: s.casefold())
 
-        await safe_reply(interaction, f"✅ Updated: {' | '.join(parts)}", ephemeral=True)
+        embed = discord.Embed(
+            title="✅ Roles Updated",
+            color=THEME_PRIMARY,
+            timestamp=utcnow()
+        )
+        if added:
+            embed.add_field(name="Added", value=", ".join(added)[:1024], inline=False)
+        if removed:
+            embed.add_field(name="Removed", value=", ".join(removed)[:1024], inline=False)
+        if skipped:
+            embed.add_field(name="Skipped", value=", ".join(skipped)[:1024] + " (unmanageable)", inline=False)
+        if not (added or removed or skipped):
+            embed.description = "No changes."
+
+        embed.set_footer(text="ShadowSyn Role Manager")
+
+        await safe_reply(interaction, embed=embed, ephemeral=True)
 
         # Re-enable Confirm after short debounce
         await asyncio.sleep(1.5)
@@ -618,7 +648,9 @@ async def rehydrate_role_panel(bot: discord.Client, guild: discord.Guild):
             return
     try:
         msg = await channel.fetch_message(panel.get("message_id"))
-        await msg.edit(embed=role_picker_embed(), view=RolePickerView(guild, options))
+        # Ensure sorted options on rehydrate
+        opts_sorted = sorted(options, key=lambda o: str(o.get("label", "")).casefold())
+        await msg.edit(embed=role_picker_embed(), view=RolePickerView(guild, opts_sorted))
     except Exception:
         # Message deleted? Admin can /roles_post again.
         pass
@@ -629,6 +661,7 @@ async def rehydrate_role_panel(bot: discord.Client, guild: discord.Guild):
 
 def admin_only():
     async def predicate(interaction: discord.Interaction) -> bool:
+        # HARD LOCK: must have ROLE_ADMIN_ID. No fallback to Administrator permission.
         if not isinstance(interaction.user, discord.Member):
             return False
         return any(r.id == ROLE_ADMIN_ID for r in interaction.user.roles)
@@ -655,7 +688,9 @@ async def roles_post(
     dest = target or interaction.channel
 
     try:
-        msg = await dest.send(embed=role_picker_embed(), view=RolePickerView(guild, options))
+        # Ensure sorted options when posting
+        opts_sorted = sorted(options, key=lambda o: str(o.get("label", "")).casefold())
+        msg = await dest.send(embed=role_picker_embed(), view=RolePickerView(guild, opts_sorted))
         cfg["panel"] = {"channel_id": dest.id, "message_id": msg.id}
         set_guild_role_cfg(guild.id, cfg)
         await safe_reply(interaction, f"✅ Panel posted in {dest.mention}.", ephemeral=True)
@@ -691,8 +726,8 @@ async def roles_add(interaction: discord.Interaction, roles: str):
         cfg.setdefault("options", []).append({"role_id": role.id, "label": role.name})
         added_labels.append(role.name)
 
-    set_guild_role_cfg(guild.id, cfg)
-    await safe_reply(interaction, f"✅ Added: {', '.join(added_labels) or 'None'}", ephemeral=True)
+    set_guild_role_cfg(guild.id, cfg)  # persists sorted
+    await safe_reply(interaction, f"✅ Added: {', '.join(sorted(added_labels, key=str.casefold)) or 'None'}", ephemeral=True)
 
 @admin_only()
 @bot.tree.command(name="roles_remove", description="Remove one or more roles from the picker (paste role mentions).")
@@ -712,9 +747,10 @@ async def roles_remove(interaction: discord.Interaction, roles: str):
     before = len(opts)
     opts = [o for o in opts if int(o["role_id"]) not in ids]
     cfg["options"] = opts
-    set_guild_role_cfg(guild.id, cfg)
+    set_guild_role_cfg(guild.id, cfg)  # persists sorted
 
-    await safe_reply(interaction, f"✅ Removed {before - len(opts)} role(s). Use `/roles_sync` to refresh panel.", ephemeral=True)
+    removed_count = before - len(opts)
+    await safe_reply(interaction, f"✅ Removed {removed_count} role(s). Use `/roles_sync` to refresh panel.", ephemeral=True)
 
 @admin_only()
 @bot.tree.command(name="roles_list", description="List current picker roles.")
@@ -725,7 +761,8 @@ async def roles_list(interaction: discord.Interaction):
     opts = cfg.get("options", [])
     if not opts:
         return await safe_reply(interaction, "No roles configured.", ephemeral=True)
-    lines = [f"- {o['label']} (`{o['role_id']}`)" for o in opts]
+    # already sorted from getter, but sort again for safety
+    lines = [f"- {o['label']} (`{o['role_id']}`)" for o in sorted(opts, key=lambda o: str(o['label']).casefold())]
     await safe_reply(interaction, "\n".join(lines), ephemeral=True)
 
 @admin_only()
@@ -761,7 +798,8 @@ async def roles_sync(interaction: discord.Interaction):
 
     options = cfg.get("options", [])
     try:
-        await msg.edit(embed=role_picker_embed(), view=RolePickerView(guild, options))
+        opts_sorted = sorted(options, key=lambda o: str(o.get("label", "")).casefold())
+        await msg.edit(embed=role_picker_embed(), view=RolePickerView(guild, opts_sorted))
         await safe_reply(interaction, "✅ Panel refreshed.", ephemeral=True)
     except Exception as e:
         await safe_reply(interaction, f"❌ Failed: `{e}`", ephemeral=True)
