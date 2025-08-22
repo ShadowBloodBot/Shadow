@@ -1,5 +1,6 @@
 # bot.py — ShadowSyn Bot (Welcome, Audit, Departures, Speak, Custom Embed, Persistent Self-Assign Roles)
 # Env: DISCORD_TOKEN
+# Persistence: ROLE_STORE -> /data/role_picker.json (or $PERSIST_PATH/role_picker.json)
 
 import os
 import re
@@ -78,7 +79,15 @@ config = load_config()
 #                  PERSISTENCE (Role Picker)
 # ============================================================
 
-ROLE_STORE = Path("role_picker.json")
+# Persist to Railway volume at /data by default (set PERSIST_PATH to override)
+PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve()
+try:
+    PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
+except Exception:
+    # If volume not mounted, fall back to current dir
+    PERSIST_ROOT = Path(".").resolve()
+
+ROLE_STORE = (PERSIST_ROOT / "role_picker.json")
 # {
 #   "<guild_id>": {
 #       "panel": {"channel_id": int, "message_id": int},
@@ -259,7 +268,7 @@ bot = ShadowSynBot()
 
 @bot.event
 async def on_ready():
-    print(f"✅ Logged in as {bot.user}")
+    print(f"✅ Logged in as {bot.user} | ROLE_STORE: {ROLE_STORE}")
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
@@ -593,9 +602,8 @@ class RolePickerView(View):
         # reset staged for this user
         self.staged.pop(member.id, None)
 
-        # ===== NEW: Confirm-success EMBED =====
-        # Sort names in the summary for readability
-        if added:  added  = sorted(added,  key=lambda s: s.casefold())
+        # Confirm-success EMBED
+        if added:   added   = sorted(added,   key=lambda s: s.casefold())
         if removed: removed = sorted(removed, key=lambda s: s.casefold())
         if skipped: skipped = sorted(skipped, key=lambda s: s.casefold())
 
@@ -612,7 +620,6 @@ class RolePickerView(View):
             embed.add_field(name="Skipped", value=", ".join(skipped)[:1024] + " (unmanageable)", inline=False)
         if not (added or removed or skipped):
             embed.description = "No changes."
-
         embed.set_footer(text="ShadowSyn Role Manager")
 
         await safe_reply(interaction, embed=embed, ephemeral=True)
