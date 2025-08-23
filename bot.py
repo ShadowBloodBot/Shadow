@@ -1,20 +1,18 @@
 # bot.py — ShadowSyn Bot
 # Features:
-# - Welcome Minion card with one-tap role grant
-# - /speak (gTTS + translate) w/ VC handling + usage log
+# - Welcome Minion card (on join) with one-tap role grant
+# - /speak (gTTS + translate) with VC handling + usage log
 # - Custom embed modal (/send_custom)
+# - /send_welcome and /welcome_update (durable welcome card with link button)
 # - Audit logger for voice state changes
 # - Departures logger (leave/ban)
-# - Persistent Self-Assign Roles panel (add & private remove), full admin command suite
-# - YouTube watcher: RSS poller, resolves @handles/user/channel URLs → UC id, alias memory,
-#   commands (/yt_add /yt_remove /yt_list /yt_test) locked to a role, posts to ONE fixed thread
+# - Persistent Self-Assign Roles panel (add & private remove) + full admin cmd suite
+# - YouTube watcher (RSS): accepts URL/@handle/UC with alias memory; posts to ONE fixed thread
 #
 # Env:
 #   DISCORD_TOKEN
-# Persistence:
-#   $PERSIST_PATH or /data
-#     - role_picker.json
-#     - youtube_watch.json
+# Persistence (under $PERSIST_PATH or /data):
+#   role_picker.json, youtube_watch.json
 
 import os
 import re
@@ -389,7 +387,7 @@ async def speak(interaction, text: str, language: app_commands.Choice[str] = Non
         return await safe_reply(interaction, "❌ FFmpeg missing", ephemeral=True)
     vc = await ensure_voice(interaction)
     if vc is None: return
-    lang_code = (language.value if language else "eN").lower()
+    lang_code = (language.value if language else "en").lower()
     to_say = text
     if lang_code != "en":
         try:
@@ -431,6 +429,111 @@ async def send_custom(interaction):
         await interaction.response.send_modal(CustomEmbedModal(interaction.channel.id))
     except Exception:
         await safe_reply(interaction, "❌ Couldn't open modal.", ephemeral=True)
+
+# ====================== DURABLE WELCOME COMMANDS =================
+
+def welcome_embed() -> discord.Embed:
+    e = discord.Embed(
+        title="Welcome to ShadowSyn",
+        color=THEME_PRIMARY,
+        description=(
+            "👋 **Welcome to all our new members!**\n"
+            "We’re thrilled to have you join our community! 🎉\n\n"
+            "🎮 **What we play:**\n"
+            "We’re into just about anything FPS or Survival, plus some RTS "
+            "(and yes — Age of Empires IV is goated) and MMO's.\n\n"
+            "💬 **Your first steps:**\n"
+            "Head over to **#lobby** and introduce yourself — let us know where you came from or what brought you here.\n\n"
+            "🪪 Tag **@Blood** to get your role.\n\n"
+            "❓ If you have any questions, **@Gravy** will love hearing you yap yap yap.\n\n"
+            "🚫 **Rules (short version):** Don’t be annoying, overly sensitive, or spammy. "
+            "Avoid @mentioning or DMing people you don’t know, and no self-promo unless approved. "
+            "Keep personal info private and absolutely no vegans, piracy, NSFW, or other shady content. "
+            "Use common sense — it covers the rest.\n\n"
+            f"🔗 **Share our invite:** {VANITY_INVITE}\n\n"
+            "Be cool. Have fun. Bring friends."
+        ),
+    )
+    return e
+
+class InviteLinkView(View):
+    """Pure URL button (no callback) so it never breaks after restarts."""
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(Button(label="Invite Friends", style=discord.ButtonStyle.link, url=VANITY_INVITE))
+
+def admin_only():
+    async def predicate(inter: discord.Interaction) -> bool:
+        if not isinstance(inter.user, discord.Member): return False
+        return any(r.id == ROLE_ADMIN_ID for r in inter.user.roles)
+    return app_commands.check(predicate)
+
+@admin_only()
+@bot.tree.command(name="send_welcome", description="Post the welcome card here or to a target channel/thread.")
+@app_commands.describe(target="Optional channel/thread to post in (defaults to here)")
+async def send_welcome(
+    interaction: discord.Interaction,
+    target: Union[discord.TextChannel, discord.Thread, None] = None
+):
+    await safe_defer(interaction, ephemeral=True)
+    dest = target or interaction.channel
+    try:
+        msg = await dest.send(embed=welcome_embed(), view=InviteLinkView())
+        try:  # best-effort pin
+            await msg.pin(reason="ShadowSyn Welcome")
+        except Exception:
+            pass
+        await safe_reply(interaction, f"✅ Welcome card posted in {dest.mention}.", ephemeral=True)
+    except Exception as e:
+        await safe_reply(interaction, f"❌ Failed to post: `{e}`", ephemeral=True)
+
+@admin_only()
+@bot.tree.command(name="welcome_update", description="Update an existing welcome card (by message ID or detect pinned).")
+@app_commands.describe(
+    message_id="Optional: message ID of the existing welcome card",
+    target="Optional: channel/thread where the message lives (defaults to here)"
+)
+async def welcome_update(
+    interaction: discord.Interaction,
+    message_id: Optional[str] = None,
+    target: Union[discord.TextChannel, discord.Thread, None] = None
+):
+    await safe_defer(interaction, ephemeral=True)
+    dest = target or interaction.channel
+
+    msg = None
+    if message_id:
+        try:
+            msg = await dest.fetch_message(int(message_id))
+        except Exception:
+            return await safe_reply(interaction, "❌ Couldn’t fetch that message ID here.", ephemeral=True)
+    else:
+        # Try to find a pinned welcome from the bot
+        try:
+            pins = await dest.pins()
+            for m in pins:
+                if m.author.id == bot.user.id and m.embeds:
+                    if (m.embeds[0].title or "").strip().lower() == "welcome to shadowsyn":
+                        msg = m
+                        break
+        except Exception:
+            msg = None
+        # If not found in pins, look back a bit
+        if msg is None:
+            async for m in dest.history(limit=50):
+                if m.author.id == bot.user.id and m.embeds:
+                    if (m.embeds[0].title or "").strip().lower() == "welcome to shadowsyn":
+                        msg = m
+                        break
+
+    if msg is None:
+        return await safe_reply(interaction, "❌ Couldn’t find a welcome card here. Provide a `message_id` or use `/send_welcome`.", ephemeral=True)
+
+    try:
+        await msg.edit(embed=welcome_embed(), view=InviteLinkView())
+        await safe_reply(interaction, "✅ Welcome card updated.", ephemeral=True)
+    except Exception as e:
+        await safe_reply(interaction, f"❌ Failed to update: `{e}`", ephemeral=True)
 
 # ============================ AUDIT LOG ==========================
 
@@ -690,12 +793,6 @@ async def rehydrate_role_panel(client: discord.Client, guild: discord.Guild):
         pass
 
 # ======== SELF-ASSIGN ROLES: ADMIN COMMANDS (role-locked) =======
-
-def admin_only():
-    async def predicate(inter: discord.Interaction) -> bool:
-        if not isinstance(inter.user, discord.Member): return False
-        return any(r.id == ROLE_ADMIN_ID for r in inter.user.roles)
-    return app_commands.check(predicate)
 
 ROLE_MENTION_RE = re.compile(r"<@&(\d+)>")
 def _parse_role_mentions(text: str) -> List[int]:
