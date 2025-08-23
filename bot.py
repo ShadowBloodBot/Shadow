@@ -21,7 +21,7 @@ from gtts import gTTS
 from shutil import which
 from googletrans import Translator
 
-# === NEW: for YouTube watcher ===
+# === YouTube watcher deps ===
 import aiohttp
 import xml.etree.ElementTree as ET
 
@@ -41,10 +41,10 @@ SPEAK_LOG_THREAD_ID     = 1400048671973703690
 DEPARTURES_THREAD_ID    = 960088192177029140
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
 
-# === NEW: YouTube watcher config (per your IDs) ===
+# === YouTube watcher config (LOCKED to a single thread) ===
 ROLE_YT_MANAGER_ID      = 960088893351415898     # who can /yt_* commands
-YT_POST_TARGET_ID       = 1350365571916763197    # thread to post new uploads
-YT_POLL_SECONDS         = 180                    # poll interval
+YT_POST_TARGET_ID       = 959631286882934784     # <-- ALWAYS post here
+YT_POLL_SECONDS         = 180
 YT_USER_AGENT           = "ShadowSynBot/YouTubeWatcher (+https://discord.gg/shadowsyn)"
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -91,21 +91,14 @@ config = load_config()
 #                  PERSISTENCE (Role Picker + YT)
 # ============================================================
 
-# Persist to Railway volume at /data by default (set PERSIST_PATH to override)
+# Persist to Railway/host volume at /data by default (set PERSIST_PATH to override)
 PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve()
 try:
     PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
 except Exception:
-    # If volume not mounted, fall back to current dir
     PERSIST_ROOT = Path(".").resolve()
 
 ROLE_STORE = (PERSIST_ROOT / "role_picker.json")
-# {
-#   "<guild_id>": {
-#       "panel": {"channel_id": int, "message_id": int},
-#       "options": [{"role_id": int, "label": "Rust"}, ...]
-#   }
-# }
 
 def _load_role_store() -> Dict[str, dict]:
     if ROLE_STORE.exists():
@@ -124,47 +117,59 @@ def _save_role_store(data: Dict[str, dict]) -> None:
 def get_guild_role_cfg(guild_id: int) -> dict:
     store = _load_role_store()
     cfg = store.get(str(guild_id), {"panel": None, "options": []})
-    # Always present options sorted by label (case-insensitive)
-    cfg["options"] = sorted(
-        cfg.get("options", []),
-        key=lambda o: str(o.get("label", "")).casefold()
-    )
+    cfg["options"] = sorted(cfg.get("options", []), key=lambda o: str(o.get("label", "")).casefold())
     return cfg
 
 def set_guild_role_cfg(guild_id: int, cfg: dict) -> None:
-    # Sort before saving to persist alphabetical order
-    cfg["options"] = sorted(
-        cfg.get("options", []),
-        key=lambda o: str(o.get("label", "")).casefold()
-    )
+    cfg["options"] = sorted(cfg.get("options", []), key=lambda o: str(o.get("label", "")).casefold())
     store = _load_role_store()
     store[str(guild_id)] = cfg
     _save_role_store(store)
 
-# === NEW: YouTube store ===
+# === YouTube store (with alias map) ===
 YT_STORE = (PERSIST_ROOT / "youtube_watch.json")
 # {
-#   "channels": {
-#       "UCxxxxxxxxxxxx": {"post_target_id": 1350365571916763197, "last_video_id": "VIDEO_ID", "channel_title": "Name"}
-#   }
+#   "channels": { "UCxxxx": {"last_video_id": "VIDEO_ID", "channel_title": "Name"} },
+#   "aliases":  { "<normalized input>": "UCxxxx" }
 # }
-
 def _load_yt_store() -> Dict[str, dict]:
+    base = {"channels": {}, "aliases": {}}
     if YT_STORE.exists():
         try:
             data = json.loads(YT_STORE.read_text())
             if isinstance(data, dict):
-                data.setdefault("channels", {})
-                return data
+                base.update(data)
         except Exception:
             pass
-    return {"channels": {}}
+    # always ensure keys exist
+    base.setdefault("channels", {})
+    base.setdefault("aliases", {})
+    return base
 
 def _save_yt_store(data: Dict[str, dict]) -> None:
+    data.setdefault("channels", {})
+    data.setdefault("aliases", {})
     try:
         YT_STORE.write_text(json.dumps(data, indent=2))
     except Exception:
         pass
+
+def _alias_key(text: str) -> str:
+    """Normalize any user input to a stable alias key."""
+    s = (text or "").strip().lower().rstrip("/")
+    s = re.sub(r"^https?://(www\.)?", "", s)
+    return s
+
+def _add_alias(input_text: str, uc_id: str):
+    if not input_text or not uc_id:
+        return
+    store = _load_yt_store()
+    store["aliases"][_alias_key(input_text)] = uc_id
+    _save_yt_store(store)
+
+def _lookup_alias(input_text: str) -> Optional[str]:
+    store = _load_yt_store()
+    return store.get("aliases", {}).get(_alias_key(input_text))
 
 # ============================================================
 #                       SAFE REPLY HELPERS
@@ -289,7 +294,7 @@ class ShadowSynBot(discord.Client):
         intents = discord.Intents.all()
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
-        self._yt_task: Optional[asyncio.Task] = None  # NEW
+        self._yt_task: Optional[asyncio.Task] = None
 
     async def setup_hook(self):
         for g in self.guilds:
@@ -301,7 +306,7 @@ class ShadowSynBot(discord.Client):
                 await rehydrate_role_panel(self, g)
             except Exception:
                 pass
-        # NEW: start YouTube watcher
+        # Start YouTube watcher
         if self._yt_task is None:
             self._yt_task = asyncio.create_task(youtube_watch_loop(self))
 
@@ -504,7 +509,6 @@ def _sorted_opts(options: List[dict]) -> List[dict]:
     return sorted(options, key=lambda o: str(o.get("label", "")).casefold())
 
 def build_role_selects(options: List[dict], *, placeholder: str, mode: str) -> List[Select]:
-    """Build one or more Selects (Discord cap 25 options per select). mode ∈ {'add','remove'}"""
     options = _sorted_opts(options)
     selects: List[Select] = []
     chunk_size = 25
@@ -523,30 +527,21 @@ def build_role_selects(options: List[dict], *, placeholder: str, mode: str) -> L
     return selects
 
 class DualRolePickerView(View):
-    """
-    Persistent public panel:
-    - Multi-selects for ➕ Add (global list)
-    - Confirm applies staged adds ONLY (no implicit removals)
-    - "Remove My Roles" button opens a private, filtered remove view (shows only roles the member has)
-    """
     def __init__(self, guild: discord.Guild, options: List[dict]):
         super().__init__(timeout=None)
         self.guild = guild
         self.options = _sorted_opts(options)
-        self.stage_add: Dict[int, Set[int]] = {}     # user_id -> staged adds
-        self._last_confirm_ts: Dict[int, float] = {} # anti-spam per user
+        self.stage_add: Dict[int, Set[int]] = {}
+        self._last_confirm_ts: Dict[int, float] = {}
 
-        # ADD selects (public)
         for sel in build_role_selects(self.options, placeholder="➕ Add roles…", mode="add"):
             sel.callback = self._on_select  # type: ignore
             self.add_item(sel)
 
-        # Confirm (applies only staged public adds)
         btn_conf = Button(label="Confirm", style=discord.ButtonStyle.success, row=2)
         btn_conf.callback = self._on_confirm  # type: ignore
         self.add_item(btn_conf)
 
-        # Private remove manager (filtered per user)
         btn_remove = Button(label="Remove My Roles", style=discord.ButtonStyle.secondary, row=2)
         btn_remove.callback = self._open_remove_private  # type: ignore
         self.add_item(btn_remove)
@@ -559,14 +554,11 @@ class DualRolePickerView(View):
         return {r.id for r in member.roles if r.id in allowed}
 
     async def _on_select(self, interaction: discord.Interaction):
-        # Acknowledge quietly
         try:
             await interaction.response.defer()
         except Exception:
             pass
-
         uid = interaction.user.id
-        # rebuild staged from all selects
         staged = set()
         for item in self.children:
             if isinstance(item, Select):
@@ -596,7 +588,6 @@ class DualRolePickerView(View):
         def manageable(r: discord.Role) -> bool:
             return bot_member.top_role > r and interaction.guild.me.guild_permissions.manage_roles
 
-        # Disable Confirm while applying
         for c in self.children:
             if isinstance(c, Button) and c.label == "Confirm":
                 c.disabled = True
@@ -606,7 +597,6 @@ class DualRolePickerView(View):
             pass
 
         added, skipped = [], []
-
         for rid in to_add_ids:
             role = interaction.guild.get_role(rid)
             if role and manageable(role):
@@ -618,18 +608,12 @@ class DualRolePickerView(View):
             elif role:
                 skipped.append(role.name)
 
-        # clear staged adds for this user
         self.stage_add.pop(member.id, None)
 
-        # Confirm-success EMBED
         if added:   added   = sorted(added,   key=lambda s: s.casefold())
         if skipped: skipped = sorted(skipped, key=lambda s: s.casefold())
 
-        embed = discord.Embed(
-            title="✅ Roles Updated",
-            color=THEME_PRIMARY,
-            timestamp=utcnow()
-        )
+        embed = discord.Embed(title="✅ Roles Updated", color=THEME_PRIMARY, timestamp=utcnow())
         if added:
             embed.add_field(name="Added", value=", ".join(added)[:1024], inline=False)
         if skipped:
@@ -637,10 +621,8 @@ class DualRolePickerView(View):
         if not (added or skipped):
             embed.description = "No changes."
         embed.set_footer(text="ShadowSyn Role Manager")
-
         await safe_reply(interaction, embed=embed, ephemeral=True)
 
-        # Re-enable Confirm after short debounce
         await asyncio.sleep(1.5)
         for c in self.children:
             if isinstance(c, Button) and c.label == "Confirm":
@@ -651,7 +633,6 @@ class DualRolePickerView(View):
             pass
 
     async def _open_remove_private(self, interaction: discord.Interaction):
-        # Ephemeral per-user remove manager with only the roles they have
         if not interaction.guild:
             return await safe_reply(interaction, "❌ Guild not found.", ephemeral=True)
         member = interaction.guild.get_member(interaction.user.id)
@@ -673,7 +654,6 @@ class DualRolePickerView(View):
             await safe_reply(interaction, "❌ Couldn't open remove manager.", ephemeral=True)
 
 class PrivateRemoveManager(View):
-    """Ephemeral per-user remove-only view with filtered list (multi-select)."""
     def __init__(self, guild: discord.Guild, remove_options: List[dict]):
         super().__init__(timeout=300)
         self.guild = guild
@@ -692,7 +672,6 @@ class PrivateRemoveManager(View):
             await interaction.response.defer()
         except Exception:
             pass
-        # union of all selected values in this ephemeral view
         staged = set()
         for item in self.children:
             if isinstance(item, Select):
@@ -714,7 +693,6 @@ class PrivateRemoveManager(View):
         to_remove_ids = list(self.remove_stage & current_ids)
 
         removed, skipped = [], []
-
         for rid in to_remove_ids:
             role = interaction.guild.get_role(rid)
             if role and manageable(role):
@@ -737,10 +715,7 @@ class PrivateRemoveManager(View):
         if not (removed or skipped):
             embed.description = "No changes."
         embed.set_footer(text="ShadowSyn Role Manager")
-
         await safe_reply(interaction, embed=embed, ephemeral=True)
-
-# Panel embed + rehydrate
 
 def role_picker_embed() -> discord.Embed:
     return discord.Embed(
@@ -765,156 +740,10 @@ async def rehydrate_role_panel(bot: discord.Client, guild: discord.Guild):
         msg = await channel.fetch_message(panel.get("message_id"))
         await msg.edit(embed=role_picker_embed(), view=DualRolePickerView(guild, options))
     except Exception:
-        # Message deleted? Admin can /roles_post again.
         pass
 
 # ============================================================
-#            SELF-ASSIGN ROLES: ADMIN COMMANDS (LOCKED)
-# ============================================================
-
-def admin_only():
-    async def predicate(interaction: discord.Interaction) -> bool:
-        # HARD LOCK: must have ROLE_ADMIN_ID. No fallback to Administrator permission.
-        if not isinstance(interaction.user, discord.Member):
-            return False
-        return any(r.id == ROLE_ADMIN_ID for r in interaction.user.roles)
-    return app_commands.check(predicate)
-
-ROLE_MENTION_RE = re.compile(r"<@&(\d+)>")
-def _parse_role_mentions(text: str) -> List[int]:
-    return [int(m) for m in ROLE_MENTION_RE.findall(text or "")]
-
-@admin_only()
-@bot.tree.command(name="roles_post", description="Post the persistent Select Roles panel here or in a target channel/thread.")
-@app_commands.describe(target="Optional channel/thread to post in (defaults to here)")
-async def roles_post(
-    interaction: discord.Interaction,
-    target: Union[discord.TextChannel, discord.Thread, None] = None
-):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
-    if not guild:
-        return await safe_reply(interaction, "❌ Guild not found.", ephemeral=True)
-
-    cfg = get_guild_role_cfg(guild.id)
-    options = cfg.get("options", [])
-    dest = target or interaction.channel
-
-    try:
-        msg = await dest.send(embed=role_picker_embed(), view=DualRolePickerView(guild, options))
-        cfg["panel"] = {"channel_id": dest.id, "message_id": msg.id}
-        set_guild_role_cfg(guild.id, cfg)
-        await safe_reply(interaction, f"✅ Panel posted in {dest.mention}.", ephemeral=True)
-    except Exception as e:
-        await safe_reply(interaction, f"❌ Failed: `{e}`", ephemeral=True)
-
-@admin_only()
-@bot.tree.command(name="roles_add", description="Add one or more roles to the picker (paste role mentions).")
-@app_commands.describe(roles="Role mentions, e.g., @Rust @Battlefield @AoE4")
-async def roles_add(interaction: discord.Interaction, roles: str):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
-    if not guild:
-        return await safe_reply(interaction, "❌ Guild not found.", ephemeral=True)
-
-    ids = _parse_role_mentions(roles)
-    if not ids:
-        return await safe_reply(interaction, "❌ No role mentions detected.", ephemeral=True)
-
-    cfg = get_guild_role_cfg(guild.id)
-    existing_ids = {int(o["role_id"]) for o in cfg.get("options", [])}
-    added_labels = []
-
-    for rid in ids:
-        if rid in existing_ids:
-            continue
-        role = guild.get_role(rid)
-        if role is None:
-            try:
-                role = await guild.fetch_role(rid)
-            except Exception:
-                continue
-        cfg.setdefault("options", []).append({"role_id": role.id, "label": role.name})
-        added_labels.append(role.name)
-
-    set_guild_role_cfg(guild_id=guild.id, cfg=cfg)  # persists sorted
-    await safe_reply(interaction, f"✅ Added: {', '.join(sorted(added_labels, key=str.casefold)) or 'None'}", ephemeral=True)
-
-@admin_only()
-@bot.tree.command(name="roles_remove", description="Remove one or more roles from the picker (paste role mentions).")
-@app_commands.describe(roles="Role mentions, e.g., @Rust @AoE4")
-async def roles_remove(interaction: discord.Interaction, roles: str):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
-    if not guild:
-        return await safe_reply(interaction, "❌ Guild not found.", ephemeral=True)
-
-    ids = set(_parse_role_mentions(roles))
-    if not ids:
-        return await safe_reply(interaction, "❌ No role mentions detected.", ephemeral=True)
-
-    cfg = get_guild_role_cfg(guild.id)
-    opts = cfg.get("options", [])
-    before = len(opts)
-    opts = [o for o in opts if int(o["role_id"]) not in ids]
-    cfg["options"] = opts
-    set_guild_role_cfg(guild.id, cfg)  # persists sorted
-
-    removed_count = before - len(opts)
-    await safe_reply(interaction, f"✅ Removed {removed_count} role(s). Use `/roles_sync` to refresh panel.", ephemeral=True)
-
-@admin_only()
-@bot.tree.command(name="roles_list", description="List current picker roles.")
-async def roles_list(interaction: discord.Interaction):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
-    cfg = get_guild_role_cfg(guild.id)
-    opts = cfg.get("options", [])
-    if not opts:
-        return await safe_reply(interaction, "No roles configured.", ephemeral=True)
-    lines = [f"- {o['label']} (`{o['role_id']}`)" for o in _sorted_opts(opts)]
-    await safe_reply(interaction, "\n".join(lines), ephemeral=True)
-
-@admin_only()
-@bot.tree.command(name="roles_clear", description="Clear all roles from the picker (panel remains).")
-async def roles_clear(interaction: discord.Interaction):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
-    cfg = get_guild_role_cfg(guild.id)
-    cfg["options"] = []
-    set_guild_role_cfg(guild.id, cfg)
-    await safe_reply(interaction, "✅ Cleared options. Use `/roles_sync` to refresh panel.", ephemeral=True)
-
-@admin_only()
-@bot.tree.command(name="roles_sync", description="Rebuild the posted panel with current options.")
-async def roles_sync(interaction: discord.Interaction):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
-    cfg = get_guild_role_cfg(guild.id)
-    panel = cfg.get("panel")
-    if not panel:
-        return await safe_reply(interaction, "No panel saved. Use `/roles_post` first.", ephemeral=True)
-
-    channel = guild.get_channel(panel.get("channel_id"))
-    if not channel:
-        try:
-            channel = await bot.fetch_channel(panel.get("channel_id"))
-        except Exception:
-            return await safe_reply(interaction, "Saved channel not found.", ephemeral=True)
-    try:
-        msg = await channel.fetch_message(panel.get("message_id"))
-    except Exception:
-        return await safe_reply(interaction, "Saved message not found. Repost with `/roles_post`.", ephemeral=True)
-
-    options = cfg.get("options", [])
-    try:
-        await msg.edit(embed=role_picker_embed(), view=DualRolePickerView(guild, options))
-        await safe_reply(interaction, "✅ Panel refreshed.", ephemeral=True)
-    except Exception as e:
-        await safe_reply(interaction, f"❌ Failed: `{e}`", ephemeral=True)
-
-# ============================================================
-#                YOUTUBE WATCHER (RSS + handle resolver)
+#                YOUTUBE WATCHER (RSS + URL/@handle support)
 # ============================================================
 
 def yt_locked():
@@ -924,7 +753,6 @@ def yt_locked():
         return any(r.id == ROLE_YT_MANAGER_ID for r in interaction.user.roles)
     return app_commands.check(predicate)
 
-# Patterns we already support directly
 _YT_CH_REGEXES = [
     re.compile(r"youtube\.com/channel/([A-Za-z0-9_-]{10,})"),
     re.compile(r"youtube\.com/feeds/videos\.xml\?channel_id=([A-Za-z0-9_-]{10,})"),
@@ -934,27 +762,21 @@ def yt_feed_url(channel_id: str) -> str:
     return f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 
 async def resolve_channel_id(input_text: str) -> Optional[str]:
-    """Return a UC… channel_id from raw UC, /channel/ URL, /user/, or @handle."""
     text = (input_text or "").strip()
-
-    # Already a UC… id?
-    if re.fullmatch(r"[A-Za-z0-9_-]{10,}", text) and text.startswith("UC"):
+    # 1) Already UC…
+    if re.fullmatch(r"UC[0-9A-Za-z_-]{10,}", text):
         return text
-
-    # Match /channel/ or feeds URL
+    # 2) direct /channel/ or feeds URL
     for rx in _YT_CH_REGEXES:
         m = rx.search(text)
         if m:
             return m.group(1)
-
-    # Accept plain @handle or /user/ or /@handle formats
-    # Build a URL if it's just @Handle
-    if text.startswith("@"):
-        url = f"https://www.youtube.com/{text}"
-    else:
-        url = text
-
-    # Only attempt fetch if it looks like a YT host or a handle
+    # 3) alias cache (if added earlier)
+    aliased = _lookup_alias(text)
+    if aliased:
+        return aliased
+    # 4) scrape @handle or other pages
+    url = f"https://www.youtube.com/{text}" if text.startswith("@") else text
     if "youtube.com" in url or text.startswith("@"):
         try:
             timeout = aiohttp.ClientTimeout(total=15)
@@ -965,16 +787,20 @@ async def resolve_channel_id(input_text: str) -> Optional[str]:
                     html = await r.text()
         except Exception:
             return None
-
-        # Look for "channelId":"UCxxxx"
         m = re.search(r'"channelId"\s*:\s*"(?P<uc>UC[0-9A-Za-z_-]{10,})"', html)
         if m:
             return m.group("uc")
+    return None
 
+async def normalize_channel_id(input_text: str) -> Optional[str]:
+    cid = await resolve_channel_id(input_text)
+    if cid:
+        return cid
+    if re.fullmatch(r"UC[0-9A-Za-z_-]{10,}", (input_text or "").strip()):
+        return input_text.strip()
     return None
 
 async def fetch_feed_latest(session: aiohttp.ClientSession, channel_id: str) -> Optional[Dict[str, str]]:
-    """Return latest video info dict or None."""
     url = yt_feed_url(channel_id)
     try:
         async with session.get(url, headers={"User-Agent": YT_USER_AGENT}) as r:
@@ -989,30 +815,23 @@ async def fetch_feed_latest(session: aiohttp.ClientSession, channel_id: str) -> 
         entry = root.find("atom:entry", ns)
         if entry is None:
             return None
-        video_id_el = entry.find("yt:videoId", ns)
-        video_id = video_id_el.text if video_id_el is not None else None
-        title_el = entry.find("media:group/media:title", ns)
-        title = title_el.text if title_el is not None else "New Video"
+        vid = entry.find("yt:videoId", ns).text
+        title = entry.find("media:group/media:title", ns).text
         link_el = entry.find("atom:link", ns)
-        link = link_el.attrib.get("href") if link_el is not None else (f"https://www.youtube.com/watch?v={video_id}" if video_id else None)
-        ch_title_el = root.find("atom:title", ns)
-        channel_title = ch_title_el.text if ch_title_el is not None else "Creator"
-        published_el = entry.find("atom:published", ns)
-        published = published_el.text if published_el is not None else ""
-        if not (video_id and link):
-            return None
-        return {"video_id": video_id, "title": title, "url": link, "channel_title": channel_title, "published": published}
+        link = link_el.attrib.get("href") if link_el is not None else f"https://www.youtube.com/watch?v={vid}"
+        ch_title = root.find("atom:title", ns).text
+        published = entry.find("atom:published", ns).text
+        return {"video_id": vid, "title": title, "url": link, "channel_title": ch_title, "published": published}
     except Exception:
         return None
 
-async def post_video_announcement(client: discord.Client, payload: Dict[str, str], target_id: int):
-    target, _ = await resolve_target(client, target_id)
+async def post_video_announcement(client: discord.Client, payload: Dict[str, str]):
+    target, _ = await resolve_target(client, YT_POST_TARGET_ID)
     if not target:
         return
     title = payload.get("title") or "New Video"
     url = payload.get("url")
     channel_title = payload.get("channel_title") or "Creator"
-
     prefix = f"Hey, **{channel_title}** just posted a video!"
     embed = discord.Embed(title=title, url=url, description=prefix, color=discord.Color.red())
     embed.set_footer(text="YouTube • ShadowSyn")
@@ -1025,17 +844,15 @@ async def post_video_announcement(client: discord.Client, payload: Dict[str, str
             pass
 
 async def youtube_watch_loop(client: discord.Client):
-    """Background task that polls each configured channel and posts new videos."""
     await client.wait_until_ready()
 
-    # Seed titles / last ids if missing
+    # seed titles/last ids to avoid retro-spam
     store = _load_yt_store()
     async with aiohttp.ClientSession(headers={"User-Agent": YT_USER_AGENT}) as session:
         for ch_id, cfg in list(store.get("channels", {}).items()):
             latest = await fetch_feed_latest(session, ch_id)
             if latest:
-                cfg.setdefault("post_target_id", YT_POST_TARGET_ID)
-                cfg.setdefault("last_video_id", latest["video_id"])  # seed to avoid retro-spam
+                cfg.setdefault("last_video_id", latest["video_id"])
                 cfg["channel_title"] = latest.get("channel_title") or cfg.get("channel_title") or ""
                 store["channels"][ch_id] = cfg
         _save_yt_store(store)
@@ -1045,65 +862,58 @@ async def youtube_watch_loop(client: discord.Client):
             store = _load_yt_store()
             channels = store.get("channels", {})
             if not channels:
-                await asyncio.sleep(YT_POLL_SECONDS)
-                continue
+                await asyncio.sleep(YT_POLL_SECONDS); continue
 
             async with aiohttp.ClientSession(headers={"User-Agent": YT_USER_AGENT}) as session:
                 for ch_id, cfg in list(channels.items()):
                     latest = await fetch_feed_latest(session, ch_id)
                     if not latest:
-                        await asyncio.sleep(1.0)
-                        continue
+                        await asyncio.sleep(1.0); continue
                     cfg["channel_title"] = latest.get("channel_title") or cfg.get("channel_title") or ""
                     last = cfg.get("last_video_id")
                     if latest["video_id"] != last:
-                        await post_video_announcement(client, latest, int(cfg.get("post_target_id") or YT_POST_TARGET_ID))
+                        await post_video_announcement(client, latest)
                         cfg["last_video_id"] = latest["video_id"]
                         store["channels"][ch_id] = cfg
                         _save_yt_store(store)
                     await asyncio.sleep(1.0)
         except Exception:
-            # Never crash the loop
             pass
         await asyncio.sleep(YT_POLL_SECONDS)
 
 # ---------- Commands (locked to ROLE_YT_MANAGER_ID) ----------
 
 @yt_locked()
-@bot.tree.command(name="yt_add", description="Start watching a YouTube channel (paste @handle, /user/, /channel/ URL, or UC id).")
+@bot.tree.command(name="yt_add", description="Watch a YouTube channel (URL, @handle, or UC id).")
 @app_commands.describe(channel_url_or_id="Channel URL or @handle or raw UC id")
 async def yt_add(interaction: discord.Interaction, channel_url_or_id: str):
     await safe_defer(interaction, ephemeral=True)
-
-    ch_id = await resolve_channel_id(channel_url_or_id)
+    ch_id = await normalize_channel_id(channel_url_or_id)
     if not ch_id:
-        return await safe_reply(
-            interaction,
-            "❌ I couldn't find a channel_id. Use a /channel/ URL or just paste the @handle / UC… id.",
-            ephemeral=True
-        )
-
-    store = _load_yt_store()
-    if "channels" not in store:
-        store["channels"] = {}
-
-    # If it's new, seed minimal entry; title/last will be populated by the loop
-    entry = store["channels"].get(ch_id) or {"post_target_id": YT_POST_TARGET_ID, "last_video_id": None, "channel_title": ""}
-    store["channels"][ch_id] = entry
+        return await safe_reply(interaction, "❌ Couldn’t resolve a channel id.", ephemeral=True)
+    store = _load_yt_store(); store.setdefault("channels", {}); store.setdefault("aliases", {})
+    store["channels"].setdefault(ch_id, {"last_video_id": None, "channel_title": ""})
     _save_yt_store(store)
-
-    await safe_reply(interaction, f"✅ Watching channel `{ch_id}`. New uploads will post in <#{YT_POST_TARGET_ID}>.", ephemeral=True)
+    # remember the exact input as an alias → UC id
+    _add_alias(channel_url_or_id, ch_id)
+    await safe_reply(interaction, f"✅ Watching `{ch_id}`. New uploads will post in <#{YT_POST_TARGET_ID}>.", ephemeral=True)
 
 @yt_locked()
-@bot.tree.command(name="yt_remove", description="Stop watching a YouTube channel by UC id.")
-@app_commands.describe(channel_id="UC… channel id")
-async def yt_remove(interaction: discord.Interaction, channel_id: str):
+@bot.tree.command(name="yt_remove", description="Stop watching a YouTube channel (URL, @handle, or UC id).")
+@app_commands.describe(channel_id_or_url="Channel URL or @handle or UC id")
+async def yt_remove(interaction: discord.Interaction, channel_id_or_url: str):
     await safe_defer(interaction, ephemeral=True)
+    ch_id = await normalize_channel_id(channel_id_or_url)
+    if not ch_id:
+        return await safe_reply(interaction, "❌ Couldn’t resolve a channel id.", ephemeral=True)
     store = _load_yt_store()
-    if store.get("channels", {}).pop(channel_id, None) is None:
-        return await safe_reply(interaction, "ℹ️ That channel wasn't being watched.", ephemeral=True)
+    if store.get("channels", {}).pop(ch_id, None) is None:
+        return await safe_reply(interaction, "ℹ️ That channel wasn’t being watched.", ephemeral=True)
+    # also drop any matching alias (best-effort)
+    key = _alias_key(channel_id_or_url)
+    store.get("aliases", {}).pop(key, None)
     _save_yt_store(store)
-    await safe_reply(interaction, f"✅ Removed `{channel_id}`.", ephemeral=True)
+    await safe_reply(interaction, f"✅ Removed `{ch_id}`.", ephemeral=True)
 
 @yt_locked()
 @bot.tree.command(name="yt_list", description="List watched YouTube channels.")
@@ -1117,26 +927,27 @@ async def yt_list(interaction: discord.Interaction):
     for ch_id, cfg in channels.items():
         title = cfg.get("channel_title") or "Unknown"
         last = cfg.get("last_video_id") or "—"
-        lines.append(f"- **{title}** (`{ch_id}`) • last: `{last}` → <#{int(cfg.get('post_target_id') or YT_POST_TARGET_ID)}>")
+        lines.append(f"- **{title}** (`{ch_id}`) • last: `{last}` → <#{YT_POST_TARGET_ID}>")
     await safe_reply(interaction, "\n".join(lines)[:1990], ephemeral=True)
 
 @yt_locked()
-@bot.tree.command(name="yt_test", description="Post the latest video again for verification.")
-@app_commands.describe(channel_id="UC… channel id")
-async def yt_test(interaction: discord.Interaction, channel_id: str):
+@bot.tree.command(name="yt_test", description="Post the latest upload (URL, @handle, or UC id).")
+@app_commands.describe(channel_id_or_url="Channel URL or @handle or UC id")
+async def yt_test(interaction: discord.Interaction, channel_id_or_url: str):
     await safe_defer(interaction, ephemeral=True)
+    # check alias first (so the exact same URL used in /yt_add works)
+    ch_id = _lookup_alias(channel_id_or_url) or await normalize_channel_id(channel_id_or_url)
+    if not ch_id:
+        return await safe_reply(interaction, "❌ Couldn’t resolve a channel id.", ephemeral=True)
     store = _load_yt_store()
-    if channel_id not in store.get("channels", {}):
-        return await safe_reply(interaction, "❌ That channel isn't being watched.", ephemeral=True)
-    try:
-        async with aiohttp.ClientSession(headers={"User-Agent": YT_USER_AGENT}) as session:
-            latest = await fetch_feed_latest(session, channel_id)
-        if not latest:
-            return await safe_reply(interaction, "❌ Couldn't fetch the feed right now.", ephemeral=True)
-        await post_video_announcement(bot, latest, int(store["channels"][channel_id].get("post_target_id") or YT_POST_TARGET_ID))
-        await safe_reply(interaction, "✅ Posted the latest video to the thread.", ephemeral=True)
-    except Exception as e:
-        await safe_reply(interaction, f"❌ Error: `{e}`", ephemeral=True)
+    if ch_id not in store.get("channels", {}):
+        return await safe_reply(interaction, "❌ That channel isn’t being watched. Use `/yt_add` first.", ephemeral=True)
+    async with aiohttp.ClientSession(headers={"User-Agent": YT_USER_AGENT}) as session:
+        latest = await fetch_feed_latest(session, ch_id)
+    if not latest:
+        return await safe_reply(interaction, "❌ Couldn’t fetch the feed right now.", ephemeral=True)
+    await post_video_announcement(bot, latest)
+    await safe_reply(interaction, "✅ Posted the latest video to the thread.", ephemeral=True)
 
 # ============================================================
 #                RUN
