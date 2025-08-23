@@ -1,6 +1,8 @@
-# bot.py — ShadowSyn Bot (Welcome, Audit, Departures, Speak, Custom Embed, Persistent Self-Assign Roles)
+# bot.py — ShadowSyn Bot (Welcome, Audit, Departures, Speak, Custom Embed, Persistent Self-Assign Roles, YouTube Watcher)
 # Env: DISCORD_TOKEN
-# Persistence: ROLE_STORE -> /data/role_picker.json (or $PERSIST_PATH/role_picker.json)
+# Persistence:
+#   ROLE_STORE           -> /data/role_picker.json (or $PERSIST_PATH/role_picker.json)
+#   YT_WATCH_STORE       -> /data/youtube_watch.json
 
 import os
 import re
@@ -19,6 +21,10 @@ from gtts import gTTS
 from shutil import which
 from googletrans import Translator
 
+# New imports for YouTube watcher
+import aiohttp
+import xml.etree.ElementTree as ET
+
 # ============================================================
 #                       CONSTANTS
 # ============================================================
@@ -34,6 +40,12 @@ DEFAULT_TARGET_ID       = 1166874144395247757
 SPEAK_LOG_THREAD_ID     = 1400048671973703690
 DEPARTURES_THREAD_ID    = 960088192177029140
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
+
+# === YouTube Watcher Settings (as requested) ===
+ROLE_YT_MANAGER_ID      = 960088893351415898   # Users with this role can use /yt_* commands
+YT_POST_TARGET_ID       = 1350365571916763197  # Thread to post new video alerts
+YT_POLL_SECONDS         = 180                  # Poll interval
+YT_USER_AGENT           = "ShadowSynBot/YouTubeWatcher (+https://discord.gg/shadowsyn)"
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
@@ -76,7 +88,7 @@ def save_config(cfg: dict) -> None:
 config = load_config()
 
 # ============================================================
-#                  PERSISTENCE (Role Picker)
+#                  PERSISTENCE ROOT
 # ============================================================
 
 # Persist to Railway volume at /data by default (set PERSIST_PATH to override)
@@ -87,6 +99,7 @@ except Exception:
     # If volume not mounted, fall back to current dir
     PERSIST_ROOT = Path(".").resolve()
 
+# -------------------- Role Picker store ---------------------
 ROLE_STORE = (PERSIST_ROOT / "role_picker.json")
 # {
 #   "<guild_id>": {
@@ -128,6 +141,31 @@ def set_guild_role_cfg(guild_id: int, cfg: dict) -> None:
     store = _load_role_store()
     store[str(guild_id)] = cfg
     _save_role_store(store)
+
+# -------------------- YouTube Watcher store -----------------
+YT_STORE = (PERSIST_ROOT / "youtube_watch.json")
+# {
+#   "channels": {
+#       "UCxxxxxxxxxxxx": {"post_target_id": 1350365571916763197, "last_video_id": "VIDEO_ID", "channel_title": "Name"}
+#   }
+# }
+
+def _load_yt_store() -> Dict[str, dict]:
+    if YT_STORE.exists():
+        try:
+            data = json.loads(YT_STORE.read_text())
+            if isinstance(data, dict):
+                data.setdefault("channels", {})
+                return data
+        except Exception:
+            pass
+    return {"channels": {}}
+
+def _save_yt_store(data: Dict[str, dict]) -> None:
+    try:
+        YT_STORE.write_text(json.dumps(data, indent=2))
+    except Exception:
+        pass
 
 # ============================================================
 #                       SAFE REPLY HELPERS
@@ -252,6 +290,7 @@ class ShadowSynBot(discord.Client):
         intents = discord.Intents.all()
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
+        self._yt_task: Optional[asyncio.Task] = None
 
     async def setup_hook(self):
         for g in self.guilds:
@@ -263,12 +302,15 @@ class ShadowSynBot(discord.Client):
                 await rehydrate_role_panel(self, g)
             except Exception:
                 pass
+        # Start YouTube watcher
+        if self._yt_task is None:
+            self._yt_task = asyncio.create_task(youtube_watch_loop(self))
 
 bot = ShadowSynBot()
 
 @bot.event
 async def on_ready():
-    print(f"✅ Logged in as {bot.user} | ROLE_STORE: {ROLE_STORE}")
+    print(f"✅ Logged in as {bot.user} | ROLE_STORE: {ROLE_STORE} | YT_STORE: {YT_STORE}")
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
@@ -873,11 +915,229 @@ async def roles_sync(interaction: discord.Interaction):
         await safe_reply(interaction, f"❌ Failed: `{e}`", ephemeral=True)
 
 # ============================================================
+#                YOUTUBE WATCHER (RSS, no API key)
+# ============================================================
+
+def yt_manager_only():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if not isinstance(interaction.user, discord.Member):
+            return False
+        return any(r.id == ROLE_YT_MANAGER_ID for r in interaction.user.roles)
+    return app_commands.check(predicate)
+
+# Utilities: extract channel_id from URL or raw
+_YT_CH_REGEXES = [
+    re.compile(r"youtube\.com/channel/([A-Za-z0-9_-]{10,})"),
+    re.compile(r"youtube\.com/feeds/videos\.xml\?channel_id=([A-Za-z0-9_-]{10,})"),
+]
+
+def extract_channel_id(text: str) -> Optional[str]:
+    text = (text or "").strip()
+    if not text:
+        return None
+    # If it already looks like a channel id (starts with UC and length ~24)
+    if re.fullmatch(r"[A-Za-z0-9_-]{10,}", text) and text.startswith("UC"):
+        return text
+    for rx in _YT_CH_REGEXES:
+        m = rx.search(text)
+        if m:
+            return m.group(1)
+    # user URLs or @handles are not supported without API; require channel_id
+    return None
+
+def yt_feed_url(channel_id: str) -> str:
+    return f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+
+async def fetch_feed(session: aiohttp.ClientSession, channel_id: str) -> Optional[Dict[str, str]]:
+    """Return dict with latest video: {'video_id','title','url','channel_title','published'} or None."""
+    url = yt_feed_url(channel_id)
+    try:
+        async with session.get(url, headers={"User-Agent": YT_USER_AGENT}, timeout=aiohttp.ClientTimeout(total=15)) as r:
+            if r.status != 200:
+                return None
+            text = await r.text()
+    except Exception:
+        return None
+    try:
+        root = ET.fromstring(text)
+        # Namespace helpers
+        ns = {
+            "atom": "http://www.w3.org/2005/Atom",
+            "yt": "http://www.youtube.com/xml/schemas/2015",
+            "media": "http://search.yahoo.com/mrss/"
+        }
+        entry = root.find("atom:entry", ns)
+        if entry is None:
+            return None
+        video_id_el = entry.find("yt:videoId", ns)
+        video_id = video_id_el.text if video_id_el is not None else None
+        title_el = entry.find("media:group/media:title", ns)
+        title = title_el.text if title_el is not None else "New Video"
+        link_el = entry.find("atom:link", ns)
+        link = link_el.attrib.get("href") if link_el is not None else f"https://www.youtube.com/watch?v={video_id}"
+        ch_title_el = root.find("atom:title", ns)
+        channel_title = ch_title_el.text if ch_title_el is not None else "Creator"
+        published_el = entry.find("atom:published", ns)
+        published = published_el.text if published_el is not None else ""
+        if not video_id:
+            return None
+        return {
+            "video_id": video_id,
+            "title": title,
+            "url": link,
+            "channel_title": channel_title,
+            "published": published,
+        }
+    except Exception:
+        return None
+
+async def post_video_announcement(client: discord.Client, payload: Dict[str, str], target_id: int):
+    target, _ = await resolve_target(client, target_id)
+    if not target:
+        return
+    title = payload.get("title") or "New Video"
+    url = payload.get("url")
+    channel_title = payload.get("channel_title") or "Creator"
+
+    # Message format required: no @everyone/@here ping
+    prefix = f"Hey, **{channel_title}** just posted a video!"
+    embed = discord.Embed(
+        title=title,
+        url=url,
+        description=f"{prefix}",
+        color=discord.Color.red()  # pops like YouTube; feel free to theme later
+    )
+    embed.set_footer(text="YouTube • ShadowSyn")
+    try:
+        await target.send(content=None, embed=embed)
+    except Exception:
+        # Fallback plain message if embed fails
+        try:
+            await target.send(f"{prefix}\n{url}")
+        except Exception:
+            pass
+
+async def youtube_watch_loop(client: discord.Client):
+    """Background task: poll RSS for each configured channel and post newly detected videos."""
+    await client.wait_until_ready()
+    store = _load_yt_store()
+
+    # On first boot, seed last_video_id to avoid dumping old posts
+    async with aiohttp.ClientSession() as session:
+        for ch_id in list(store.get("channels", {}).keys()):
+            try:
+                latest = await fetch_feed(session, ch_id)
+                if latest:
+                    # Save channel title and last seen
+                    store["channels"][ch_id].setdefault("post_target_id", YT_POST_TARGET_ID)
+                    store["channels"][ch_id]["channel_title"] = latest.get("channel_title") or store["channels"][ch_id].get("channel_title") or ""
+                    store["channels"][ch_id]["last_video_id"] = store["channels"][ch_id].get("last_video_id") or latest["video_id"]
+            except Exception:
+                pass
+        _save_yt_store(store)
+
+    while not client.is_closed():
+        try:
+            store = _load_yt_store()
+            channels = store.get("channels", {})
+            if not channels:
+                await asyncio.sleep(YT_POLL_SECONDS)
+                continue
+            async with aiohttp.ClientSession() as session:
+                for ch_id, cfg in list(channels.items()):
+                    latest = await fetch_feed(session, ch_id)
+                    if not latest:
+                        await asyncio.sleep(1.0)
+                        continue
+                    # Update stored channel title
+                    cfg["channel_title"] = latest.get("channel_title") or cfg.get("channel_title") or ""
+                    last = cfg.get("last_video_id")
+                    if latest["video_id"] and latest["video_id"] != last:
+                        # New video detected → post
+                        target_id = int(cfg.get("post_target_id") or YT_POST_TARGET_ID)
+                        await post_video_announcement(client, latest, target_id)
+                        cfg["last_video_id"] = latest["video_id"]
+                        store["channels"][ch_id] = cfg
+                        _save_yt_store(store)
+                    await asyncio.sleep(1.0)  # light pacing between channels
+        except Exception:
+            # Never crash the loop
+            pass
+        await asyncio.sleep(YT_POLL_SECONDS)
+
+# ---------------------- YT Commands (locked to ROLE_YT_MANAGER_ID) ----------------------
+
+def yt_locked():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        if not isinstance(interaction.user, discord.Member):
+            return False
+        return any(r.id == ROLE_YT_MANAGER_ID for r in interaction.user.roles)
+    return app_commands.check(predicate)
+
+@yt_locked()
+@bot.tree.command(name="yt_add", description="Start watching a YouTube channel (requires a channel URL or channel_id starting with 'UC').")
+@app_commands.describe(channel_url_or_id="Paste the channel URL (with /channel/UC...) or the raw channel_id")
+async def yt_add(interaction: discord.Interaction, channel_url_or_id: str):
+    await safe_defer(interaction, ephemeral=True)
+    ch_id = extract_channel_id(channel_url_or_id)
+    if not ch_id:
+        return await safe_reply(interaction,
+            "❌ I couldn't find a **channel_id**. Use a URL like `https://www.youtube.com/channel/UCxxxx` or paste the `UC...` id.",
+            ephemeral=True)
+    store = _load_yt_store()
+    entry = store["channels"].get(ch_id) or {"post_target_id": YT_POST_TARGET_ID, "last_video_id": None, "channel_title": ""}
+    store["channels"][ch_id] = entry
+    _save_yt_store(store)
+    await safe_reply(interaction, f"✅ Watching channel `{ch_id}`. New uploads will post in <#{YT_POST_TARGET_ID}>.", ephemeral=True)
+
+@yt_locked()
+@bot.tree.command(name="yt_remove", description="Stop watching a YouTube channel by channel_id (UC...).")
+@app_commands.describe(channel_id="YouTube channel_id (starts with UC...)")
+async def yt_remove(interaction: discord.Interaction, channel_id: str):
+    await safe_defer(interaction, ephemeral=True)
+    store = _load_yt_store()
+    if store["channels"].pop(channel_id, None) is None:
+        return await safe_reply(interaction, "ℹ️ That channel wasn't being watched.", ephemeral=True)
+    _save_yt_store(store)
+    await safe_reply(interaction, f"✅ Removed `{channel_id}` from watch list.", ephemeral=True)
+
+@yt_locked()
+@bot.tree.command(name="yt_list", description="List watched YouTube channels.")
+async def yt_list(interaction: discord.Interaction):
+    await safe_defer(interaction, ephemeral=True)
+    store = _load_yt_store()
+    channels = store.get("channels", {})
+    if not channels:
+        return await safe_reply(interaction, "No channels are being watched.", ephemeral=True)
+    lines = []
+    for ch_id, cfg in channels.items():
+        title = cfg.get("channel_title") or "Unknown"
+        last = cfg.get("last_video_id") or "—"
+        lines.append(f"- **{title}** (`{ch_id}`) • last: `{last}` → <#{int(cfg.get('post_target_id') or YT_POST_TARGET_ID)}>")
+    await safe_reply(interaction, "\n".join(lines)[:1990], ephemeral=True)
+
+@yt_locked()
+@bot.tree.command(name="yt_test", description="Repost the latest video for a watched channel (verification).")
+@app_commands.describe(channel_id="YouTube channel_id (UC...)")
+async def yt_test(interaction: discord.Interaction, channel_id: str):
+    await safe_defer(interaction, ephemeral=True)
+    store = _load_yt_store()
+    if channel_id not in store.get("channels", {}):
+        return await safe_reply(interaction, "❌ That channel isn't being watched.", ephemeral=True)
+    async with aiohttp.ClientSession() as session:
+        latest = await fetch_feed(session, channel_id)
+    if not latest:
+        return await safe_reply(interaction, "❌ Couldn't fetch the feed right now.", ephemeral=True)
+    await post_video_announcement(bot, latest, int(store["channels"][channel_id].get("post_target_id") or YT_POST_TARGET_ID))
+    await safe_reply(interaction, "✅ Posted the latest video to the thread.", ephemeral=True)
+
+# ============================================================
 #                RUN
 # ============================================================
 
 def main():
     print("FFMPEG PATH:", which("ffmpeg"))
+    print("PERSIST_ROOT:", PERSIST_ROOT)
     bot.run(TOKEN)
 
 if __name__ == "__main__":
