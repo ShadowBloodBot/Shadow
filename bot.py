@@ -43,7 +43,7 @@ DEFAULT_AUDIT_THREAD_ID = 961726632249425930
 
 # === YouTube Watcher Settings (as requested) ===
 ROLE_YT_MANAGER_ID      = 960088893351415898   # Users with this role can use /yt_* commands
-YT_POST_TARGET_ID       = 1350365571916763197  # Thread to post new video alerts
+YT_POST_TARGET_ID       = 959631286882934784  # Thread to post new video alerts
 YT_POLL_SECONDS         = 180                  # Poll interval
 YT_USER_AGENT           = "ShadowSynBot/YouTubeWatcher (+https://discord.gg/shadowsyn)"
 
