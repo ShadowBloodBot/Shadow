@@ -3,7 +3,8 @@
 # - Welcome Minion card (on join) with one-tap role grant
 # - /speak (gTTS + translate) with VC handling + usage log
 # - Custom embed modal (/send_custom)
-# - /send_welcome and /welcome_update (durable welcome card with link button)
+# - Durable welcome card: /send_welcome + /welcome_update
+#   • Blue “Invite Friends” button (persistent) → sends ephemeral copy-ready invite
 # - Audit logger for voice state changes
 # - Departures logger (leave/ban)
 # - Persistent Self-Assign Roles panel (add & private remove) + full admin cmd suite
@@ -281,13 +282,22 @@ class ShadowSynBot(discord.Client):
     async def setup_hook(self):
         for g in self.guilds:
             await _prime_invites_cache(g)
+        # Register persistent welcome button so old messages still work after restart
+        try:
+            self.add_view(InviteCopyView())  # persistent
+        except NameError:
+            # View defined later; re-register in on_ready as well
+            pass
+
         await self.tree.sync()
+
         # Rehydrate role picker
         for g in self.guilds:
             try:
                 await rehydrate_role_panel(self, g)
             except Exception:
                 pass
+
         # Start YouTube watcher
         if self._yt_task is None:
             self._yt_task = asyncio.create_task(youtube_watch_loop(self))
@@ -296,6 +306,11 @@ bot = ShadowSynBot()
 
 @bot.event
 async def on_ready():
+    # Ensure persistent view is registered even if class defined after setup_hook
+    try:
+        bot.add_view(InviteCopyView())
+    except Exception:
+        pass
     print(f"✅ Logged in as {bot.user} | ROLE_STORE: {ROLE_STORE} | YT_STORE: {YT_STORE}")
 
 @bot.event
@@ -456,11 +471,35 @@ def welcome_embed() -> discord.Embed:
     )
     return e
 
-class InviteLinkView(View):
-    """Pure URL button (no callback) so it never breaks after restarts."""
+class CopyInviteEphemeralView(View):
+    """Shown in the ephemeral response; includes a link button."""
+    def __init__(self):
+        super().__init__(timeout=60)
+        self.add_item(Button(label="Open Link", style=discord.ButtonStyle.link, url=VANITY_INVITE))
+
+class InviteCopyView(View):
+    """
+    Blue public button. On click, sends the user an ephemeral message with
+    a copy-ready code block and an 'Open Link' button. Persistent via custom_id.
+    """
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(Button(label="Invite Friends", style=discord.ButtonStyle.link, url=VANITY_INVITE))
+        btn = Button(
+            label="Invite Friends",
+            style=discord.ButtonStyle.primary,
+            emoji="🔗",
+            custom_id="shadowsyn:welcome_invite_copy:v1"  # persistent id
+        )
+        btn.callback = self._send_copyable  # type: ignore
+        self.add_item(btn)
+
+    async def _send_copyable(self, interaction: discord.Interaction):
+        msg = (
+            "✅ Invite ready to copy:\n"
+            f"```text\n{VANITY_INVITE}\n```\n"
+            "Desktop: click the **copy** icon. Mobile: **tap & hold** to copy."
+        )
+        await safe_reply(interaction, content=msg, view=CopyInviteEphemeralView(), ephemeral=True)
 
 def admin_only():
     async def predicate(inter: discord.Interaction) -> bool:
@@ -478,7 +517,7 @@ async def send_welcome(
     await safe_defer(interaction, ephemeral=True)
     dest = target or interaction.channel
     try:
-        msg = await dest.send(embed=welcome_embed(), view=InviteLinkView())
+        msg = await dest.send(embed=welcome_embed(), view=InviteCopyView())
         try:  # best-effort pin
             await msg.pin(reason="ShadowSyn Welcome")
         except Exception:
@@ -530,7 +569,7 @@ async def welcome_update(
         return await safe_reply(interaction, "❌ Couldn’t find a welcome card here. Provide a `message_id` or use `/send_welcome`.", ephemeral=True)
 
     try:
-        await msg.edit(embed=welcome_embed(), view=InviteLinkView())
+        await msg.edit(embed=welcome_embed(), view=InviteCopyView())
         await safe_reply(interaction, "✅ Welcome card updated.", ephemeral=True)
     except Exception as e:
         await safe_reply(interaction, f"❌ Failed to update: `{e}`", ephemeral=True)
@@ -1033,12 +1072,6 @@ async def youtube_watch_loop(client: discord.Client):
         await asyncio.sleep(YT_POLL_SECONDS)
 
 # ---- YT commands (locked to ROLE_YT_MANAGER_ID) ----
-
-def yt_locked():
-    async def predicate(inter: discord.Interaction) -> bool:
-        if not isinstance(inter.user, discord.Member): return False
-        return any(r.id == ROLE_YT_MANAGER_ID for r in inter.user.roles)
-    return app_commands.check(predicate)
 
 @yt_locked()
 @bot.tree.command(name="yt_add", description="Watch a YouTube channel (URL, @handle, or UC id).")
