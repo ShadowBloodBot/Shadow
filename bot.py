@@ -613,7 +613,9 @@ async def on_voice_state_update(member, before, after):
     elif before.self_mute != after.self_mute or before.self_deaf != after.self_deaf:
         await target.send(f"🎛️ {member} toggled mute/deafen")
 
-# ========================= DEPARTURES LOG ========================
+# ============================================================
+#                DEPARTURES LOGGER (Rich Embed + Accurate Cause)
+# ============================================================
 
 _last_departures: Dict[int, float] = {}
 
@@ -678,26 +680,77 @@ async def _send_departure_embed(user_id: int, embed: discord.Embed):
         except Exception:
             pass
 
+async def _find_recent_audit(
+    guild: discord.Guild,
+    *,
+    action: discord.AuditLogAction,
+    target_id: int,
+    window_seconds: int = 300,
+    attempts: int = 3,
+    delay_between: float = 1.0,
+) -> Optional[discord.AuditLogEntry]:
+    """Poll audit log a few times to tolerate write delay."""
+    if not (guild.me and guild.me.guild_permissions.view_audit_log):
+        return None
+
+    for _ in range(attempts):
+        try:
+            async for entry in guild.audit_logs(limit=20, action=action):
+                if entry.target and entry.target.id == target_id:
+                    created = entry.created_at
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=timezone.utc)
+                    delta = abs((utcnow() - created).total_seconds())
+                    if delta <= window_seconds:
+                        return entry
+        except Exception:
+            pass
+        await asyncio.sleep(delay_between)
+    return None
+
 @bot.event
 async def on_member_remove(member: discord.Member):
-    reason_text = "Left"
-    executor = None
-    mod_reason = None
-    try:
-        g = member.guild
-        if g.me and g.me.guild_permissions.view_audit_log:
-            async for entry in g.audit_logs(limit=6, action=discord.AuditLogAction.kick):
-                if entry.target.id == member.id:
-                    delta = abs((utcnow() - entry.created_at).total_seconds())
-                    if delta < 120:
-                        reason_text = "Kicked"
-                        executor = entry.user
-                        mod_reason = entry.reason
-                        break
-    except Exception:
-        pass
+    """
+    Accurate cause detection:
+    - If there's a recent BAN entry -> return (on_member_ban will log)
+    - Else if there's a recent KICK entry -> log 'Kicked'
+    - Else -> log 'Left'
+    """
+    # Give Discord a moment to write audit logs
+    await asyncio.sleep(1.0)
 
-    embed = _build_departure_embed(member, reason_text=reason_text, executor=executor, moderator_reason=mod_reason)
+    # If a ban is detected, skip logging here and let on_member_ban handle it
+    ban_entry = await _find_recent_audit(
+        member.guild,
+        action=discord.AuditLogAction.ban,
+        target_id=member.id,
+        window_seconds=180,
+        attempts=2,
+        delay_between=1.0,
+    )
+    if ban_entry:
+        return  # on_member_ban will send the proper embed
+
+    # Detect kick
+    kick_entry = await _find_recent_audit(
+        member.guild,
+        action=discord.AuditLogAction.kick,
+        target_id=member.id,
+        window_seconds=300,   # wider window to be safe (bots/users)
+        attempts=3,
+        delay_between=1.0,
+    )
+    if kick_entry:
+        embed = _build_departure_embed(
+            member,
+            reason_text="Kicked",
+            executor=kick_entry.user,
+            moderator_reason=kick_entry.reason,
+        )
+        return await _send_departure_embed(member.id, embed)
+
+    # Default: voluntary leave
+    embed = _build_departure_embed(member, reason_text="Left")
     await _send_departure_embed(member.id, embed)
 
 @bot.event
@@ -706,15 +759,23 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
     ban_reason = None
     try:
         if guild.me and guild.me.guild_permissions.view_audit_log:
-            async for entry in guild.audit_logs(limit=6, action=discord.AuditLogAction.ban):
-                if entry.target.id == user.id:
-                    executor = entry.user
-                    ban_reason = entry.reason
-                    break
+            entry = await _find_recent_audit(
+                guild,
+                action=discord.AuditLogAction.ban,
+                target_id=user.id,
+                window_seconds=300,
+                attempts=3,
+                delay_between=1.0,
+            )
+            if entry:
+                executor = entry.user
+                ban_reason = entry.reason
     except Exception:
         pass
+
     embed = _build_departure_embed(user, reason_text="Banned", executor=executor, moderator_reason=ban_reason)
     await _send_departure_embed(user.id, embed)
+
 
 # =========== SELF-ASSIGN ROLES: CORE VIEW / LOGIC ===============
 
