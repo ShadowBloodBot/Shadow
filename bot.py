@@ -238,6 +238,15 @@ def human_ago(dt: Optional[datetime]) -> str:
             return f"{v} {name}{'' if v == 1 else 's'} ago"
     return "just now"
 
+def safe_display_name(obj: Union[discord.Member, discord.User]) -> str:
+    """Return server nickname if available, else a sensible name."""
+    try:
+        if isinstance(obj, discord.Member):
+            return obj.display_name
+        return obj.global_name or obj.name  # type: ignore[attr-defined]
+    except Exception:
+        return str(obj)
+
 # ======================= INVITE ATTRIBUTION ======================
 
 _INVITES_CACHE: Dict[int, Dict[str, int]] = {}
@@ -595,21 +604,84 @@ async def welcome_update(
 
 # ============================ AUDIT LOG ==========================
 
+async def _find_audit_action(
+    guild: discord.Guild,
+    action: discord.AuditLogAction,
+    target_id: int,
+    window_seconds: int = 30
+) -> Optional[discord.AuditLogEntry]:
+    """Small helper just for audit VC actions (move/mute/deafen)."""
+    if not (guild.me and guild.me.guild_permissions.view_audit_log):
+        return None
+    try:
+        async for entry in guild.audit_logs(limit=10, action=action):
+            if entry.target and entry.target.id == target_id:
+                created = entry.created_at
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                if abs((utcnow() - created).total_seconds()) <= window_seconds:
+                    return entry
+    except Exception:
+        pass
+    return None
+
 @bot.event
 async def on_voice_state_update(member, before, after):
     if member.bot: return
     target, _ = await resolve_target(bot, config.get("audit_channel_id", DEFAULT_AUDIT_THREAD_ID))
     if not target: return
+
+    # Prefer nicknames
+    m_name = safe_display_name(member)
+
+    # Track channel moves/joins/leaves
     if before.channel != after.channel:
-        if before.channel and not after.channel:
-            msg = f"📤 {member} left {before.channel.name}"
-        elif not before.channel and after.channel:
-            msg = f"📥 {member} joined {after.channel.name}"
+        # Try to attribute to a moderator move if present
+        entry = await _find_audit_action(member.guild, discord.AuditLogAction.member_move, member.id)
+        if entry:  # Moderator moved/disconnected
+            actor = safe_display_name(entry.user)
+            if before.channel and after.channel:
+                msg = f"🔀 {actor} moved {m_name} {before.channel.name} → {after.channel.name}"
+            elif before.channel and not after.channel:
+                msg = f"⏏️ {actor} disconnected {m_name} from {before.channel.name}"
+            else:
+                msg = f"📥 {actor} moved {m_name} into {after.channel.name}"
         else:
-            msg = f"🔀 {member} moved {before.channel.name} → {after.channel.name}"
-        await target.send(msg)
-    elif before.self_mute != after.self_mute or before.self_deaf != after.self_deaf:
-        await target.send(f"🎛️ {member} toggled mute/deafen")
+            # Member action (no moderator actor)
+            if before.channel and not after.channel:
+                msg = f"📤 {m_name} left {before.channel.name}"
+            elif not before.channel and after.channel:
+                msg = f"📥 {m_name} joined {after.channel.name}"
+            else:
+                msg = f"🔀 {m_name} moved {before.channel.name} → {after.channel.name}"
+        try: await target.send(msg)
+        except Exception: pass
+        return
+
+    # Server mute/unmute set by a moderator (not self mute)
+    if before.mute != after.mute:
+        entry = await _find_audit_action(member.guild, discord.AuditLogAction.member_update, member.id)
+        if entry:
+            actor = safe_display_name(entry.user)
+            msg = f"{actor} {'muted' if after.mute else 'unmuted'} {m_name}"
+            try: await target.send(msg)
+            except Exception: pass
+            return
+
+    # Server deaf/undeaf set by a moderator
+    if before.deaf != after.deaf:
+        entry = await _find_audit_action(member.guild, discord.AuditLogAction.member_update, member.id)
+        if entry:
+            actor = safe_display_name(entry.user)
+            msg = f"{actor} {'deafened' if after.deaf else 'undeafened'} {m_name}"
+            try: await target.send(msg)
+            except Exception: pass
+            return
+
+    # Member self toggles (no audit entry)
+    if before.self_mute != after.self_mute or before.self_deaf != after.self_deaf:
+        try: await target.send(f"🎛️ {m_name} toggled mute/deafen")
+        except Exception: pass
 
 # ============================================================
 #                DEPARTURES LOGGER (Rich Embed + Accurate Cause)
