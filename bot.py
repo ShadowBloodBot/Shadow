@@ -489,7 +489,7 @@ def welcome_embed() -> discord.Embed:
             "(and yes — Age of Empires IV is goated) and MMO's.\n\n"
             "💬 **Your first steps:**\n"
             "Head over to **#lobby** and introduce yourself — let us know where you came from or what brought you here.\n\n"
-            "🪪 Tag **@Blood** to get your role.\n\n"
+            "🪪 Go to #Self Roles and select what you want.\n\n"
             "❓ If you have any questions, **@Gravy** will love hearing you yap yap yap.\n\n"
             "🚫 **Rules (short version):** Don’t be annoying, overly sensitive, or spammy. "
             "Avoid @mentioning or DMing people you don’t know, and no self-promo unless approved. "
