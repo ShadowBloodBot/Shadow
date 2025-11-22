@@ -7,7 +7,7 @@
 #   • Blue “Invite Friends” button (persistent) → sends ephemeral copy-ready invite
 # - Audit logger for voice state changes
 # - Departures logger (rich embed) with Left/Kicked/Banned detection
-# - Persistent Self-Assign Roles panel (add & private remove) + full admin cmd suite
+# - Persistent Self-Assign Roles panel (instant add/remove) + full admin cmd suite
 # - YouTube watcher (RSS): accepts URL/@handle/UC with alias memory; posts to ONE fixed thread
 #
 # Env:
@@ -503,21 +503,21 @@ def welcome_embed() -> discord.Embed:
         title="Welcome to ShadowSyn",
         color=THEME_PRIMARY,
         description=(
-            "👋 **Welcome to all our new members!**\n"
-            "We’re thrilled to have you join our community! 🎉\n\n"
-            "🎮 **What we play:**\n"
-            "We’re into just about anything FPS or Survival, plus some RTS "
-            "(and yes — Age of Empires IV is goated) and MMO's.\n\n"
-            "💬 **Your first steps:**\n"
-            "Head over to **#lobby** and introduce yourself — let us know where you came from or what brought you here.\n\n"
-            "🪪 Go to #Self Roles and select what you want.\n\n"
-            "❓ If you have any questions, **@Gravy** will love hearing you yap yap yap.\n\n"
-            "🚫 **Rules (short version):** Don’t be annoying, overly sensitive, or spammy. "
-            "Avoid @mentioning or DMing people you don’t know, and no self-promo unless approved. "
-            "Keep personal info private and absolutely no vegans, piracy, NSFW, or other shady content. "
-            "Use common sense — it covers the rest.\n\n"
-            f"🔗 **Share our invite:** {VANITY_INVITE}\n\n"
-            "Be cool. Have fun. Bring friends."
+            "👋 **Welcome to ShadowSyn**\n"
+            "You’re in a PvP-first Discord. Keep it simple, play hard, don’t be a problem.\n\n"
+            "🎮 **What we play**\n"
+            "We jump into every new PvP MMO or survival release. Right now we’re mainly on **WoW Ascension** "
+            "and **Aion 2**, with groups playing **ARC Raiders**, **Counter-Strike 2** and **Battlefield 6**.\n\n"
+            "💬 **First steps**\n"
+            "Say hi in **#lobby** – where you’re from, what you play, and what you’re looking for.\n\n"
+            "🪪 **Game roles**\n"
+            "Go to **#self-roles** and pick the **game roles** you actually play. That’s how you get the right pings and channels.\n\n"
+            "❓ **Questions**\n"
+            "Ping **@Gravy** if you need something or want to spin up a group.\n\n"
+            "🚫 **Rules (quick version)**\n"
+            "No spam, no drama, no random DMs, no self-promo without approval. No NSFW, no piracy, no weird stuff. "
+            "Use common sense — if you’re annoying, you won’t last.\n\n"
+            f"🔗 **Invite**\nIf you like it here, invite people you actually want to play with: {VANITY_INVITE}"
         ),
     )
     return e
@@ -874,64 +874,39 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
 def _sorted_opts(options: List[dict]) -> List[dict]:
     return sorted(options, key=lambda o: str(o.get("label", "")).casefold())
 
-def build_role_selects(options: List[dict], *, placeholder: str, mode: str, guild_id: int) -> List[Select]:
-    """
-    Helper for building one or more Selects (Discord cap 25). Used for REMOVE flows.
-    `mode` is included in the custom_id for safety.
-    """
-    options = _sorted_opts(options)
-    selects: List[Select] = []
-    chunk_size = 25
-    for idx in range(0, len(options), chunk_size):
-        chunk = options[idx:idx + chunk_size]
-        chunk_ids = [int(o["role_id"]) for o in chunk]
-        sel = Select(
-            placeholder=placeholder,
-            min_values=0,
-            max_values=len(chunk),
-            options=[discord.SelectOption(label=o["label"], value=str(o["role_id"])) for o in chunk],
-            custom_id=f"ss:roles:{mode}:g{guild_id}:c{idx}"
-        )
-        sel._chunk_ids = set(chunk_ids)    # type: ignore[attr-defined]
-        sel._mode = mode                   # type: ignore[attr-defined]
-        selects.append(sel)
-    return selects
-
 class DualRolePickerView(View):
     """
     Persistent public panel:
-    - **Exactly one** multi-select for ➕ Add roles (paged if >25)
-    - Confirm applies staged adds ONLY (no implicit removals)
-    - "Remove My Roles" button opens a private, filtered remove view (shows only roles the member has)
+    - Exactly one multi-select for roles (paged if >25)
+    - Selecting adds roles; unselecting removes roles
+    - No Confirm button; roles apply immediately per interaction
     """
     def __init__(self, guild: discord.Guild, options: List[dict]):
         super().__init__(timeout=None)
         self.guild = guild
         self.options = _sorted_opts(options)
-        self.stage_add: Dict[int, Set[int]] = {}
-        self._last_confirm_ts: Dict[int, float] = {}
         self.page: int = 0
         self.page_size: int = 25
 
-        # Single paged ADD select
+        # Single paged multi-select
         self.add_select = Select(
-            placeholder="➕ Add roles…",
+            placeholder="Select your game roles…",
             min_values=0,
             max_values=0,
             options=[],
-            custom_id=f"ss:roles:add:g{guild.id}"
+            custom_id=f"ss:roles:toggle:g{guild.id}"
         )
         self._refresh_add_select()
-        self.add_select.callback = self._on_select_add  # type: ignore
+        self.add_select.callback = self._on_select_toggle  # type: ignore
         self.add_item(self.add_select)
 
-        # Page controls (only if we need multiple pages)
+        # Page controls if needed
         if self._total_pages() > 1:
             self.btn_prev = Button(
                 emoji="⬅️",
                 style=discord.ButtonStyle.secondary,
                 row=1,
-                custom_id=f"ss:roles:add_prev:g{guild.id}"
+                custom_id=f"ss:roles:page_prev:g{guild.id}"
             )
             self.btn_prev.callback = self._on_prev_page  # type: ignore
             self.add_item(self.btn_prev)
@@ -940,34 +915,14 @@ class DualRolePickerView(View):
                 emoji="➡️",
                 style=discord.ButtonStyle.secondary,
                 row=1,
-                custom_id=f"ss:roles:add_next:g{guild.id}"
+                custom_id=f"ss:roles:page_next:g{guild.id}"
             )
             self.btn_next.callback = self._on_next_page  # type: ignore
             self.add_item(self.btn_next)
 
             self._update_page_buttons()
 
-        # Confirm button
-        btn_conf = Button(
-            label="Confirm",
-            style=discord.ButtonStyle.success,
-            row=2,
-            custom_id=f"ss:roles:confirm:g{guild.id}"
-        )
-        btn_conf.callback = self._on_confirm  # type: ignore
-        self.add_item(btn_conf)
-
-        # Private remove manager (filtered per user)
-        btn_remove = Button(
-            label="Remove My Roles",
-            style=discord.ButtonStyle.secondary,
-            row=2,
-            custom_id=f"ss:roles:openremove:g{guild.id}"
-        )
-        btn_remove.callback = self._open_remove_private  # type: ignore
-        self.add_item(btn_remove)
-
-    # -------- internal helpers --------
+    # -------- helpers --------
 
     def _total_pages(self) -> int:
         if not self.options:
@@ -982,8 +937,8 @@ class DualRolePickerView(View):
     def _make_placeholder(self) -> str:
         total = self._total_pages()
         if total <= 1:
-            return "➕ Add roles…"
-        return f"➕ Add roles… (Page {self.page + 1}/{total})"
+            return "Select your game roles…"
+        return f"Select your game roles… (Page {self.page + 1}/{total})"
 
     def _refresh_add_select(self):
         chunk = self._current_slice()
@@ -1038,34 +993,9 @@ class DualRolePickerView(View):
         except Exception:
             pass
 
-    async def _on_select_add(self, interaction: discord.Interaction):
-        # Just acknowledge quietly
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.defer()
-        except Exception:
-            pass
-
-        if not interaction.guild:
-            return
-
-        uid = interaction.user.id
-        page_role_ids = {int(o["role_id"]) for o in self._current_slice()}
-        selected_ids = {int(v) for v in (self.add_select.values or [])}
-
-        staged = self.stage_add.get(uid, set())
-        # Remove any staged roles that live on this page, then add current selection
-        staged.difference_update(page_role_ids)
-        staged.update(selected_ids)
-        self.stage_add[uid] = staged
-
-    async def _on_confirm(self, interaction: discord.Interaction):
+    async def _on_select_toggle(self, interaction: discord.Interaction):
+        # Instant apply: compare page selection to current roles on this page
         await safe_defer(interaction, ephemeral=True)
-
-        now = time.time()
-        if now - self._last_confirm_ts.get(interaction.user.id, 0.0) < 1.5:
-            return await safe_reply(interaction, "⏱️ Already applied. Give it a sec.", ephemeral=True)
-        self._last_confirm_ts[interaction.user.id] = now
 
         if not interaction.guild:
             return await safe_reply(interaction, "❌ Guild not found.", ephemeral=True)
@@ -1073,37 +1003,57 @@ class DualRolePickerView(View):
         if not member:
             return await safe_reply(interaction, "❌ Could not resolve member.", ephemeral=True)
 
-        if not interaction.guild.me.guild_permissions.manage_roles:
+        guild = interaction.guild
+        if not guild.me.guild_permissions.manage_roles:
             return await safe_reply(interaction, "❌ I need **Manage Roles** to do that.", ephemeral=True)
 
-        allowed_ids = self._allowed_ids()
-        current_ids = self._member_current_allowed(member)
-        staged_add = set(self.stage_add.get(member.id, set())) & allowed_ids
-        to_add_ids = list(staged_add - current_ids)
-
-        bot_member = interaction.guild.me
+        bot_member = guild.me
 
         def manageable(r: discord.Role) -> bool:
-            return bot_member.top_role > r and interaction.guild.me.guild_permissions.manage_roles
+            return bot_member.top_role > r and guild.me.guild_permissions.manage_roles
 
-        added, skipped = [], []
+        allowed_ids = self._allowed_ids()
+        page_roles = self._current_slice()
+        page_ids = {int(o["role_id"]) for o in page_roles}
 
+        current_allowed = self._member_current_allowed(member)
+        page_current = current_allowed & page_ids
+
+        selected_ids = {int(v) for v in (self.add_select.values or [])}
+
+        to_add_ids = (selected_ids - page_current) & page_ids & allowed_ids
+        to_remove_ids = (page_current - selected_ids) & page_ids & allowed_ids
+
+        added, removed, skipped = [], [], []
+
+        # Apply adds
         for rid in to_add_ids:
-            role = interaction.guild.get_role(rid)
+            role = guild.get_role(rid)
             if role and manageable(role):
                 try:
-                    await member.add_roles(role, reason="Self-assign roles panel (add)")
+                    await member.add_roles(role, reason="Self-assign roles panel (instant add)")
                     added.append(role.name)
                 except Exception:
                     skipped.append(role.name if role else str(rid))
             elif role:
                 skipped.append(role.name)
 
-        # clear staged adds for this user
-        self.stage_add.pop(member.id, None)
+        # Apply removals
+        for rid in to_remove_ids:
+            role = guild.get_role(rid)
+            if role and manageable(role):
+                try:
+                    await member.remove_roles(role, reason="Self-assign roles panel (instant remove)")
+                    removed.append(role.name)
+                except Exception:
+                    skipped.append(role.name if role else str(rid))
+            elif role:
+                skipped.append(role.name)
 
         if added:
             added = sorted(added, key=lambda s: s.casefold())
+        if removed:
+            removed = sorted(removed, key=lambda s: s.casefold())
         if skipped:
             skipped = sorted(skipped, key=lambda s: s.casefold())
 
@@ -1114,116 +1064,11 @@ class DualRolePickerView(View):
         )
         if added:
             embed.add_field(name="Added", value=", ".join(added)[:1024], inline=False)
-        if skipped:
-            embed.add_field(name="Skipped", value=", ".join(skipped)[:1024] + " (unmanageable)", inline=False)
-        if not (added or skipped):
-            embed.description = "No changes."
-        embed.set_footer(text="ShadowSyn Role Manager")
-
-        await safe_reply(interaction, embed=embed, ephemeral=True)
-
-    async def _open_remove_private(self, interaction: discord.Interaction):
-        # Ephemeral per-user remove manager with only the roles they have
-        if not interaction.guild:
-            return await safe_reply(interaction, "❌ Guild not found.", ephemeral=True)
-        member = interaction.guild.get_member(interaction.user.id)
-        if not member:
-            return await safe_reply(interaction, "❌ Could not resolve member.", ephemeral=True)
-
-        current_ids = self._member_current_allowed(member)
-        remove_opts = [o for o in self.options if int(o["role_id"]) in current_ids]
-
-        view = PrivateRemoveManager(interaction.guild, remove_opts)
-        embed = discord.Embed(
-            title="Remove My Roles",
-            description="Select the roles you want to remove, then **Confirm**.",
-            color=THEME_PRIMARY,
-        )
-        try:
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-        except Exception:
-            await safe_reply(interaction, "❌ Couldn't open remove manager.", ephemeral=True)
-
-class PrivateRemoveManager(View):
-    """Ephemeral per-user remove-only view with filtered list (multi-select)."""
-    def __init__(self, guild: discord.Guild, remove_options: List[dict]):
-        super().__init__(timeout=300)
-        self.guild = guild
-        self.remove_stage: Set[int] = set()
-
-        for sel in build_role_selects(
-            remove_options,
-            placeholder="➖ Remove roles…",
-            mode="remove",
-            guild_id=guild.id
-        ):
-            sel.callback = self._on_select  # type: ignore
-            self.add_item(sel)
-
-        btn = Button(
-            label="Confirm",
-            style=discord.ButtonStyle.success,
-            custom_id=f"ss:roles:remove_confirm:g{guild.id}"
-        )
-        btn.callback = self._on_confirm  # type: ignore
-        self.add_item(btn)
-
-    async def _on_select(self, interaction: discord.Interaction):
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.defer()
-        except Exception:
-            pass
-        # union of all selected values in this ephemeral view
-        staged = set()
-        for item in self.children:
-            if isinstance(item, Select):
-                staged |= {int(v) for v in (item.values or [])}
-        self.remove_stage = staged
-
-    async def _on_confirm(self, interaction: discord.Interaction):
-        await safe_defer(interaction, ephemeral=True)
-        if not interaction.guild:
-            return await safe_reply(interaction, "❌ Guild not found.", ephemeral=True)
-        member = interaction.guild.get_member(interaction.user.id)
-        if not member:
-            return await safe_reply(interaction, "❌ Could not resolve member.", ephemeral=True)
-
-        if not interaction.guild.me.guild_permissions.manage_roles:
-            return await safe_reply(interaction, "❌ I need **Manage Roles** to do that.", ephemeral=True)
-
-        bot_member = interaction.guild.me
-
-        def manageable(r: discord.Role) -> bool:
-            return bot_member.top_role > r and interaction.guild.me.guild_permissions.manage_roles
-
-        current_ids = {r.id for r in member.roles}
-        to_remove_ids = list(self.remove_stage & current_ids)
-
-        removed, skipped = [], []
-
-        for rid in to_remove_ids:
-            role = interaction.guild.get_role(rid)
-            if role and manageable(role):
-                try:
-                    await member.remove_roles(role, reason="Self-assign roles panel (private remove)")
-                    removed.append(role.name)
-                except Exception:
-                    skipped.append(role.name if role else str(rid))
-            elif role:
-                skipped.append(role.name)
-
-        if removed:
-            removed = sorted(removed, key=lambda s: s.casefold())
-        if skipped:
-            skipped = sorted(skipped, key=lambda s: s.casefold())
-
-        embed = discord.Embed(title="✅ Roles Updated", color=THEME_PRIMARY, timestamp=utcnow())
         if removed:
             embed.add_field(name="Removed", value=", ".join(removed)[:1024], inline=False)
         if skipped:
             embed.add_field(name="Skipped", value=", ".join(skipped)[:1024] + " (unmanageable)", inline=False)
-        if not (removed or skipped):
+        if not (added or removed or skipped):
             embed.description = "No changes."
         embed.set_footer(text="ShadowSyn Role Manager")
 
@@ -1232,7 +1077,10 @@ class PrivateRemoveManager(View):
 def role_picker_embed() -> discord.Embed:
     return discord.Embed(
         title="SELECT ROLES",
-        description="Use the dropdown to **Add** roles, then press **Confirm**.\nNeed to remove something? Tap **Remove My Roles** for a filtered list.",
+        description=(
+            "Select or unselect items in the dropdown to **instantly add or remove** your game roles.\n"
+            "Changes apply as soon as you close the dropdown."
+        ),
         color=THEME_PRIMARY,
     )
 
