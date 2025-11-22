@@ -44,6 +44,7 @@ THEME_PRIMARY  = 0x2B0B35
 ARRIVALS_THREAD_ID      = 959629903186259978
 ROLE_MINION_ID          = 955600021502431233
 ROLE_ADMIN_ID           = 1214794734770323466  # Admin lock for role manager commands
+ROLE_MEMBER_ID          = 955600320287887400   # /speak lock
 
 DEFAULT_TARGET_ID       = 1166874144395247757
 SPEAK_LOG_THREAD_ID     = 1400048671973703690
@@ -444,13 +445,40 @@ async def log_speak_usage(inter, text, lang):
 @bot.tree.command(name="speak", description="Speak text in your VC")
 @app_commands.describe(text="Message", language="Target language")
 @app_commands.choices(language=LANG_CHOICES)
-async def speak(interaction, text: str, language: app_commands.Choice[str] = None):
-    await safe_defer(interaction, ephemeral=True)
+async def speak(interaction: discord.Interaction, text: str, language: app_commands.Choice[str] = None):
+    # ---------- Member role lock first (no defer if rejected) ----------
+    if not isinstance(interaction.user, discord.Member) or not any(
+        r.id == ROLE_MEMBER_ID for r in interaction.user.roles
+    ):
+        try:
+            await interaction.response.send_message(
+                "❌ `/speak` is only available to members with the **Member** role.",
+                ephemeral=True,
+            )
+        except Exception:
+            await safe_reply(
+                interaction,
+                "❌ `/speak` is only available to members with the **Member** role.",
+                ephemeral=True,
+            )
+        return
+    # -------------------------------------------------------------------
+
+    # Now we know they're allowed → safely defer
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+    except Exception:
+        # Worst case, followup path will still try to reply
+        pass
+
     if not ffmpeg_available():
         return await safe_reply(interaction, "❌ FFmpeg missing", ephemeral=True)
+
     vc = await ensure_voice(interaction)
     if vc is None:
         return
+
     lang_code = (language.value if language else "en").lower()
     to_say = text
     if lang_code != "en":
@@ -458,6 +486,7 @@ async def speak(interaction, text: str, language: app_commands.Choice[str] = Non
             to_say = translator.translate(text, src="en", dest=lang_code).text
         except Exception:
             await safe_reply(interaction, "⚠️ Translate failed, using original.", ephemeral=True)
+
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
             tmp = f.name
@@ -490,7 +519,7 @@ class CustomEmbedModal(Modal, title="Send Custom Embed"):
         await safe_reply(interaction, "✅ Posted", ephemeral=True)
 
 @bot.tree.command(name="send_custom", description="Send a custom embed here")
-async def send_custom(interaction):
+async def send_custom(interaction: discord.Interaction):
     try:
         await interaction.response.send_modal(CustomEmbedModal(interaction.channel.id))
     except Exception:
