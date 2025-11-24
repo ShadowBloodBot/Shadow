@@ -533,18 +533,13 @@ def welcome_embed() -> discord.Embed:
         color=THEME_PRIMARY,
         description=(
             "👋 **Welcome to ShadowSyn**\n"
-            "You’re in a PvP-first Discord. Keep it simple, play hard, don’t be a problem.\n\n"
-            "🎮 **What we play**\n"
-            "We jump into every new PvP MMO or survival release. Right now we’re mainly on **WoW Ascension** "
-            "and **Aion 2**, with groups playing **ARC Raiders**, **Counter-Strike 2** and **Battlefield 6**.\n\n"
-            "💬 **First steps**\n"
-            "Say hi in **#lobby** – where you’re from, what you play, and what you’re looking for.\n\n"
+            "You're in OCE's most toxic (Fun) enviroment.\n\n"
             "🪪 **Game roles**\n"
             "Go to **#self-roles** and pick the **game roles** you actually play. That’s how you get the right pings and channels.\n\n"
             "❓ **Questions**\n"
-            "Ping **@Gravy** if you need something or want to spin up a group.\n\n"
-            "🚫 **Rules (quick version)**\n"
-            "No spam, no drama, no random DMs, no self-promo without approval. No NSFW, no piracy, no weird stuff. "
+            "Ping **@Gravy** if you need to vent about how hard your life is.\n\n"
+            "🚫 **Rules**\n"
+            "No spam, no drama, no random DMs, no self-promo without approval. No NSFW, no piracy, no weird stuff (in the public channels). "
             "Use common sense — if you’re annoying, you won’t last.\n\n"
             f"🔗 **Invite**\nIf you like it here, invite people you actually want to play with: {VANITY_INVITE}"
         ),
