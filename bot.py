@@ -9,11 +9,12 @@
 # - Departures logger (rich embed) with Left/Kicked/Banned detection
 # - Persistent Self-Assign Roles panel (instant add/remove) + full admin cmd suite
 # - YouTube watcher (RSS): accepts URL/@handle/UC with alias memory; posts to ONE fixed thread
+# - Invite→Role (NEW): map invite codes (or vanity) to auto-roles on join + admin commands
 #
 # Env:
 #   DISCORD_TOKEN
 # Persistence (under $PERSIST_PATH or /data):
-#   role_picker.json, youtube_watch.json
+#   role_picker.json, youtube_watch.json, invite_roles.json
 
 import os
 import re
@@ -174,6 +175,61 @@ def _add_alias(user_input: str, uc_id: str):
 def _lookup_alias(user_input: str) -> Optional[str]:
     return _load_yt_store().get("aliases", {}).get(_alias_key(user_input))
 
+# ===================== INVITE→ROLE (PERSISTENCE) =====================
+
+INVITE_ROLE_STORE = (PERSIST_ROOT / "invite_roles.json")
+# schema:
+# { "<guild_id>": { "<invite_code>": <role_id>, "vanity": <role_id> } }
+
+def _load_invite_role_store() -> Dict[str, dict]:
+    if INVITE_ROLE_STORE.exists():
+        try:
+            data = json.loads(INVITE_ROLE_STORE.read_text())
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+def _save_invite_role_store(data: Dict[str, dict]) -> None:
+    try:
+        INVITE_ROLE_STORE.write_text(json.dumps(data, indent=2))
+    except Exception:
+        pass
+
+def get_invite_role_map(guild_id: int) -> Dict[str, int]:
+    store = _load_invite_role_store()
+    raw = store.get(str(guild_id), {})
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, int] = {}
+    for k, v in raw.items():
+        try:
+            out[str(k).lower()] = int(v)
+        except Exception:
+            continue
+    return out
+
+def set_invite_role_map(guild_id: int, mapping: Dict[str, int]) -> None:
+    store = _load_invite_role_store()
+    store[str(guild_id)] = {str(k).lower(): int(v) for k, v in (mapping or {}).items()}
+    _save_invite_role_store(store)
+
+_INVITE_CODE_RX = re.compile(r"(?:discord\.gg/|discord\.com/invite/)(?P<code>[A-Za-z0-9-]+)", re.I)
+
+def normalize_invite_code(text: str) -> Optional[str]:
+    s = (text or "").strip()
+    if not s:
+        return None
+    low = s.lower()
+    if low in {"vanity", "vanity_url", "vanityurl"}:
+        return "vanity"
+    m = _INVITE_CODE_RX.search(s)
+    if m:
+        return m.group("code").lower()
+    if re.fullmatch(r"[A-Za-z0-9-]{2,}", s):
+        return s.lower()
+    return None
+
 # ========================= SAFE HELPERS ==========================
 
 async def safe_defer(inter: discord.Interaction, *, ephemeral: bool = False):
@@ -310,6 +366,74 @@ async def _detect_join_source(member: discord.Member) -> Optional[str]:
     except Exception:
         return None
 
+# ======================= INVITE→ROLE (DETECTION/APPLY) ======================
+
+async def _detect_used_invite_code(member: discord.Member) -> Optional[str]:
+    """
+    Returns invite code used for this join (lowercased), or "vanity" if vanity is likely,
+    or None if unknown / no permission.
+    """
+    guild = member.guild
+    if not guild:
+        return None
+
+    if not _can_track_invites(guild):
+        try:
+            vanity = guild.vanity_url_code
+        except Exception:
+            vanity = None
+        return "vanity" if vanity else None
+
+    try:
+        before = _INVITES_CACHE.get(guild.id, {})
+        current = await guild.invites()
+
+        increased: Optional[discord.Invite] = None
+        for inv in current:
+            prev = before.get(inv.code, 0)
+            if (inv.uses or 0) > prev:
+                increased = inv
+                break
+
+        _INVITES_CACHE[guild.id] = {inv.code: (inv.uses or 0) for inv in current}
+
+        if increased and increased.code:
+            return increased.code.lower()
+
+        try:
+            vanity = guild.vanity_url_code
+        except Exception:
+            vanity = None
+        return "vanity" if vanity else None
+    except Exception:
+        return None
+
+async def _apply_invite_role(member: discord.Member, used_code: Optional[str]) -> Tuple[bool, str]:
+    guild = member.guild
+    if not guild or not used_code:
+        return False, "Unknown invite source."
+
+    mapping = get_invite_role_map(guild.id)
+    role_id = mapping.get(used_code.lower())
+    if not role_id:
+        return False, f"No role mapped for `{used_code}`."
+
+    role = guild.get_role(role_id)
+    if not role:
+        return False, f"Mapped role `{role_id}` no longer exists."
+
+    me = guild.me
+    if not me or not me.guild_permissions.manage_roles:
+        return False, "Bot lacks Manage Roles."
+    if me.top_role <= role:
+        return False, f"Role `{role.name}` is above/equal to bot's top role."
+
+    try:
+        await member.add_roles(role, reason=f"Auto role via invite `{used_code}`")
+        return True, f"Applied `{role.name}` via invite `{used_code}`."
+    except Exception as e:
+        return False, f"Failed: {e!s}"
+
 # ============================ BOT CORE ===========================
 
 class ShadowSynBot(discord.Client):
@@ -350,7 +474,7 @@ async def on_ready():
         bot.add_view(InviteCopyView())
     except Exception:
         pass
-    print(f"✅ Logged in as {bot.user} | ROLE_STORE: {ROLE_STORE} | YT_STORE: {YT_STORE}")
+    print(f"✅ Logged in as {bot.user} | ROLE_STORE: {ROLE_STORE} | YT_STORE: {YT_STORE} | INVITE_ROLE_STORE: {INVITE_ROLE_STORE}")
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
@@ -404,6 +528,14 @@ def setup_welcome(client: discord.Client):
 
     @bot.event
     async def on_member_join(member: discord.Member):
+        # NEW: apply invite→role (best-effort, never blocks welcome)
+        try:
+            used_code = await _detect_used_invite_code(member)
+            if used_code:
+                await _apply_invite_role(member, used_code)
+        except Exception:
+            pass
+
         await _send_arrival_card(member)
 
 setup_welcome(bot)
@@ -469,7 +601,6 @@ async def speak(interaction: discord.Interaction, text: str, language: app_comma
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
     except Exception:
-        # Worst case, followup path will still try to reply
         pass
 
     if not ffmpeg_available():
@@ -651,6 +782,88 @@ async def welcome_update(
         await safe_reply(interaction, "✅ Welcome card updated.", ephemeral=True)
     except Exception as e:
         await safe_reply(interaction, f"❌ Failed to update: `{e}`", ephemeral=True)
+
+# ====================== INVITE→ROLE ADMIN COMMANDS ======================
+
+invite_role_group = app_commands.Group(
+    name="invite_role",
+    description="Map invite codes to auto-roles on join (admin).",
+)
+
+@invite_role_group.command(name="add", description="Map an invite (code/url/vanity) to a role.")
+@app_commands.describe(invite="Invite code, invite URL, or the word 'vanity'", role="Role to auto-assign")
+@admin_only()
+async def invite_role_add(interaction: discord.Interaction, invite: str, role: discord.Role):
+    await safe_defer(interaction, ephemeral=True)
+    guild = interaction.guild
+    if not guild:
+        return await safe_reply(interaction, "❌ Guild not found.", ephemeral=True)
+
+    code = normalize_invite_code(invite)
+    if not code:
+        return await safe_reply(interaction, "❌ Invalid invite. Paste an invite URL/code, or use `vanity`.", ephemeral=True)
+
+    me = guild.me
+    if not me or not me.guild_permissions.manage_roles:
+        return await safe_reply(interaction, "❌ I need **Manage Roles**.", ephemeral=True)
+    if me.top_role <= role:
+        return await safe_reply(interaction, f"❌ I can’t assign `{role.name}` (above my top role).", ephemeral=True)
+
+    mapping = get_invite_role_map(guild.id)
+    mapping[code] = role.id
+    set_invite_role_map(guild.id, mapping)
+
+    label = "vanity" if code == "vanity" else f"`{code}`"
+    await safe_reply(interaction, f"✅ Mapped {label} → {role.mention}", ephemeral=True)
+
+@invite_role_group.command(name="remove", description="Remove an invite→role mapping.")
+@app_commands.describe(invite="Invite code/url or 'vanity'")
+@admin_only()
+async def invite_role_remove(interaction: discord.Interaction, invite: str):
+    await safe_defer(interaction, ephemeral=True)
+    guild = interaction.guild
+    if not guild:
+        return await safe_reply(interaction, "❌ Guild not found.", ephemeral=True)
+
+    code = normalize_invite_code(invite)
+    if not code:
+        return await safe_reply(interaction, "❌ Invalid invite.", ephemeral=True)
+
+    mapping = get_invite_role_map(guild.id)
+    if code not in mapping:
+        label = "vanity" if code == "vanity" else f"`{code}`"
+        return await safe_reply(interaction, f"ℹ️ No mapping exists for {label}.", ephemeral=True)
+
+    mapping.pop(code, None)
+    set_invite_role_map(guild.id, mapping)
+
+    label = "vanity" if code == "vanity" else f"`{code}`"
+    await safe_reply(interaction, f"✅ Removed mapping for {label}.", ephemeral=True)
+
+@invite_role_group.command(name="list", description="List current invite→role mappings.")
+@admin_only()
+async def invite_role_list(interaction: discord.Interaction):
+    await safe_defer(interaction, ephemeral=True)
+    guild = interaction.guild
+    if not guild:
+        return await safe_reply(interaction, "❌ Guild not found.", ephemeral=True)
+
+    mapping = get_invite_role_map(guild.id)
+    if not mapping:
+        return await safe_reply(interaction, "No invite-role mappings set.", ephemeral=True)
+
+    lines = []
+    for code, role_id in sorted(mapping.items(), key=lambda kv: kv[0]):
+        role = guild.get_role(int(role_id))
+        role_disp = role.mention if role else f"`{role_id}` (missing)"
+        code_disp = "vanity" if code == "vanity" else code
+        lines.append(f"- **{code_disp}** → {role_disp}")
+
+    embed = discord.Embed(title="Invite → Role Mappings", color=THEME_PRIMARY)
+    embed.description = "\n".join(lines)[:4000]
+    await safe_reply(interaction, embed=embed, ephemeral=True)
+
+bot.tree.add_command(invite_role_group)
 
 # ============================ AUDIT LOG ==========================
 
