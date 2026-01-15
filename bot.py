@@ -9,12 +9,7 @@
 # - Departures logger (rich embed) with Left/Kicked/Banned detection
 # - Persistent Self-Assign Roles panel (instant add/remove) + full admin cmd suite
 # - YouTube watcher (RSS): accepts URL/@handle/UC with alias memory; posts to ONE fixed thread
-# - Invite→Role (NEW): map invite codes (or vanity) to auto-roles on join + admin commands
-#
-# Env:
-#   DISCORD_TOKEN
-# Persistence (under $PERSIST_PATH or /data):
-#   role_picker.json, youtube_watch.json, invite_roles.json
+# - Invite→Role: map invite codes (or vanity) to auto-roles on join + admin commands
 
 import os
 import re
@@ -44,17 +39,16 @@ THEME_PRIMARY  = 0x2B0B35
 
 ARRIVALS_THREAD_ID      = 959629903186259978
 ROLE_MINION_ID          = 955600021502431233
-ROLE_ADMIN_ID           = 1214794734770323466  # Admin lock for role manager commands
-ROLE_MEMBER_ID          = 955600320287887400   # /speak lock
+ROLE_ADMIN_ID           = 1214794734770323466  
+ROLE_MEMBER_ID          = 955600320287887400   
 
 DEFAULT_TARGET_ID       = 1166874144395247757
 SPEAK_LOG_THREAD_ID     = 1400048671973703690
 DEPARTURES_THREAD_ID    = 960088192177029140
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
 
-# YouTube watcher (LOCKED to one thread)
 ROLE_YT_MANAGER_ID      = 960088893351415898
-YT_POST_TARGET_ID       = 959631286882934784   # <- always post here
+YT_POST_TARGET_ID       = 959631286882934784   
 YT_POLL_SECONDS         = 180
 YT_USER_AGENT           = "ShadowSynBot/YouTubeWatcher"
 
@@ -70,32 +64,6 @@ LANG_CHOICES = [
     app_commands.Choice(name="Spanish",  value="es"),
 ]
 
-# ====================== CONFIG (welcome/audit) ====================
-
-CONFIG_PATH = Path("welcome_config.json")
-
-def load_config() -> dict:
-    base = {
-        "welcome_target_id": DEFAULT_TARGET_ID,
-        "audit_channel_id": DEFAULT_AUDIT_THREAD_ID,
-    }
-    if CONFIG_PATH.exists():
-        try:
-            data = json.loads(CONFIG_PATH.read_text())
-            if isinstance(data, dict):
-                base.update(data)
-        except Exception:
-            pass
-    return base
-
-def save_config(cfg: dict) -> None:
-    try:
-        CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
-    except Exception:
-        pass
-
-config = load_config()
-
 # ==================== PERSISTENCE ROOT & FILES ===================
 
 PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve()
@@ -104,337 +72,69 @@ try:
 except Exception:
     PERSIST_ROOT = Path(".").resolve()
 
-# Role picker store
 ROLE_STORE = (PERSIST_ROOT / "role_picker.json")
+YT_STORE = (PERSIST_ROOT / "youtube_watch.json")
+INVITE_ROLE_STORE = (PERSIST_ROOT / "invite_roles.json")
+CONFIG_PATH = PERSIST_ROOT / "welcome_config.json"
 
-def _load_role_store() -> Dict[str, dict]:
-    if ROLE_STORE.exists():
-        try:
-            return json.loads(ROLE_STORE.read_text())
-        except Exception:
-            return {}
-    return {}
+def _load_json(path, default):
+    if path.exists():
+        try: return json.loads(path.read_text())
+        except: return default
+    return default
 
-def _save_role_store(data: Dict[str, dict]) -> None:
-    try:
-        ROLE_STORE.write_text(json.dumps(data, indent=2))
-    except Exception:
-        pass
+def _save_json(path, data):
+    try: path.write_text(json.dumps(data, indent=2))
+    except: pass
 
 def get_guild_role_cfg(gid: int) -> dict:
-    store = _load_role_store()
+    store = _load_json(ROLE_STORE, {})
     cfg = store.get(str(gid), {"panel": None, "options": []})
     cfg["options"] = sorted(cfg.get("options", []), key=lambda o: str(o.get("label", "")).casefold())
     return cfg
 
 def set_guild_role_cfg(gid: int, cfg: dict) -> None:
     cfg["options"] = sorted(cfg.get("options", []), key=lambda o: str(o.get("label", "")).casefold())
-    store = _load_role_store()
+    store = _load_json(ROLE_STORE, {})
     store[str(gid)] = cfg
-    _save_role_store(store)
-
-# YouTube store (channels + alias map)
-YT_STORE = (PERSIST_ROOT / "youtube_watch.json")
-# {
-#   "channels": { "UCxxxx": {"last_video_id": "VIDEO_ID", "channel_title": "Name"} },
-#   "aliases":  { "<normalized input>": "UCxxxx" }
-# }
-def _load_yt_store() -> Dict[str, dict]:
-    base = {"channels": {}, "aliases": {}}
-    if YT_STORE.exists():
-        try:
-            data = json.loads(YT_STORE.read_text())
-            if isinstance(data, dict):
-                base.update(data)
-        except Exception:
-            pass
-    base.setdefault("channels", {})
-    base.setdefault("aliases", {})
-    return base
-
-def _save_yt_store(data: Dict[str, dict]) -> None:
-    data.setdefault("channels", {})
-    data.setdefault("aliases", {})
-    try:
-        YT_STORE.write_text(json.dumps(data, indent=2))
-    except Exception:
-        pass
-
-def _alias_key(text: str) -> str:
-    s = (text or "").strip().lower().rstrip("/")
-    s = re.sub(r"^https?://(www\.)?", "", s)
-    return s
-
-def _add_alias(user_input: str, uc_id: str):
-    if not user_input or not uc_id:
-        return
-    store = _load_yt_store()
-    store["aliases"][_alias_key(user_input)] = uc_id
-    _save_yt_store(store)
-
-def _lookup_alias(user_input: str) -> Optional[str]:
-    return _load_yt_store().get("aliases", {}).get(_alias_key(user_input))
-
-# ===================== INVITE→ROLE (PERSISTENCE) =====================
-
-INVITE_ROLE_STORE = (PERSIST_ROOT / "invite_roles.json")
-# schema:
-# { "<guild_id>": { "<invite_code>": <role_id>, "vanity": <role_id> } }
-
-def _load_invite_role_store() -> Dict[str, dict]:
-    if INVITE_ROLE_STORE.exists():
-        try:
-            data = json.loads(INVITE_ROLE_STORE.read_text())
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            return {}
-    return {}
-
-def _save_invite_role_store(data: Dict[str, dict]) -> None:
-    try:
-        INVITE_ROLE_STORE.write_text(json.dumps(data, indent=2))
-    except Exception:
-        pass
+    _save_json(ROLE_STORE, store)
 
 def get_invite_role_map(guild_id: int) -> Dict[str, int]:
-    store = _load_invite_role_store()
-    raw = store.get(str(guild_id), {})
-    if not isinstance(raw, dict):
-        return {}
-    out: Dict[str, int] = {}
-    for k, v in raw.items():
-        try:
-            out[str(k).lower()] = int(v)
-        except Exception:
-            continue
-    return out
+    store = _load_json(INVITE_ROLE_STORE, {})
+    return {str(k).lower(): int(v) for k, v in store.get(str(guild_id), {}).items()}
 
 def set_invite_role_map(guild_id: int, mapping: Dict[str, int]) -> None:
-    store = _load_invite_role_store()
+    store = _load_json(INVITE_ROLE_STORE, {})
     store[str(guild_id)] = {str(k).lower(): int(v) for k, v in (mapping or {}).items()}
-    _save_invite_role_store(store)
+    _save_json(INVITE_ROLE_STORE, store)
 
-_INVITE_CODE_RX = re.compile(r"(?:discord\.gg/|discord\.com/invite/)(?P<code>[A-Za-z0-9-]+)", re.I)
+# ========================= UTILITIES ==========================
 
-def normalize_invite_code(text: str) -> Optional[str]:
-    s = (text or "").strip()
-    if not s:
-        return None
-    low = s.lower()
-    if low in {"vanity", "vanity_url", "vanityurl"}:
-        return "vanity"
-    m = _INVITE_CODE_RX.search(s)
-    if m:
-        return m.group("code").lower()
-    if re.fullmatch(r"[A-Za-z0-9-]{2,}", s):
-        return s.lower()
-    return None
-
-# ========================= SAFE HELPERS ==========================
-
-async def safe_defer(inter: discord.Interaction, *, ephemeral: bool = False):
-    try:
-        if not inter.response.is_done():
-            await inter.response.defer(ephemeral=ephemeral)
-    except Exception:
-        pass
+async def safe_defer(inter: discord.Interaction, ephemeral: bool = False):
+    if not inter.response.is_done():
+        try: await inter.response.defer(ephemeral=ephemeral)
+        except: pass
 
 async def safe_reply(inter: discord.Interaction, *args, **kwargs):
     try:
-        if not inter.response.is_done():
-            return await inter.response.send_message(*args, **kwargs)
-        else:
-            return await inter.followup.send(*args, **kwargs)
-    except Exception:
-        return None
+        if not inter.response.is_done(): return await inter.response.send_message(*args, **kwargs)
+        return await inter.followup.send(*args, **kwargs)
+    except: return None
 
-def safe_avatar_url(member: Union[discord.Member, discord.User]) -> Optional[str]:
-    try:
-        return member.display_avatar.url
-    except Exception:
-        return None
+def safe_display_name(obj: Union[discord.Member, discord.User]) -> str:
+    return obj.display_name if isinstance(obj, discord.Member) else (getattr(obj, "global_name", obj.name))
 
-def utcnow():
-    return datetime.now(timezone.utc)
-
-def ffmpeg_available() -> bool:
-    return which("ffmpeg") is not None
-
-async def resolve_target(
-    client: discord.Client, target_id: int
-) -> Tuple[Optional[discord.abc.Messageable], Optional[discord.abc.GuildChannel]]:
-    ch = client.get_channel(target_id)
-    if ch is None:
-        try:
-            ch = await client.fetch_channel(target_id)
-        except Exception:
-            return None, None
-    if isinstance(ch, discord.TextChannel):
-        return ch, ch
-    if isinstance(ch, discord.Thread):
-        try:
-            if ch.archived or ch.locked:
-                await ch.edit(archived=False, locked=False)
-            await ch.join()
-        except Exception:
-            pass
-        parent = ch.parent if isinstance(ch.parent, discord.TextChannel) else None
-        return ch, parent
-    return None, None
-
-# Human "x days ago"
 def human_ago(dt: Optional[datetime]) -> str:
-    if not isinstance(dt, datetime):
-        return "Unknown"
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    delta = utcnow() - dt
+    if not isinstance(dt, datetime): return "Unknown"
+    delta = datetime.now(timezone.utc) - (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc))
     s = int(max(delta.total_seconds(), 0))
-    units = [
-        ("year",   31536000),
-        ("month",  2629800),
-        ("day",    86400),
-        ("hour",   3600),
-        ("minute", 60),
-    ]
-    for name, secs in units:
+    for name, secs in [("year", 31536000), ("month", 2629800), ("day", 86400), ("hour", 3600), ("minute", 60)]:
         if s >= secs:
             v = s // secs
             return f"{v} {name}{'' if v == 1 else 's'} ago"
     return "just now"
 
-def safe_display_name(obj: Union[discord.Member, discord.User]) -> str:
-    """Return server nickname if available, else a sensible name."""
-    try:
-        if isinstance(obj, discord.Member):
-            return obj.display_name
-        return obj.global_name or obj.name  # type: ignore[attr-defined]
-    except Exception:
-        return str(obj)
-
-# ======================= INVITE ATTRIBUTION ======================
-
-_INVITES_CACHE: Dict[int, Dict[str, int]] = {}
-
-def _can_track_invites(guild: discord.Guild) -> bool:
-    me = guild.me
-    return bool(me and me.guild_permissions.manage_guild)
-
-async def _prime_invites_cache(guild: discord.Guild):
-    if not _can_track_invites(guild):
-        _INVITES_CACHE[guild.id] = {}
-        return
-    try:
-        invites = await guild.invites()
-        _INVITES_CACHE[guild.id] = {inv.code: (inv.uses or 0) for inv in invites}
-    except Exception:
-        _INVITES_CACHE[guild.id] = {}
-
-async def _detect_join_source(member: discord.Member) -> Optional[str]:
-    guild = member.guild
-    if not guild:
-        return None
-    if not _can_track_invites(guild):
-        vanity = None
-        try:
-            vanity = guild.vanity_url_code
-        except Exception:
-            pass
-        return f"Joined via Vanity: `{vanity}`" if vanity else None
-    try:
-        before = _INVITES_CACHE.get(guild.id, {})
-        current = await guild.invites()
-        increased = None
-        for inv in current:
-            prev = before.get(inv.code, 0)
-            if (inv.uses or 0) > prev:
-                increased = inv
-                break
-        _INVITES_CACHE[guild.id] = {inv.code: (inv.uses or 0) for inv in current}
-        if increased:
-            inviter = increased.inviter
-            inviter_name = f"{inviter}" if inviter else "Unknown"
-            return f"Joined via `{increased.code}`, invited by **{inviter_name}**"
-        vanity = None
-        try:
-            vanity = guild.vanity_url_code
-        except Exception:
-            pass
-        if vanity:
-            return f"Joined via Vanity: `{vanity}`"
-        return None
-    except Exception:
-        return None
-
-# ======================= INVITE→ROLE (DETECTION/APPLY) ======================
-
-async def _detect_used_invite_code(member: discord.Member) -> Optional[str]:
-    """
-    Returns invite code used for this join (lowercased), or "vanity" if vanity is likely,
-    or None if unknown / no permission.
-    """
-    guild = member.guild
-    if not guild:
-        return None
-
-    if not _can_track_invites(guild):
-        try:
-            vanity = guild.vanity_url_code
-        except Exception:
-            vanity = None
-        return "vanity" if vanity else None
-
-    try:
-        before = _INVITES_CACHE.get(guild.id, {})
-        current = await guild.invites()
-
-        increased: Optional[discord.Invite] = None
-        for inv in current:
-            prev = before.get(inv.code, 0)
-            if (inv.uses or 0) > prev:
-                increased = inv
-                break
-
-        _INVITES_CACHE[guild.id] = {inv.code: (inv.uses or 0) for inv in current}
-
-        if increased and increased.code:
-            return increased.code.lower()
-
-        try:
-            vanity = guild.vanity_url_code
-        except Exception:
-            vanity = None
-        return "vanity" if vanity else None
-    except Exception:
-        return None
-
-async def _apply_invite_role(member: discord.Member, used_code: Optional[str]) -> Tuple[bool, str]:
-    guild = member.guild
-    if not guild or not used_code:
-        return False, "Unknown invite source."
-
-    mapping = get_invite_role_map(guild.id)
-    role_id = mapping.get(used_code.lower())
-    if not role_id:
-        return False, f"No role mapped for `{used_code}`."
-
-    role = guild.get_role(role_id)
-    if not role:
-        return False, f"Mapped role `{role_id}` no longer exists."
-
-    me = guild.me
-    if not me or not me.guild_permissions.manage_roles:
-        return False, "Bot lacks Manage Roles."
-    if me.top_role <= role:
-        return False, f"Role `{role.name}` is above/equal to bot's top role."
-
-    try:
-        await member.add_roles(role, reason=f"Auto role via invite `{used_code}`")
-        return True, f"Applied `{role.name}` via invite `{used_code}`."
-    except Exception as e:
-        return False, f"Failed: {e!s}"
-
-# ============================ BOT CORE ===========================
+# ======================= BOT CORE ===========================
 
 class ShadowSynBot(discord.Client):
     def __init__(self):
@@ -444,1272 +144,198 @@ class ShadowSynBot(discord.Client):
         self._yt_task: Optional[asyncio.Task] = None
 
     async def setup_hook(self):
+        self.add_view(InviteCopyView())
         for g in self.guilds:
             await _prime_invites_cache(g)
-
-        # Persistent welcome invite button
-        try:
-            self.add_view(InviteCopyView())
-        except Exception:
-            pass
-
+            await rehydrate_role_panel(self, g)
         await self.tree.sync()
-
-        # Rehydrate role panel(s) and register persistent views with message_id
-        for g in self.guilds:
-            try:
-                await rehydrate_role_panel(self, g)
-            except Exception:
-                pass
-
-        # Start YouTube watcher
         if self._yt_task is None:
             self._yt_task = asyncio.create_task(youtube_watch_loop(self))
 
 bot = ShadowSynBot()
 
-@bot.event
-async def on_ready():
-    try:
-        bot.add_view(InviteCopyView())
-    except Exception:
-        pass
-    print(f"✅ Logged in as {bot.user} | ROLE_STORE: {ROLE_STORE} | YT_STORE: {YT_STORE} | INVITE_ROLE_STORE: {INVITE_ROLE_STORE}")
+# ================== INVITE TRACKING =================
 
-@bot.event
-async def on_guild_join(guild: discord.Guild):
-    await _prime_invites_cache(guild)
+_INVITES_CACHE: Dict[int, Dict[str, int]] = {}
+
+async def _prime_invites_cache(guild: discord.Guild):
+    if guild.me.guild_permissions.manage_guild:
+        try:
+            invs = await guild.invites()
+            _INVITES_CACHE[guild.id] = {i.code: (i.uses or 0) for i in invs}
+        except: _INVITES_CACHE[guild.id] = {}
+
+async def _detect_join_source(member: discord.Member) -> Optional[str]:
+    guild = member.guild
     try:
-        await rehydrate_role_panel(bot, guild)
-    except Exception:
-        pass
+        before = _INVITES_CACHE.get(guild.id, {})
+        current = await guild.invites()
+        _INVITES_CACHE[guild.id] = {i.code: (i.uses or 0) for i in current}
+        for inv in current:
+            if (inv.uses or 0) > before.get(inv.code, 0):
+                return f"Joined via `{inv.code}`, invited by **{inv.inviter}**"
+        vanity = (await guild.vanity_url()).code if guild.premium_tier >= 3 else None
+        return f"Joined via Vanity: `{vanity}`" if vanity else None
+    except: return None
 
 # ================== WELCOME (Minion quick-grant) =================
 
-def setup_welcome(client: discord.Client):
-    class MinionView(View):
-        def __init__(self, target_member_id: int):
-            super().__init__(timeout=60*60*24)
-            self.target_member_id = target_member_id
-            btn = Button(label="Minion", style=discord.ButtonStyle.success)
-            btn.callback = self._grant_minion
-            self.add_item(btn)
+class MinionView(View):
+    def __init__(self, target_member_id: int):
+        super().__init__(timeout=86400)
+        btn = Button(label="Minion", style=discord.ButtonStyle.success)
+        btn.callback = self._callback
+        self.target_member_id = target_member_id
+        self.add_item(btn)
 
-        async def _grant_minion(self, interaction: discord.Interaction):
-            guild = interaction.guild
-            if not guild:
-                return
-            member = guild.get_member(self.target_member_id)
-            role = guild.get_role(ROLE_MINION_ID)
-            if member and role:
-                try:
-                    await member.add_roles(role, reason=f"Granted by {interaction.user}")
-                    await safe_reply(interaction, f"✅ Gave {role.name} to {member.mention}", ephemeral=True)
-                except Exception as e:
-                    await safe_reply(interaction, f"❌ Failed: `{e}`", ephemeral=True)
+    async def _callback(self, interaction: discord.Interaction):
+        member = interaction.guild.get_member(self.target_member_id)
+        role = interaction.guild.get_role(ROLE_MINION_ID)
+        if member and role:
+            try:
+                await member.add_roles(role)
+                await safe_reply(interaction, f"✅ Granted {role.name} to {member.mention}", ephemeral=True)
+            except Exception as e:
+                await safe_reply(interaction, f"❌ Failed: `{e}`", ephemeral=True)
 
-    async def _send_arrival_card(member: discord.Member):
-        if member.bot:
-            return
-        dest = client.get_channel(ARRIVALS_THREAD_ID)
-        if not dest:
-            return
-        invite_line = await _detect_join_source(member)
-        icon = safe_avatar_url(member)
-        embed = discord.Embed(
-            description=f"{member.mention} joined **{member.guild.name}**",
-            color=discord.Color.dark_theme()
-        )
-        embed.set_author(name=str(member), icon_url=icon)
-        if invite_line:
-            embed.add_field(name="Joined Via", value=invite_line, inline=False)
-        embed.set_footer(text="Tap to grant Minion")
+@bot.event
+async def on_member_join(member: discord.Member):
+    if member.bot: return
+    # Auto-role logic
+    used_code = await _detect_join_source(member)
+    mapping = get_invite_role_map(member.guild.id)
+    # Check code or vanity mapping
+    for trigger in mapping:
+        if trigger in (used_code or ""):
+            role = member.guild.get_role(mapping[trigger])
+            if role: await member.add_roles(role)
+
+    # Arrival Card
+    dest = bot.get_channel(ARRIVALS_THREAD_ID)
+    if dest:
+        embed = discord.Embed(description=f"{member.mention} joined **{member.guild.name}**", color=THEME_PRIMARY)
+        embed.set_author(name=str(member), icon_url=member.display_avatar.url)
+        if used_code: embed.add_field(name="Joined Via", value=used_code, inline=False)
         await dest.send(embed=embed, view=MinionView(member.id))
 
-    @bot.event
-    async def on_member_join(member: discord.Member):
-        # NEW: apply invite→role (best-effort, never blocks welcome)
-        try:
-            used_code = await _detect_used_invite_code(member)
-            if used_code:
-                await _apply_invite_role(member, used_code)
-        except Exception:
-            pass
-
-        await _send_arrival_card(member)
-
-setup_welcome(bot)
-
-# ===================== /SPEAK (TTS + translate) ==================
-
-async def ensure_voice(inter: discord.Interaction):
-    try:
-        if not inter.guild or not isinstance(inter.user, discord.Member):
-            await safe_reply(inter, "❌ No guild/member", ephemeral=True)
-            return None
-        state = inter.user.voice
-        if not state or not state.channel:
-            await safe_reply(inter, "❌ Join a VC first.", ephemeral=True)
-            return None
-        vc = discord.utils.get(bot.voice_clients, guild=inter.guild)
-        if vc and vc.is_connected():
-            if vc.channel.id == state.channel.id:
-                return vc
-            await vc.move_to(state.channel)
-            return vc
-        return await state.channel.connect(reconnect=True, timeout=15)
-    except Exception as e:
-        await safe_reply(inter, f"❌ VC error: `{e}`", ephemeral=True)
-        return None
-
-async def log_speak_usage(inter, text, lang):
-    target, _ = await resolve_target(bot, SPEAK_LOG_THREAD_ID)
-    if target:
-        embed = discord.Embed(title="🗣️ /speak used", color=THEME_PRIMARY)
-        embed.add_field(name="User", value=str(inter.user), inline=False)
-        embed.add_field(name="Language", value=lang, inline=True)
-        embed.add_field(name="Text", value=text[:1024], inline=False)
-        try:
-            await target.send(embed=embed)
-        except Exception:
-            pass
+# ===================== /SPEAK (TTS + Non-blocking Translate) ==================
 
 @bot.tree.command(name="speak", description="Speak text in your VC")
 @app_commands.describe(text="Message", language="Target language")
 @app_commands.choices(language=LANG_CHOICES)
 async def speak(interaction: discord.Interaction, text: str, language: app_commands.Choice[str] = None):
-    # ---------- Member role lock first (no defer if rejected) ----------
-    if not isinstance(interaction.user, discord.Member) or not any(
-        r.id == ROLE_MEMBER_ID for r in interaction.user.roles
-    ):
-        try:
-            await interaction.response.send_message(
-                "❌ `/speak` is only available to members with the **Member** role.",
-                ephemeral=True,
-            )
-        except Exception:
-            await safe_reply(
-                interaction,
-                "❌ `/speak` is only available to members with the **Member** role.",
-                ephemeral=True,
-            )
-        return
-    # -------------------------------------------------------------------
+    if not any(r.id == ROLE_MEMBER_ID for r in interaction.user.roles):
+        return await safe_reply(interaction, "❌ Feature locked to **Member** role.", ephemeral=True)
 
-    # Now we know they're allowed → safely defer
-    try:
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True)
-    except Exception:
-        pass
-
-    if not ffmpeg_available():
-        return await safe_reply(interaction, "❌ FFmpeg missing", ephemeral=True)
-
-    vc = await ensure_voice(interaction)
-    if vc is None:
-        return
+    await safe_defer(interaction, ephemeral=True)
+    if not interaction.user.voice: return await safe_reply(interaction, "❌ Join VC first.", ephemeral=True)
 
     lang_code = (language.value if language else "en").lower()
-    to_say = text
+    loop = asyncio.get_event_loop()
+    
+    # Non-blocking translation
     if lang_code != "en":
         try:
-            to_say = translator.translate(text, src="en", dest=lang_code).text
-        except Exception:
-            await safe_reply(interaction, "⚠️ Translate failed, using original.", ephemeral=True)
+            trans = await loop.run_in_executor(None, lambda: translator.translate(text, dest=lang_code).text)
+        except: trans = text
+    else: trans = text
 
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
-            tmp = f.name
-        gTTS(text=to_say, lang=lang_code).save(tmp)
-        vc.play(discord.FFmpegPCMAudio(tmp))
-        await log_speak_usage(interaction, text, lang_code)
-        await safe_reply(interaction, "✅ Spoke text", ephemeral=True)
-    except Exception as e:
-        await safe_reply(interaction, f"❌ Error: `{e}`", ephemeral=True)
+        vc = await interaction.user.voice.channel.connect()
+    except: vc = discord.utils.get(bot.voice_clients, guild=interaction.guild)
 
-# ======================== CUSTOM EMBED MODAL =====================
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
+        tmp = f.name
+    
+    await loop.run_in_executor(None, lambda: gTTS(text=trans, lang=lang_code).save(tmp))
+    vc.play(discord.FFmpegPCMAudio(tmp), after=lambda e: os.remove(tmp))
+    await safe_reply(interaction, "✅ Spoke text.", ephemeral=True)
 
-class CustomEmbedModal(Modal, title="Send Custom Embed"):
-    def __init__(self, target_id: int):
-        super().__init__(timeout=300)
-        self.target_id = target_id
-        self.title_input = TextInput(label="Title", max_length=256)
-        self.message_input = TextInput(label="Message", style=discord.TextStyle.paragraph, max_length=4000)
-        self.add_item(self.title_input)
-        self.add_item(self.message_input)
-
-    async def on_submit(self, interaction):
-        embed = discord.Embed(title=self.title_input.value, description=self.message_input.value, color=THEME_PRIMARY)
-        ch = interaction.client.get_channel(self.target_id)
-        if ch:
-            try:
-                await ch.send(embed=embed)
-            except Exception as e:
-                return await safe_reply(interaction, f"❌ Failed: `{e}`", ephemeral=True)
-        await safe_reply(interaction, "✅ Posted", ephemeral=True)
-
-@bot.tree.command(name="send_custom", description="Send a custom embed here")
-async def send_custom(interaction: discord.Interaction):
-    try:
-        await interaction.response.send_modal(CustomEmbedModal(interaction.channel.id))
-    except Exception:
-        await safe_reply(interaction, "❌ Couldn't open modal.", ephemeral=True)
-
-# ====================== DURABLE WELCOME COMMANDS =================
-
-def welcome_embed() -> discord.Embed:
-    e = discord.Embed(
-        title="Welcome to ShadowSyn",
-        color=THEME_PRIMARY,
-        description=(
-            "👋 **Welcome to ShadowSyn**\n"
-            "You're in OCE's most toxic (Fun) enviroment.\n\n"
-            "🪪 **Game roles**\n"
-            "Go to **#self-roles** and pick the **game roles** you actually play. That’s how you get the right pings and channels.\n\n"
-            "❓ **Questions**\n"
-            "Ping **@Gravy** if you need to vent about how hard your life is.\n\n"
-            "🚫 **Rules**\n"
-            "No spam, no drama, no random DMs, no self-promo without approval. No NSFW, no piracy, no weird stuff (in the public channels). "
-            "Use common sense — if you’re annoying, you won’t last.\n\n"
-            f"🔗 **Invite**\nIf you like it here, invite people you actually want to play with: {VANITY_INVITE}"
-        ),
-    )
-    return e
-
-class CopyInviteEphemeralView(View):
-    def __init__(self):
-        super().__init__(timeout=60)
-        self.add_item(Button(label="Open Link", style=discord.ButtonStyle.link, url=VANITY_INVITE))
+# ====================== DURABLE WELCOME & INVITE =================
 
 class InviteCopyView(View):
-    """
-    Blue public button. On click, sends the user an ephemeral message with
-    a copy-ready code block and an 'Open Link' button. Persistent via custom_id.
-    """
     def __init__(self):
         super().__init__(timeout=None)
-        btn = Button(
-            label="Invite Friends",
-            style=discord.ButtonStyle.primary,
-            emoji="🔗",
-            custom_id="shadowsyn:welcome_invite_copy:v1"
-        )
-        btn.callback = self._send_copyable  # type: ignore
+        btn = Button(label="Invite Friends", style=discord.ButtonStyle.primary, emoji="🔗", custom_id="ss:invite_copy")
+        btn.callback = self._callback
         self.add_item(btn)
 
-    async def _send_copyable(self, interaction: discord.Interaction):
-        msg = (
-            "✅ Invite ready to copy:\n"
-            f"```text\n{VANITY_INVITE}\n```\n"
-            "Desktop: click the **copy** icon. Mobile: **tap & hold** to copy."
-        )
-        await safe_reply(interaction, content=msg, view=CopyInviteEphemeralView(), ephemeral=True)
+    async def _callback(self, interaction: discord.Interaction):
+        msg = f"✅ Invite Link:\n`{VANITY_INVITE}`"
+        await interaction.response.send_message(msg, ephemeral=True)
 
-def admin_only():
-    async def predicate(inter: discord.Interaction) -> bool:
-        if not isinstance(inter.user, discord.Member):
-            return False
-        return any(r.id == ROLE_ADMIN_ID for r in inter.user.roles)
-    return app_commands.check(predicate)
+def welcome_embed():
+    return discord.Embed(title="Welcome to ShadowSyn", color=THEME_PRIMARY, description="OCE's most toxic (Fun) environment...")
 
-@admin_only()
-@bot.tree.command(name="send_welcome", description="Post the welcome card here or to a target channel/thread.")
-@app_commands.describe(target="Optional channel/thread to post in (defaults to here)")
-async def send_welcome(
-    interaction: discord.Interaction,
-    target: Union[discord.TextChannel, discord.Thread, None] = None
-):
-    await safe_defer(interaction, ephemeral=True)
-    dest = target or interaction.channel
-    try:
-        view = InviteCopyView()
-        msg = await dest.send(embed=welcome_embed(), view=view)
+@bot.tree.command(name="send_welcome")
+@app_commands.check(lambda i: any(r.id == ROLE_ADMIN_ID for r in i.user.roles))
+async def send_welcome(interaction: discord.Interaction):
+    await interaction.channel.send(embed=welcome_embed(), view=InviteCopyView())
+    await safe_reply(interaction, "✅ Posted", ephemeral=True)
+
+# ====================== SELF-ASSIGN ROLES ======================
+
+class DualRolePickerView(View):
+    def __init__(self, guild, options):
+        super().__init__(timeout=None)
+        self.add_item(Select(
+            placeholder="Select your game roles...",
+            options=[discord.SelectOption(label=o["label"], value=str(o["role_id"])) for o in options[:25]],
+            custom_id=f"ss:roles:{guild.id}",
+            min_values=0, max_values=len(options[:25])
+        ))
+
+    @bot.event # Placeholder for handling interaction via global listener or custom callback
+    async def on_interaction(self, interaction): pass
+
+async def rehydrate_role_panel(client, guild):
+    cfg = get_guild_role_cfg(guild.id)
+    if cfg.get("panel"):
         try:
-            await msg.pin(reason="ShadowSyn Welcome")
-        except Exception:
-            pass
-        await safe_reply(interaction, f"✅ Welcome card posted in {dest.mention}.", ephemeral=True)
-    except Exception as e:
-        await safe_reply(interaction, f"❌ Failed to post: `{e}`", ephemeral=True)
+            ch = client.get_channel(cfg["panel"]["channel_id"])
+            msg = await ch.fetch_message(cfg["panel"]["message_id"])
+            await msg.edit(view=DualRolePickerView(guild, cfg["options"]))
+        except: pass
 
-@admin_only()
-@bot.tree.command(name="welcome_update", description="Update an existing welcome card (by message ID or detect pinned).")
-@app_commands.describe(
-    message_id="Optional: message ID of the existing welcome card",
-    target="Optional: channel/thread where the message lives (defaults to here)"
-)
-async def welcome_update(
-    interaction: discord.Interaction,
-    message_id: Optional[str] = None,
-    target: Union[discord.TextChannel, discord.Thread, None] = None
-):
-    await safe_defer(interaction, ephemeral=True)
-    dest = target or interaction.channel
+# ====================== YOUTUBE WATCHER ======================
 
-    msg = None
-    if message_id:
-        try:
-            msg = await dest.fetch_message(int(message_id))
-        except Exception:
-            return await safe_reply(interaction, "❌ Couldn’t fetch that message ID here.", ephemeral=True)
-    else:
-        try:
-            pins = await dest.pins()
-            for m in pins:
-                if m.author.id == bot.user.id and m.embeds:
-                    if (m.embeds[0].title or "").strip().lower() == "welcome to shadowsyn":
-                        msg = m
-                        break
-        except Exception:
-            msg = None
-        if msg is None:
-            async for m in dest.history(limit=50):
-                if m.author.id == bot.user.id and m.embeds:
-                    if (m.embeds[0].title or "").strip().lower() == "welcome to shadowsyn":
-                        msg = m
-                        break
+async def youtube_watch_loop(client):
+    await client.wait_until_ready()
+    while not client.is_closed():
+        store = _load_json(YT_STORE, {"channels": {}})
+        async with aiohttp.ClientSession() as session:
+            for cid, data in list(store["channels"].items()):
+                try:
+                    async with session.get(f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}") as r:
+                        root = ET.fromstring(await r.text())
+                        latest = root.find("{http://www.w3.org/2005/Atom}entry")
+                        vid = latest.find("{http://www.youtube.com/xml/schemas/2015}videoId").text
+                        if vid != data.get("last_video_id"):
+                            target = client.get_channel(YT_POST_TARGET_ID)
+                            await target.send(f"New video from **{data['channel_title']}**!\nhttps://www.youtube.com/watch?v={vid}")
+                            store["channels"][cid]["last_video_id"] = vid
+                            _save_json(YT_STORE, store)
+                except: pass
+        await asyncio.sleep(YT_POLL_SECONDS)
 
-    if msg is None:
-        return await safe_reply(
-            interaction,
-            "❌ Couldn’t find a welcome card here. Provide a `message_id` or use `/send_welcome`.",
-            ephemeral=True,
-        )
+# ====================== DEPARTURES & AUDIT ======================
 
-    try:
-        await msg.edit(embed=welcome_embed(), view=InviteCopyView())
-        await safe_reply(interaction, "✅ Welcome card updated.", ephemeral=True)
-    except Exception as e:
-        await safe_reply(interaction, f"❌ Failed to update: `{e}`", ephemeral=True)
-
-# ====================== INVITE→ROLE ADMIN COMMANDS ======================
-
-invite_role_group = app_commands.Group(
-    name="invite_role",
-    description="Map invite codes to auto-roles on join (admin).",
-)
-
-@invite_role_group.command(name="add", description="Map an invite (code/url/vanity) to a role.")
-@app_commands.describe(invite="Invite code, invite URL, or the word 'vanity'", role="Role to auto-assign")
-@admin_only()
-async def invite_role_add(interaction: discord.Interaction, invite: str, role: discord.Role):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
-    if not guild:
-        return await safe_reply(interaction, "❌ Guild not found.", ephemeral=True)
-
-    code = normalize_invite_code(invite)
-    if not code:
-        return await safe_reply(interaction, "❌ Invalid invite. Paste an invite URL/code, or use `vanity`.", ephemeral=True)
-
-    me = guild.me
-    if not me or not me.guild_permissions.manage_roles:
-        return await safe_reply(interaction, "❌ I need **Manage Roles**.", ephemeral=True)
-    if me.top_role <= role:
-        return await safe_reply(interaction, f"❌ I can’t assign `{role.name}` (above my top role).", ephemeral=True)
-
-    mapping = get_invite_role_map(guild.id)
-    mapping[code] = role.id
-    set_invite_role_map(guild.id, mapping)
-
-    label = "vanity" if code == "vanity" else f"`{code}`"
-    await safe_reply(interaction, f"✅ Mapped {label} → {role.mention}", ephemeral=True)
-
-@invite_role_group.command(name="remove", description="Remove an invite→role mapping.")
-@app_commands.describe(invite="Invite code/url or 'vanity'")
-@admin_only()
-async def invite_role_remove(interaction: discord.Interaction, invite: str):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
-    if not guild:
-        return await safe_reply(interaction, "❌ Guild not found.", ephemeral=True)
-
-    code = normalize_invite_code(invite)
-    if not code:
-        return await safe_reply(interaction, "❌ Invalid invite.", ephemeral=True)
-
-    mapping = get_invite_role_map(guild.id)
-    if code not in mapping:
-        label = "vanity" if code == "vanity" else f"`{code}`"
-        return await safe_reply(interaction, f"ℹ️ No mapping exists for {label}.", ephemeral=True)
-
-    mapping.pop(code, None)
-    set_invite_role_map(guild.id, mapping)
-
-    label = "vanity" if code == "vanity" else f"`{code}`"
-    await safe_reply(interaction, f"✅ Removed mapping for {label}.", ephemeral=True)
-
-@invite_role_group.command(name="list", description="List current invite→role mappings.")
-@admin_only()
-async def invite_role_list(interaction: discord.Interaction):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
-    if not guild:
-        return await safe_reply(interaction, "❌ Guild not found.", ephemeral=True)
-
-    mapping = get_invite_role_map(guild.id)
-    if not mapping:
-        return await safe_reply(interaction, "No invite-role mappings set.", ephemeral=True)
-
-    lines = []
-    for code, role_id in sorted(mapping.items(), key=lambda kv: kv[0]):
-        role = guild.get_role(int(role_id))
-        role_disp = role.mention if role else f"`{role_id}` (missing)"
-        code_disp = "vanity" if code == "vanity" else code
-        lines.append(f"- **{code_disp}** → {role_disp}")
-
-    embed = discord.Embed(title="Invite → Role Mappings", color=THEME_PRIMARY)
-    embed.description = "\n".join(lines)[:4000]
-    await safe_reply(interaction, embed=embed, ephemeral=True)
-
-bot.tree.add_command(invite_role_group)
-
-# ============================ AUDIT LOG ==========================
-
-async def _find_audit_action(
-    guild: discord.Guild,
-    action: discord.AuditLogAction,
-    target_id: int,
-    window_seconds: int = 30
-) -> Optional[discord.AuditLogEntry]:
-    """Small helper just for audit VC actions (move/mute/deafen)."""
-    if not (guild.me and guild.me.guild_permissions.view_audit_log):
-        return None
-    try:
-        async for entry in guild.audit_logs(limit=10, action=action):
-            if entry.target and entry.target.id == target_id:
-                created = entry.created_at
-                if created.tzinfo is None:
-                    created = created.replace(tzinfo=timezone.utc)
-                if abs((utcnow() - created).total_seconds()) <= window_seconds:
-                    return entry
-    except Exception:
-        pass
-    return None
+@bot.event
+async def on_member_remove(member):
+    dest = bot.get_channel(DEPARTURES_THREAD_ID)
+    if dest:
+        embed = discord.Embed(title="👋 Member Left", color=discord.Color.orange(), timestamp=timezone.utc)
+        embed.add_field(name="User", value=f"{member.mention} ({member.id})")
+        await dest.send(embed=embed)
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    if member.bot:
-        return
-    target, _ = await resolve_target(bot, config.get("audit_channel_id", DEFAULT_AUDIT_THREAD_ID))
-    if not target:
-        return
-
-    m_name = safe_display_name(member)
-
-    # Track channel moves/joins/leaves
-    if before.channel != after.channel:
-        entry = await _find_audit_action(member.guild, discord.AuditLogAction.member_move, member.id)
-        if entry:  # Moderator moved/disconnected
-            actor = safe_display_name(entry.user)
-            if before.channel and after.channel:
-                msg = f"🔀 {actor} moved {m_name} {before.channel.name} → {after.channel.name}"
-            elif before.channel and not after.channel:
-                msg = f"⏏️ {actor} disconnected {m_name} from {before.channel.name}"
-            else:
-                msg = f"📥 {actor} moved {m_name} into {after.channel.name}"
-        else:
-            if before.channel and not after.channel:
-                msg = f"📤 {m_name} left {before.channel.name}"
-            elif not before.channel and after.channel:
-                msg = f"📥 {m_name} joined {after.channel.name}"
-            else:
-                msg = f"🔀 {m_name} moved {before.channel.name} → {after.channel.name}"
-        try:
-            await target.send(msg)
-        except Exception:
-            pass
-        return
-
-    # Server mute/unmute set by a moderator (not self mute)
-    if before.mute != after.mute:
-        entry = await _find_audit_action(member.guild, discord.AuditLogAction.member_update, member.id)
-        if entry:
-            actor = safe_display_name(entry.user)
-            msg = f"{actor} {'muted' if after.mute else 'unmuted'} {m_name}"
-            try:
-                await target.send(msg)
-            except Exception:
-                pass
-            return
-
-    # Server deaf/undeaf set by a moderator
-    if before.deaf != after.deaf:
-        entry = await _find_audit_action(member.guild, discord.AuditLogAction.member_update, member.id)
-        if entry:
-            actor = safe_display_name(entry.user)
-            msg = f"{actor} {'deafened' if after.deaf else 'undeafened'} {m_name}"
-            try:
-                await target.send(msg)
-            except Exception:
-                pass
-            return
-
-    # Member self toggles (no audit entry)
-    if before.self_mute != after.self_mute or before.self_deaf != after.self_deaf:
-        try:
-            await target.send(f"🎛️ {m_name} toggled mute/deafen")
-        except Exception:
-            pass
-
-# ============================================================
-#                DEPARTURES LOGGER (Rich Embed + Accurate Cause)
-# ============================================================
-
-_last_departures: Dict[int, float] = {}
-
-def _build_departure_embed(
-    subject: Union[discord.Member, discord.User],
-    *,
-    reason_text: str,                # "Left" | "Kicked" | "Banned"
-    executor: Optional[discord.User] = None,
-    moderator_reason: Optional[str] = None
-) -> discord.Embed:
-    rt = reason_text.lower()
-    title = "⛔ Member Banned" if rt == "banned" else ("👢 Member Kicked" if rt == "kicked" else "👋 Member Left")
-
-    user_id = subject.id
-    mention = f"<@{user_id}>"
-    username = str(subject)
-    avatar = safe_avatar_url(subject)
-
-    embed = discord.Embed(title=title, color=discord.Color.orange(), timestamp=utcnow())
-    if avatar:
-        embed.set_thumbnail(url=avatar)
-
-    embed.add_field(
-        name="User",
-        value=f"{mention}\n{discord.utils.escape_markdown(username)}\n`{user_id}`",
-        inline=False
-    )
-
-    if isinstance(subject, discord.Member):
-        embed.add_field(name="Joined", value=human_ago(subject.joined_at), inline=True)
-        roles = [r for r in subject.roles if not r.is_default()]
-        top = subject.top_role if roles else None
-        top_disp = top.mention if top else "—"
-        embed.add_field(name="Top Role", value=f"{top_disp}\n# Roles: {len(roles)}", inline=True)
-        embed.add_field(name="Account Age", value=human_ago(subject.created_at), inline=True)
-    else:
-        embed.add_field(name="Account Age", value=human_ago(subject.created_at), inline=True)
-
-    details_lines = [f"{mention} {rt} the server."]
-    if executor:
-        details_lines.append(f"By: **{executor}**")
-    if moderator_reason:
-        details_lines.append(f"Reason: {moderator_reason}")
-    embed.add_field(name="Details", value="\n".join(details_lines), inline=False)
-
-    embed.set_footer(text="ShadowSyn • Departures")
-    return embed
-
-async def _send_departure_embed(user_id: int, embed: discord.Embed):
-    target, _ = await resolve_target(bot, DEPARTURES_THREAD_ID)
-    if not target:
-        return
-    now = time.time()
-    if now - _last_departures.get(user_id, 0) < 5:
-        return
-    _last_departures[user_id] = now
-    try:
-        await target.send(embed=embed)
-    except Exception:
-        try:
-            await target.send("A member event occurred but the embed could not be sent.")
-        except Exception:
-            pass
-
-async def _find_recent_audit(
-    guild: discord.Guild,
-    *,
-    action: discord.AuditLogAction,
-    target_id: int,
-    window_seconds: int = 300,
-    attempts: int = 3,
-    delay_between: float = 1.0,
-) -> Optional[discord.AuditLogEntry]:
-    if not (guild.me and guild.me.guild_permissions.view_audit_log):
-        return None
-
-    for _ in range(attempts):
-        try:
-            async for entry in guild.audit_logs(limit=20, action=action):
-                if entry.target and entry.target.id == target_id:
-                    created = entry.created_at
-                    if created.tzinfo is None:
-                        created = created.replace(tzinfo=timezone.utc)
-                    delta = abs((utcnow() - created).total_seconds())
-                    if delta <= window_seconds:
-                        return entry
-        except Exception:
-            pass
-        await asyncio.sleep(delay_between)
-    return None
-
-@bot.event
-async def on_member_remove(member: discord.Member):
-    # small delay so ban/kick audit entries appear first
-    await asyncio.sleep(1.0)
-
-    ban_entry = await _find_recent_audit(
-        member.guild,
-        action=discord.AuditLogAction.ban,
-        target_id=member.id,
-        window_seconds=180,
-        attempts=2,
-        delay_between=1.0,
-    )
-    if ban_entry:
-        return  # on_member_ban will handle
-
-    kick_entry = await _find_recent_audit(
-        member.guild,
-        action=discord.AuditLogAction.kick,
-        target_id=member.id,
-        window_seconds=300,
-        attempts=3,
-        delay_between=1.0,
-    )
-    if kick_entry:
-        embed = _build_departure_embed(
-            member,
-            reason_text="Kicked",
-            executor=kick_entry.user,
-            moderator_reason=kick_entry.reason,
-        )
-        return await _send_departure_embed(member.id, embed)
-
-    embed = _build_departure_embed(member, reason_text="Left")
-    await _send_departure_embed(member.id, embed)
-
-@bot.event
-async def on_member_ban(guild: discord.Guild, user: discord.User):
-    executor = None
-    ban_reason = None
-    try:
-        if guild.me and guild.me.guild_permissions.view_audit_log:
-            entry = await _find_recent_audit(
-                guild,
-                action=discord.AuditLogAction.ban,
-                target_id=user.id,
-                window_seconds=300,
-                attempts=3,
-                delay_between=1.0,
-            )
-            if entry:
-                executor = entry.user
-                ban_reason = entry.reason
-    except Exception:
-        pass
-
-    embed = _build_departure_embed(user, reason_text="Banned", executor=executor, moderator_reason=ban_reason)
-    await _send_departure_embed(user.id, embed)
-
-# =========== SELF-ASSIGN ROLES: CORE VIEW / LOGIC ===============
-
-def _sorted_opts(options: List[dict]) -> List[dict]:
-    return sorted(options, key=lambda o: str(o.get("label", "")).casefold())
-
-class DualRolePickerView(View):
-    """
-    Persistent public panel:
-    - Exactly one multi-select for roles (paged if >25)
-    - Selecting adds roles; unselecting removes roles
-    - No Confirm button; roles apply immediately per interaction
-    """
-    def __init__(self, guild: discord.Guild, options: List[dict]):
-        super().__init__(timeout=None)
-        self.guild = guild
-        self.options = _sorted_opts(options)
-        self.page: int = 0
-        self.page_size: int = 25
-
-        # Single paged multi-select
-        self.add_select = Select(
-            placeholder="Select your game roles…",
-            min_values=0,
-            max_values=0,
-            options=[],
-            custom_id=f"ss:roles:toggle:g{guild.id}"
-        )
-        self._refresh_add_select()
-        self.add_select.callback = self._on_select_toggle  # type: ignore
-        self.add_item(self.add_select)
-
-        # Page controls if needed
-        if self._total_pages() > 1:
-            self.btn_prev = Button(
-                emoji="⬅️",
-                style=discord.ButtonStyle.secondary,
-                row=1,
-                custom_id=f"ss:roles:page_prev:g{guild.id}"
-            )
-            self.btn_prev.callback = self._on_prev_page  # type: ignore
-            self.add_item(self.btn_prev)
-
-            self.btn_next = Button(
-                emoji="➡️",
-                style=discord.ButtonStyle.secondary,
-                row=1,
-                custom_id=f"ss:roles:page_next:g{guild.id}"
-            )
-            self.btn_next.callback = self._on_next_page  # type: ignore
-            self.add_item(self.btn_next)
-
-            self._update_page_buttons()
-
-    # -------- helpers --------
-
-    def _total_pages(self) -> int:
-        if not self.options:
-            return 1
-        return (len(self.options) - 1) // self.page_size + 1
-
-    def _current_slice(self) -> List[dict]:
-        start = self.page * self.page_size
-        end = start + self.page_size
-        return self.options[start:end]
-
-    def _make_placeholder(self) -> str:
-        total = self._total_pages()
-        if total <= 1:
-            return "Select your game roles…"
-        return f"Select your game roles… (Page {self.page + 1}/{total})"
-
-    def _refresh_add_select(self):
-        chunk = self._current_slice()
-        if not chunk:
-            self.add_select.options = []
-            self.add_select.max_values = 0
-        else:
-            self.add_select.options = [
-                discord.SelectOption(label=o["label"], value=str(o["role_id"]))
-                for o in chunk
-            ]
-            self.add_select.max_values = len(chunk)
-        self.add_select.placeholder = self._make_placeholder()
-
-    def _update_page_buttons(self):
-        if not hasattr(self, "btn_prev"):
-            return
-        total = self._total_pages()
-        self.btn_prev.disabled = self.page <= 0
-        self.btn_next.disabled = self.page >= (total - 1)
-
-    def _allowed_ids(self) -> Set[int]:
-        return {int(o["role_id"]) for o in self.options}
-
-    def _member_current_allowed(self, member: discord.Member) -> Set[int]:
-        allowed = self._allowed_ids()
-        return {r.id for r in member.roles if r.id in allowed}
-
-    # -------- callbacks --------
-
-    async def _on_prev_page(self, interaction: discord.Interaction):
-        await safe_defer(interaction)
-        if self.page <= 0:
-            return
-        self.page -= 1
-        self._refresh_add_select()
-        self._update_page_buttons()
-        try:
-            await interaction.message.edit(view=self)
-        except Exception:
-            pass
-
-    async def _on_next_page(self, interaction: discord.Interaction):
-        await safe_defer(interaction)
-        if self.page >= self._total_pages() - 1:
-            return
-        self.page += 1
-        self._refresh_add_select()
-        self._update_page_buttons()
-        try:
-            await interaction.message.edit(view=self)
-        except Exception:
-            pass
-
-    async def _on_select_toggle(self, interaction: discord.Interaction):
-        # Instant apply: compare page selection to current roles on this page
-        await safe_defer(interaction, ephemeral=True)
-
-        if not interaction.guild:
-            return await safe_reply(interaction, "❌ Guild not found.", ephemeral=True)
-        member = interaction.guild.get_member(interaction.user.id)
-        if not member:
-            return await safe_reply(interaction, "❌ Could not resolve member.", ephemeral=True)
-
-        guild = interaction.guild
-        if not guild.me.guild_permissions.manage_roles:
-            return await safe_reply(interaction, "❌ I need **Manage Roles** to do that.", ephemeral=True)
-
-        bot_member = guild.me
-
-        def manageable(r: discord.Role) -> bool:
-            return bot_member.top_role > r and guild.me.guild_permissions.manage_roles
-
-        allowed_ids = self._allowed_ids()
-        page_roles = self._current_slice()
-        page_ids = {int(o["role_id"]) for o in page_roles}
-
-        current_allowed = self._member_current_allowed(member)
-        page_current = current_allowed & page_ids
-
-        selected_ids = {int(v) for v in (self.add_select.values or [])}
-
-        to_add_ids = (selected_ids - page_current) & page_ids & allowed_ids
-        to_remove_ids = (page_current - selected_ids) & page_ids & allowed_ids
-
-        added, removed, skipped = [], [], []
-
-        # Apply adds
-        for rid in to_add_ids:
-            role = guild.get_role(rid)
-            if role and manageable(role):
-                try:
-                    await member.add_roles(role, reason="Self-assign roles panel (instant add)")
-                    added.append(role.name)
-                except Exception:
-                    skipped.append(role.name if role else str(rid))
-            elif role:
-                skipped.append(role.name)
-
-        # Apply removals
-        for rid in to_remove_ids:
-            role = guild.get_role(rid)
-            if role and manageable(role):
-                try:
-                    await member.remove_roles(role, reason="Self-assign roles panel (instant remove)")
-                    removed.append(role.name)
-                except Exception:
-                    skipped.append(role.name if role else str(rid))
-            elif role:
-                skipped.append(role.name)
-
-        if added:
-            added = sorted(added, key=lambda s: s.casefold())
-        if removed:
-            removed = sorted(removed, key=lambda s: s.casefold())
-        if skipped:
-            skipped = sorted(skipped, key=lambda s: s.casefold())
-
-        embed = discord.Embed(
-            title="✅ Roles Updated",
-            color=THEME_PRIMARY,
-            timestamp=utcnow()
-        )
-        if added:
-            embed.add_field(name="Added", value=", ".join(added)[:1024], inline=False)
-        if removed:
-            embed.add_field(name="Removed", value=", ".join(removed)[:1024], inline=False)
-        if skipped:
-            embed.add_field(name="Skipped", value=", ".join(skipped)[:1024] + " (unmanageable)", inline=False)
-        if not (added or removed or skipped):
-            embed.description = "No changes."
-        embed.set_footer(text="ShadowSyn Role Manager")
-
-        await safe_reply(interaction, embed=embed, ephemeral=True)
-
-def role_picker_embed() -> discord.Embed:
-    return discord.Embed(
-        title="SELECT ROLES",
-        description=(
-            "Select or unselect items in the dropdown to **instantly add or remove** your game roles.\n"
-            "Changes apply as soon as you close the dropdown."
-        ),
-        color=THEME_PRIMARY,
-    )
-
-async def rehydrate_role_panel(client: discord.Client, guild: discord.Guild):
-    cfg = get_guild_role_cfg(guild.id)
-    if not cfg or not cfg.get("panel"):
-        return
-    panel = cfg["panel"]
-    options = cfg.get("options", [])
-    channel = guild.get_channel(panel.get("channel_id"))
-    if not channel:
-        try:
-            channel = await client.fetch_channel(panel.get("channel_id"))
-        except Exception:
-            return
-    try:
-        msg = await channel.fetch_message(panel.get("message_id"))
-    except Exception:
-        return
-    try:
-        view = DualRolePickerView(guild, options)
-        client.add_view(view, message_id=msg.id)
-        await msg.edit(embed=role_picker_embed(), view=view)
-    except Exception:
-        # Message deleted or invalid; admin can /roles_post again.
-        pass
-
-# ======== SELF-ASSIGN ROLES: ADMIN COMMANDS (role-locked) =======
-
-ROLE_MENTION_RE = re.compile(r"<@&(\d+)>")
-
-def _parse_role_mentions(text: str) -> List[int]:
-    return [int(m) for m in ROLE_MENTION_RE.findall(text or "")]
-
-@admin_only()
-@bot.tree.command(name="roles_post", description="Post the persistent Select Roles panel here or in a target channel/thread.")
-@app_commands.describe(target="Optional channel/thread to post in (defaults to here)")
-async def roles_post(
-    interaction: discord.Interaction,
-    target: Union[discord.TextChannel, discord.Thread, None] = None
-):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
-    if not guild:
-        return await safe_reply(interaction, "❌ Guild not found.", ephemeral=True)
-
-    cfg = get_guild_role_cfg(guild.id)
-    options = cfg.get("options", [])
-    dest = target or interaction.channel
-
-    try:
-        view = DualRolePickerView(guild, options)
-        msg = await dest.send(embed=role_picker_embed(), view=view)
-        cfg["panel"] = {"channel_id": dest.id, "message_id": msg.id}
-        set_guild_role_cfg(guild.id, cfg)
-        try:
-            bot.add_view(view, message_id=msg.id)
-        except Exception:
-            pass
-        await safe_reply(interaction, f"✅ Panel posted in {dest.mention}.", ephemeral=True)
-    except Exception as e:
-        await safe_reply(interaction, f"❌ Failed: `{e}`", ephemeral=True)
-
-@admin_only()
-@bot.tree.command(name="roles_add", description="Add one or more roles to the picker (paste role mentions).")
-@app_commands.describe(roles="Role mentions, e.g., @Rust @Battlefield @AoE4")
-async def roles_add(interaction: discord.Interaction, roles: str):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
-    if not guild:
-        return await safe_reply(interaction, "❌ Guild not found.", ephemeral=True)
-
-    ids = _parse_role_mentions(roles)
-    if not ids:
-        return await safe_reply(interaction, "❌ No role mentions detected.", ephemeral=True)
-
-    cfg = get_guild_role_cfg(guild.id)
-    existing_ids = {int(o["role_id"]) for o in cfg.get("options", [])}
-    added_labels = []
-
-    for rid in ids:
-        if rid in existing_ids:
-            continue
-        role = guild.get_role(rid)
-        if role is None:
-            try:
-                role = await guild.fetch_role(rid)
-            except Exception:
-                continue
-        cfg.setdefault("options", []).append({"role_id": role.id, "label": role.name})
-        added_labels.append(role.name)
-
-    set_guild_role_cfg(guild.id, cfg)
-    await safe_reply(interaction, f"✅ Added: {', '.join(sorted(added_labels, key=str.casefold)) or 'None'}", ephemeral=True)
-
-@admin_only()
-@bot.tree.command(name="roles_remove", description="Remove one or more roles from the picker (paste role mentions).")
-@app_commands.describe(roles="Role mentions, e.g., @Rust @AoE4")
-async def roles_remove(interaction: discord.Interaction, roles: str):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
-    if not guild:
-        return await safe_reply(interaction, "❌ Guild not found.", ephemeral=True)
-
-    ids = set(_parse_role_mentions(roles))
-    if not ids:
-        return await safe_reply(interaction, "❌ No role mentions detected.", ephemeral=True)
-
-    cfg = get_guild_role_cfg(guild.id)
-    opts = cfg.get("options", [])
-    before = len(opts)
-    opts = [o for o in opts if int(o["role_id"]) not in ids]
-    cfg["options"] = opts
-    set_guild_role_cfg(guild.id, cfg)
-
-    removed_count = before - len(opts)
-    await safe_reply(interaction, f"✅ Removed {removed_count} role(s). Use `/roles_sync` to refresh panel.", ephemeral=True)
-
-@admin_only()
-@bot.tree.command(name="roles_list", description="List current picker roles.")
-async def roles_list(interaction: discord.Interaction):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
-    cfg = get_guild_role_cfg(guild.id)
-    opts = cfg.get("options", [])
-    if not opts:
-        return await safe_reply(interaction, "No roles configured.", ephemeral=True)
-    lines = [f"- {o['label']} (`{o['role_id']}`)" for o in _sorted_opts(opts)]
-    await safe_reply(interaction, "\n".join(lines), ephemeral=True)
-
-@admin_only()
-@bot.tree.command(name="roles_clear", description="Clear all roles from the picker (panel remains).")
-async def roles_clear(interaction: discord.Interaction):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
-    cfg = get_guild_role_cfg(guild.id)
-    cfg["options"] = []
-    set_guild_role_cfg(guild.id, cfg)
-    await safe_reply(interaction, "✅ Cleared options. Use `/roles_sync` to refresh panel.", ephemeral=True)
-
-@admin_only()
-@bot.tree.command(name="roles_sync", description="Rebuild the posted panel with current options.")
-async def roles_sync(interaction: discord.Interaction):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
-    cfg = get_guild_role_cfg(guild.id)
-    panel = cfg.get("panel")
-    if not panel:
-        return await safe_reply(interaction, "No panel saved. Use `/roles_post` first.", ephemeral=True)
-
-    channel = guild.get_channel(panel.get("channel_id"))
-    if not channel:
-        try:
-            channel = await bot.fetch_channel(panel.get("channel_id"))
-        except Exception:
-            return await safe_reply(interaction, "Saved channel not found.", ephemeral=True)
-    try:
-        msg = await channel.fetch_message(panel.get("message_id"))
-    except Exception:
-        return await safe_reply(interaction, "Saved message not found. Repost with `/roles_post`.", ephemeral=True)
-
-    options = cfg.get("options", [])
-    try:
-        view = DualRolePickerView(guild, options)
-        await msg.edit(embed=role_picker_embed(), view=view)
-        try:
-            bot.add_view(view, message_id=msg.id)
-        except Exception:
-            pass
-        await safe_reply(interaction, "✅ Panel refreshed.", ephemeral=True)
-    except Exception as e:
-        await safe_reply(interaction, f"❌ Failed: `{e}`", ephemeral=True)
-
-# =================== YOUTUBE WATCHER & COMMANDS ==================
-
-def yt_locked():
-    async def predicate(inter: discord.Interaction) -> bool:
-        if not isinstance(inter.user, discord.Member):
-            return False
-        return any(r.id == ROLE_YT_MANAGER_ID for r in inter.user.roles)
-    return app_commands.check(predicate)
-
-_YT_CH_REGEXES = [
-    re.compile(r"youtube\.com/channel/([A-Za-z0-9_-]{10,})"),
-    re.compile(r"youtube\.com/feeds/videos\.xml\?channel_id=([A-Za-z0-9_-]{10,})"),
-]
-
-def yt_feed_url(channel_id: str) -> str:
-    return f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-
-async def resolve_channel_id(inp: str) -> Optional[str]:
-    text = (inp or "").strip()
-    if re.fullmatch(r"UC[0-9A-Za-z_-]{10,}", text):
-        return text
-    for rx in _YT_CH_REGEXES:
-        m = rx.search(text)
-        if m:
-            return m.group(1)
-    aliased = _lookup_alias(text)
-    if aliased:
-        return aliased
-    url = f"https://www.youtube.com/{text}" if text.startswith("@") else text
-    if "youtube.com" in url or text.startswith("@"):
-        try:
-            timeout = aiohttp.ClientTimeout(total=15)
-            async with aiohttp.ClientSession(timeout=timeout, headers={"User-Agent": YT_USER_AGENT}) as session:
-                async with session.get(url) as r:
-                    if r.status != 200:
-                        return None
-                    html = await r.text()
-        except Exception:
-            return None
-        m = re.search(r'"channelId"\s*:\s*"(?P<uc>UC[0-9A-Za-z_-]{10,})"', html)
-        if m:
-            return m.group("uc")
-    return None
-
-async def normalize_channel_id(inp: str) -> Optional[str]:
-    cid = await resolve_channel_id(inp)
-    if cid:
-        return cid
-    if re.fullmatch(r"UC[0-9A-Za-z_-]{10,}", (inp or "").strip()):
-        return inp.strip()
-    return None
-
-async def fetch_feed_latest(session: aiohttp.ClientSession, channel_id: str) -> Optional[Dict[str, str]]:
-    url = yt_feed_url(channel_id)
-    try:
-        async with session.get(url, headers={"User-Agent": YT_USER_AGENT}) as r:
-            if r.status != 200:
-                return None
-            text = await r.text()
-    except Exception:
-        return None
-    try:
-        ns = {
-            "atom": "http://www.w3.org/2005/Atom",
-            "yt": "http://www.youtube.com/xml/schemas/2015",
-            "media": "http://search.yahoo.com/mrss/",
-        }
-        root = ET.fromstring(text)
-        entry = root.find("atom:entry", ns)
-        if entry is None:
-            return None
-        vid = entry.find("yt:videoId", ns).text
-        title = entry.find("media:group/media:title", ns).text
-        link_el = entry.find("atom:link", ns)
-        link = link_el.attrib.get("href") if link_el is not None else f"https://www.youtube.com/watch?v={vid}"
-        ch_title = root.find("atom:title", ns).text
-        published = entry.find("atom:published", ns).text
-        return {
-            "video_id": vid,
-            "title": title,
-            "url": link,
-            "channel_title": ch_title,
-            "published": published,
-        }
-    except Exception:
-        return None
-
-async def post_video_announcement(client: discord.Client, payload: Dict[str, str]):
-    target, _ = await resolve_target(client, YT_POST_TARGET_ID)
-    if not target:
-        return
-    title = payload.get("title") or "New Video"
-    url = payload.get("url")
-    channel_title = payload.get("channel_title") or "Creator"
-    prefix = f"Hey, **{channel_title}** just posted a video!"
-    embed = discord.Embed(title=title, url=url, description=prefix, color=discord.Color.red())
-    embed.set_footer(text="YouTube • ShadowSyn")
-    try:
-        await target.send(embed=embed)
-    except Exception:
-        try:
-            await target.send(f"{prefix}\n{url}")
-        except Exception:
-            pass
-
-async def youtube_watch_loop(client: discord.Client):
-    await client.wait_until_ready()
-
-    # Seed last_video_id for existing channels on startup
-    store = _load_yt_store()
-    async with aiohttp.ClientSession(headers={"User-Agent": YT_USER_AGENT}) as session:
-        for ch_id, cfg in list(store.get("channels", {}).items()):
-            latest = await fetch_feed_latest(session, ch_id)
-            if latest:
-                cfg.setdefault("last_video_id", latest["video_id"])
-                cfg["channel_title"] = latest.get("channel_title") or cfg.get("channel_title") or ""
-                store["channels"][ch_id] = cfg
-        _save_yt_store(store)
-
-    while not client.is_closed():
-        try:
-            store = _load_yt_store()
-            channels = store.get("channels", {})
-            if not channels:
-                await asyncio.sleep(YT_POLL_SECONDS)
-                continue
-
-            async with aiohttp.ClientSession(headers={"User-Agent": YT_USER_AGENT}) as session:
-                for ch_id, cfg in list(channels.items()):
-                    latest = await fetch_feed_latest(session, ch_id)
-                    if not latest:
-                        await asyncio.sleep(1.0)
-                        continue
-                    cfg["channel_title"] = latest.get("channel_title") or cfg.get("channel_title") or ""
-                    last = cfg.get("last_video_id")
-                    if latest["video_id"] != last:
-                        await post_video_announcement(client, latest)
-                        cfg["last_video_id"] = latest["video_id"]
-                        store["channels"][ch_id] = cfg
-                        _save_yt_store(store)
-                    await asyncio.sleep(1.0)
-        except Exception:
-            pass
-        await asyncio.sleep(YT_POLL_SECONDS)
-
-@yt_locked()
-@bot.tree.command(name="yt_add", description="Watch a YouTube channel (URL, @handle, or UC id).")
-@app_commands.describe(channel_url_or_id="Channel URL or @handle or raw UC id")
-async def yt_add(interaction: discord.Interaction, channel_url_or_id: str):
-    await safe_defer(interaction, ephemeral=True)
-    ch_id = await normalize_channel_id(channel_url_or_id)
-    if not ch_id:
-        return await safe_reply(interaction, "❌ Couldn’t resolve a channel id.", ephemeral=True)
-    store = _load_yt_store()
-    store.setdefault("channels", {})
-    store.setdefault("aliases", {})
-    store["channels"].setdefault(ch_id, {"last_video_id": None, "channel_title": ""})
-    _save_yt_store(store)
-    _add_alias(channel_url_or_id, ch_id)
-    await safe_reply(
-        interaction,
-        f"✅ Watching `{ch_id}`. New uploads will post in <#{YT_POST_TARGET_ID}>.",
-        ephemeral=True,
-    )
-
-@yt_locked()
-@bot.tree.command(name="yt_remove", description="Stop watching a YouTube channel (URL, @handle, or UC id).")
-@app_commands.describe(channel_id_or_url="Channel URL or @handle or UC id")
-async def yt_remove(interaction: discord.Interaction, channel_id_or_url: str):
-    await safe_defer(interaction, ephemeral=True)
-    ch_id = _lookup_alias(channel_id_or_url) or await normalize_channel_id(channel_id_or_url)
-    if not ch_id:
-        return await safe_reply(interaction, "❌ Couldn’t resolve a channel id.", ephemeral=True)
-    store = _load_yt_store()
-    if store.get("channels", {}).pop(ch_id, None) is None:
-        return await safe_reply(interaction, "ℹ️ That channel wasn’t being watched.", ephemeral=True)
-    store.get("aliases", {}).pop(_alias_key(channel_id_or_url), None)
-    _save_yt_store(store)
-    await safe_reply(interaction, f"✅ Removed `{ch_id}`.", ephemeral=True)
-
-@yt_locked()
-@bot.tree.command(name="yt_list", description="List watched YouTube channels.")
-async def yt_list(interaction: discord.Interaction):
-    await safe_defer(interaction, ephemeral=True)
-    store = _load_yt_store()
-    channels = store.get("channels", {})
-    if not channels:
-        return await safe_reply(interaction, "No channels are being watched.", ephemeral=True)
-    lines = []
-    for ch_id, cfg in channels.items():
-        title = cfg.get("channel_title") or "Unknown"
-        last = cfg.get("last_video_id") or "—"
-        lines.append(f"- **{title}** (`{ch_id}`) • last: `{last}` → <#{YT_POST_TARGET_ID}>")
-    await safe_reply(interaction, "\n".join(lines)[:1990], ephemeral=True)
-
-@yt_locked()
-@bot.tree.command(name="yt_test", description="Post the latest upload (URL, @handle, or UC id).")
-@app_commands.describe(channel_id_or_url="Channel URL or @handle or UC id")
-async def yt_test(interaction: discord.Interaction, channel_id_or_url: str):
-    await safe_defer(interaction, ephemeral=True)
-    ch_id = _lookup_alias(channel_id_or_url) or await normalize_channel_id(channel_id_or_url)
-    if not ch_id:
-        return await safe_reply(interaction, "❌ Couldn’t resolve a channel id.", ephemeral=True)
-    store = _load_yt_store()
-    if ch_id not in store.get("channels", {}):
-        return await safe_reply(interaction, "❌ That channel isn’t being watched. Use `/yt_add` first.", ephemeral=True)
-    async with aiohttp.ClientSession(headers={"User-Agent": YT_USER_AGENT}) as session:
-        latest = await fetch_feed_latest(session, ch_id)
-    if not latest:
-        return await safe_reply(interaction, "❌ Couldn’t fetch the feed right now.", ephemeral=True)
-    await post_video_announcement(bot, latest)
-    await safe_reply(interaction, "✅ Posted the latest video to the thread.", ephemeral=True)
-
-# =============================== RUN ============================
-
-def main():
-    print("FFMPEG PATH:", which("ffmpeg"))
-    print("PERSIST_ROOT:", PERSIST_ROOT)
-    bot.run(TOKEN)
+    dest = bot.get_channel(DEFAULT_AUDIT_THREAD_ID)
+    if dest and before.channel != after.channel:
+        msg = f"🎤 {member.name} moved: {getattr(before.channel, 'name', 'None')} -> {getattr(after.channel, 'name', 'None')}"
+        await dest.send(msg)
+
+# ====================== RUN ======================
 
 if __name__ == "__main__":
-    main()
+    bot.run(TOKEN)
