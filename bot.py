@@ -64,10 +64,17 @@ if not TOKEN:
 
 translator = Translator()
 LANG_CHOICES = [
-    app_commands.Choice(name="English",  value="en"),
-    app_commands.Choice(name="Japanese", value="ja"),
-    app_commands.Choice(name="German",   value="de"),
-    app_commands.Choice(name="Spanish",  value="es"),
+    app_commands.Choice(name="English",    value="en"),
+    app_commands.Choice(name="Japanese",   value="ja"),
+    app_commands.Choice(name="German",     value="de"),
+    app_commands.Choice(name="Spanish",    value="es"),
+    app_commands.Choice(name="French",     value="fr"),
+    app_commands.Choice(name="Italian",    value="it"),
+    app_commands.Choice(name="Korean",     value="ko"),
+    app_commands.Choice(name="Chinese",    value="zh-cn"),
+    app_commands.Choice(name="Russian",    value="ru"),
+    app_commands.Choice(name="Portuguese", value="pt"),
+    app_commands.Choice(name="Dutch",      value="nl"),
 ]
 
 # ====================== CONFIG (welcome/audit) ====================
@@ -614,14 +621,17 @@ async def speak(interaction: discord.Interaction, text: str, language: app_comma
     to_say = text
     if lang_code != "en":
         try:
-            to_say = translator.translate(text, src="en", dest=lang_code).text
+            # RUN IN THREAD (Non-blocking fix)
+            res = await asyncio.to_thread(translator.translate, text, src="en", dest=lang_code)
+            to_say = res.text
         except Exception:
             await safe_reply(interaction, "⚠️ Translate failed, using original.", ephemeral=True)
 
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
             tmp = f.name
-        gTTS(text=to_say, lang=lang_code).save(tmp)
+        # RUN IN THREAD (Non-blocking fix)
+        await asyncio.to_thread(gTTS(text=to_say, lang=lang_code).save, tmp)
         vc.play(discord.FFmpegPCMAudio(tmp))
         await log_speak_usage(interaction, text, lang_code)
         await safe_reply(interaction, "✅ Spoke text", ephemeral=True)
