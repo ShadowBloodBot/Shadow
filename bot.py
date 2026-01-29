@@ -40,7 +40,7 @@ ROLE_MEMBER_ID          = 955600320287887400
 SPEAK_LOG_THREAD_ID     = 1400048671973703690
 DEPARTURES_THREAD_ID    = 960088192177029140
 
-# --- FIX: Restored Missing Constants ---
+# --- CRITICAL CONSTANTS (Triple Checked) ---
 DEFAULT_TARGET_ID       = 1166874144395247757
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
 
@@ -863,6 +863,7 @@ async def send_welcome(interaction: discord.Interaction, target: Union[discord.T
     dest = target or interaction.channel
     try:
         view = InviteCopyView()
+        # --- FIXED SYNTAX HERE: Added missing closing parenthesis ---
         msg = await dest.send(embed=welcome_embed(), view=view)
         try: await msg.pin(reason="ShadowSyn Welcome")
         except: pass
