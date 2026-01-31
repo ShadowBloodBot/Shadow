@@ -1,10 +1,10 @@
-# bot.py — ShadowSyn (Final: Role Picker Restored + Audio Logic Fixed)
+# bot.py — ShadowSyn (Ultimate: Mixed Audio Clips + ID Indexing)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
 # 2. Music: Queue System, Fast Search, Role Locked
-# 3. Clip System: Auto-buffers 30s -> Saves to channel 1467055136609271818
-# 4. Core: Audit, Roles (Restored Dual-View), Welcome, TTS, Youtube Watcher
+# 3. Clip System: Mixes all users into ONE file (MP3)
+# 4. Core: Audit, Roles, Welcome, TTS, Youtube Watcher
 #
 # LIBRARY REQUIREMENT: py-cord[voice] (NOT discord.py)
 
@@ -17,6 +17,7 @@ import time
 import traceback
 import wave
 import io
+import subprocess
 from pathlib import Path
 from typing import Optional, Tuple, Union, Dict, List, Set
 from datetime import datetime, timezone
@@ -166,15 +167,19 @@ if HAS_SINKS:
             self.buffer = {} # user_id -> deque of bytes
             self._debug_log_counter = 0
 
-        # FIXED: Handles both argument orders (user, data) vs (data, user)
+        # FIXED: Robust data extraction + ID Indexing
         def write(self, user, data):
-            # Fallback: Swap if 'user' is actually the data bytes
+            # Fallback: Swap args if Py-Cord sends them backwards
             if hasattr(user, "data") or isinstance(user, (bytes, bytearray)):
                 user, data = data, user
 
-            if user not in self.buffer:
-                self.buffer[user] = deque(maxlen=int(self.time_limit * 50))
-                print(f"[DEBUG] User {user} joined audio stream.")
+            # Use User ID as key to prevent duplicate files for same person
+            user_id = getattr(user, "id", None)
+            if user_id is None: return
+
+            if user_id not in self.buffer:
+                self.buffer[user_id] = deque(maxlen=int(self.time_limit * 50))
+                print(f"[DEBUG] User ID {user_id} joined audio stream.")
             
             # Robust data extraction
             audio_bytes = getattr(data, "data", None)
@@ -184,31 +189,14 @@ if HAS_SINKS:
                 audio_bytes = data
             
             if audio_bytes and isinstance(audio_bytes, (bytes, bytearray)):
-                self.buffer[user].append(audio_bytes)
+                self.buffer[user_id].append(audio_bytes)
                 self._debug_log_counter += 1
                 if self._debug_log_counter % 500 == 0:
-                    print(f"[DEBUG] Recording... (Packet count: {self._debug_log_counter})")
+                    print(f"[DEBUG] Recording packet stream...")
 
         def cleanup(self):
             self.finished = True
 
-        def get_recent_clips(self):
-            files = []
-            for user_id, audio_deque in self.buffer.items():
-                if not audio_deque: continue
-                data = b''.join(audio_deque)
-                if len(data) < 4000: continue # Skip if less than ~0.1s
-                
-                f = io.BytesIO()
-                with wave.open(f, 'wb') as wav:
-                    wav.setnchannels(2) 
-                    wav.setsampwidth(2) 
-                    wav.setframerate(48000) 
-                    wav.writeframes(data)
-                f.seek(0)
-                
-                files.append(discord.File(f, filename=f"clip_{user_id}_{int(time.time())}.wav"))
-            return files
 else:
     RingBufferSink = None
 
@@ -966,7 +954,6 @@ async def join(ctx: discord.ApplicationContext):
 
 @bot.slash_command(name="clip", description="Clip last 30s and save to channel")
 async def clip(ctx: discord.ApplicationContext):
-    # EPHEMERAL: Only user sees this
     await safe_defer(ctx, ephemeral=True)
     vc = ctx.guild.voice_client
     if not vc or not vc.is_connected():
@@ -986,21 +973,74 @@ async def clip(ctx: discord.ApplicationContext):
     if not isinstance(sink, RingBufferSink):
         return await safe_reply(ctx, "❌ Current recording format does not support clipping.", ephemeral=True)
 
-    files = sink.get_recent_clips()
-    if not files:
-        return await safe_reply(ctx, "ℹ️ No audio data found in buffer.", ephemeral=True)
+    # --- MIXING LOGIC: Combine all users into ONE file ---
+    input_files = []
+    temp_files_to_cleanup = []
 
-    target_id = CLIPS_TARGET_ID
-    target_ch, _ = await resolve_target(ctx.bot, target_id)
-    
-    if target_ch:
-        try:
-            await target_ch.send(content=f"✂️ **Clip recorded by {ctx.author.mention}**", files=files)
+    try:
+        # 1. Write separate WAVs for each user
+        for user_id, audio_deque in sink.buffer.items():
+            if not audio_deque: continue
+            data = b''.join(audio_deque)
+            # Skip junk audio (< 50KB)
+            if len(data) < 50000: continue
+
+            f_path = f"temp_{user_id}_{int(time.time())}.wav"
+            with wave.open(f_path, 'wb') as wav:
+                wav.setnchannels(2) 
+                wav.setsampwidth(2) 
+                wav.setframerate(48000) 
+                wav.writeframes(data)
+            
+            input_files.append(f_path)
+            temp_files_to_cleanup.append(f_path)
+
+        if not input_files:
+            return await safe_reply(ctx, "ℹ️ No recent audio found.", ephemeral=True)
+
+        final_file = None
+        
+        # 2. Use FFmpeg to Mix
+        if len(input_files) == 1:
+            # Only one person spoke? Just convert that one file.
+            final_file = discord.File(input_files[0], filename=f"clip_{int(time.time())}.wav")
+        else:
+            # Mix multiple inputs
+            output_filename = f"mixed_clip_{int(time.time())}.mp3"
+            cmd = ['ffmpeg', '-y']
+            for f in input_files:
+                cmd.extend(['-i', f])
+            
+            # Complex filter: 'amix' mixes inputs. duration=longest means keep clip going until last person stops.
+            cmd.extend(['-filter_complex', f'amix=inputs={len(input_files)}:duration=longest', output_filename])
+            
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            if os.path.exists(output_filename):
+                final_file = discord.File(output_filename)
+                temp_files_to_cleanup.append(output_filename)
+            else:
+                return await safe_reply(ctx, "❌ Failed to mix audio.", ephemeral=True)
+
+        # 3. Send to Clip Channel
+        target_id = CLIPS_TARGET_ID
+        target_ch, _ = await resolve_target(ctx.bot, target_id)
+        
+        if target_ch and final_file:
+            await target_ch.send(content=f"✂️ **Clip recorded by {ctx.author.mention}**", file=final_file)
             await safe_reply(ctx, f"✅ Clip saved to {target_ch.mention}.", ephemeral=True)
-        except Exception as e:
-            await safe_reply(ctx, f"❌ Failed to save to target: {e}. Here it is instead:", files=files)
-    else:
-        await safe_reply(ctx, f"⚠️ Clip target channel (`{target_id}`) not found. Here is your clip:", files=files)
+        else:
+            await safe_reply(ctx, "⚠️ Target channel not found.", file=final_file, ephemeral=True)
+
+    except Exception as e:
+        print(f"Clip Error: {e}")
+        await safe_reply(ctx, f"❌ Error processing clip: {e}", ephemeral=True)
+    
+    finally:
+        # Cleanup temp files
+        for f in temp_files_to_cleanup:
+            try: os.remove(f)
+            except: pass
 
 # ===================== /SPEAK (TTS) ==================
 
@@ -1367,7 +1407,6 @@ class DualRolePickerView(View):
         self.page: int = 0
         self.page_size: int = 25
         
-        # Manually create Select menu to ensure it works correctly
         self.add_select = Select(
             placeholder="Select your game roles…",
             min_values=0,
@@ -1415,7 +1454,7 @@ class DualRolePickerView(View):
         self.btn_next.disabled = self.page >= (self._total_pages() - 1)
 
     async def _on_prev_page(self, interaction: Interaction):
-        await interaction.response.defer() # Acknowledge but don't reply
+        await interaction.response.defer()
         if self.page > 0:
             self.page -= 1
             self._refresh_add_select()
@@ -1433,19 +1472,15 @@ class DualRolePickerView(View):
             except: pass
 
     async def _on_select_toggle(self, interaction: Interaction):
-        # Ephemeral reply so only user sees their role changes
         await interaction.response.defer(ephemeral=True)
-        
         if not interaction.guild: return
         member = interaction.guild.get_member(interaction.user.id)
         bot_member = interaction.guild.me
-        
         page_roles = self._current_slice()
         page_ids = {int(o["role_id"]) for o in page_roles}
         allowed = {int(o["role_id"]) for o in self.options}
         current = {r.id for r in member.roles if r.id in allowed}
         selected = {int(v) for v in (self.add_select.values or [])}
-        
         to_add = (selected - (current & page_ids)) & page_ids
         to_remove = ((current & page_ids) - selected)
         
@@ -1465,7 +1500,6 @@ class DualRolePickerView(View):
         if added: embed.add_field(name="Added", value=", ".join(added), inline=False)
         if removed: embed.add_field(name="Removed", value=", ".join(removed), inline=False)
         if not added and not removed: embed.description = "No changes."
-        
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 def role_picker_embed() -> discord.Embed:
@@ -1481,7 +1515,6 @@ async def rehydrate_role_panel(client: discord.Client, guild: discord.Guild):
         except: return
     try:
         msg = await channel.fetch_message(panel.get("message_id"))
-        # Re-attach the view to the existing message so buttons work after restart
         client.add_view(DualRolePickerView(guild, cfg.get("options", [])), message_id=msg.id)
     except: pass
 
