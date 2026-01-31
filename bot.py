@@ -1,9 +1,9 @@
-# bot.py — ShadowSyn Unified System (Debug + Failsafe Audio)
+# bot.py — ShadowSyn Unified System (Zombie Killer Edition)
 #
 # === MODULES INCLUDED ===
 # 1. ShadowSyn Core (Welcome, Speak, Audit, Departures, Roles)
 # 2. VoiceMaster (Join-to-Create, Dynamic VCs, Control Panel)
-# 3. AudioEngine (yt-dlp Search Menu + FFmpeg)
+# 3. AudioEngine (Native yt-dlp + Command Cleanup)
 #
 # Env: DISCORD_TOKEN
 # Persistence: role_picker.json, youtube_watch.json, invite_roles.json, active_vcs.json
@@ -22,7 +22,7 @@ from collections import deque
 
 import discord
 from discord import app_commands, ButtonStyle, SelectOption, Interaction
-# Imports for UI components
+# --- CRITICAL FIX: Ensure 'button' and 'select' are imported ---
 from discord.ui import View, Button, Modal, TextInput, Select, button, select
 from gtts import gTTS
 from shutil import which
@@ -591,11 +591,22 @@ class ShadowSynBot(discord.Client):
     async def setup_hook(self):
         # Global Error Handler for "Did Not Respond"
         self.tree.on_error = self.on_tree_error
+        
+        # --- ZOMBIE COMMAND KILLER ---
+        # This forces a clean sync to remove duplicate commands
+        print("🔄 Syncing commands... (This cleans up duplicate 'play' commands)")
         for g in self.guilds:
+            # First, clear any guild-specific commands (the source of duplicates)
+            self.tree.clear_commands(guild=g)
             await _prime_invites_cache(g)
+        
+        # Now sync the global commands (the 'Real' ones)
+        await self.tree.sync()
+        print("✅ Commands Synced!")
+
         try: self.add_view(InviteCopyView())
         except: pass
-        await self.tree.sync()
+        
         for g in self.guilds:
             try: await rehydrate_role_panel(self, g)
             except: pass
@@ -833,7 +844,7 @@ async def play(interaction: discord.Interaction, search: str):
         print("[DEBUG] Interaction deferred")
     except Exception as e:
         print(f"[DEBUG] Defer failed: {e}")
-        return # If defer fails, we can't do anything
+        return 
 
     try:
         # 2. Direct Link Check
