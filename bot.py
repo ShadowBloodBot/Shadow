@@ -1,9 +1,9 @@
-# bot.py — ShadowSyn Unified System (Native Audio + Search Menu)
+# bot.py — ShadowSyn Unified System (Robust Native Audio)
 #
 # === MODULES INCLUDED ===
 # 1. ShadowSyn Core (Welcome, Speak, Audit, Departures, Roles)
 # 2. VoiceMaster (Join-to-Create, Dynamic VCs, Control Panel)
-# 3. AudioEngine (yt-dlp Search Menu + FFmpeg)
+# 3. AudioEngine (yt-dlp Search Menu + FFmpeg + Auto-Fixer)
 #
 # Env: DISCORD_TOKEN
 # Persistence: role_picker.json, youtube_watch.json, invite_roles.json, active_vcs.json
@@ -14,14 +14,15 @@ import json
 import asyncio
 import tempfile
 import time
+import traceback
 from pathlib import Path
-from typing import Optional, Tuple, Union, Dict, List, Set, Any
+from typing import Optional, Tuple, Union, Dict, List, Set
 from datetime import datetime, timezone
 from collections import deque
 
 import discord
 from discord import app_commands, ButtonStyle, SelectOption, Interaction
-from discord.ui import View, Button, Modal, TextInput, Select, button, select
+from discord.ui import View, Button, Modal, TextInput, Select
 from gtts import gTTS
 from shutil import which
 from googletrans import Translator
@@ -98,7 +99,6 @@ CONFIG_PATH = Path("welcome_config.json")
 
 # ==================== YOUTUBE DL & AUDIO CONFIG ====================
 
-# Options for yt-dlp to stream audio reliably
 YTDL_FORMAT_OPTIONS = {
     'format': 'bestaudio/best',
     'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
@@ -136,7 +136,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         filename = data['url'] if stream else ytdl.prepare_filename(data)
         return cls(discord.FFmpegPCMAudio(filename, **FFMPEG_OPTIONS), data=data)
 
-# ==================== VOICEMASTER UTILS & PERSISTENCE =================
+# ==================== UTILS ====================
 
 _SANS_BOLD_ITALIC_MAP = {
     "A": "𝘼", "B": "𝘽", "C": "𝘾", "D": "𝘿", "E": "𝙀", "F": "𝙁", "G": "𝙂",
@@ -157,18 +157,13 @@ def _limit_channel_name(name: str, limit: int = 100) -> str:
 
 def _load_active_vcs() -> Set[int]:
     if ACTIVE_VCS_STORE.exists():
-        try:
-            data = json.loads(ACTIVE_VCS_STORE.read_text())
-            return set(data)
-        except Exception:
-            return set()
+        try: return set(json.loads(ACTIVE_VCS_STORE.read_text()))
+        except: return set()
     return set()
 
 def _save_active_vcs(vcs: Set[int]) -> None:
-    try:
-        ACTIVE_VCS_STORE.write_text(json.dumps(list(vcs)))
-    except Exception:
-        pass
+    try: ACTIVE_VCS_STORE.write_text(json.dumps(list(vcs)))
+    except: pass
 
 active_temp_vcs: Set[int] = _load_active_vcs()
 
@@ -356,12 +351,8 @@ class VCControlPanel(View):
 async def send_control_panel(vc: discord.VoiceChannel, creator: discord.Member):
     try:
         await asyncio.sleep(2.0)
-        await vc.send(
-            content=f"{creator.mention}, here is your **VoiceMaster** controls:",
-            view=VCControlPanel(vc, creator)
-        )
-    except Exception as e:
-        print(f"JTC Error: {e}")
+        await vc.send(content=f"{creator.mention}, here is your **VoiceMaster** controls:", view=VCControlPanel(vc, creator))
+    except: pass
 
 # ==================== GENERAL PERSISTENCE LOADERS ====================
 
@@ -585,6 +576,7 @@ async def _apply_invite_role(member: discord.Member, used_code: Optional[str]) -
 
 class ShadowSynBot(discord.Client):
     def __init__(self):
+        # ⚠️ CRITICAL: Enforce Privileged Intents
         intents = discord.Intents.default()
         intents.guilds = True
         intents.voice_states = True
@@ -593,10 +585,11 @@ class ShadowSynBot(discord.Client):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         self._yt_task: Optional[asyncio.Task] = None
-        # Stores simple file paths for TTS, cleared when Music starts
         self.audio_queues: Dict[int, deque] = {}
 
     async def setup_hook(self):
+        # Global Error Handler for "Did Not Respond"
+        self.tree.on_error = self.on_tree_error
         for g in self.guilds:
             await _prime_invites_cache(g)
         try: self.add_view(InviteCopyView())
@@ -607,6 +600,14 @@ class ShadowSynBot(discord.Client):
             except: pass
         if self._yt_task is None:
             self._yt_task = asyncio.create_task(youtube_watch_loop(self))
+
+    async def on_tree_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        # This catches errors and prevents "Application did not respond"
+        traceback.print_exc()
+        if interaction.response.is_done():
+            await interaction.followup.send(f"⚠️ Command Error: `{error}`", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"⚠️ Command Error: `{error}`", ephemeral=True)
 
 bot = ShadowSynBot()
 
@@ -639,7 +640,6 @@ async def _find_audit_action(guild, action, target_id, window_seconds=30):
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
     guild = member.guild
     
-    # --- VOICEMASTER LOGIC ---
     if after.channel and after.channel.id == JOIN_TO_CREATE_CHANNEL_ID:
         try:
             category = get(guild.categories, id=VC_CATEGORY_ID) or after.channel.category
@@ -669,7 +669,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
                 except Exception as e:
                     print(f"[JTC Delete Error] {e}")
 
-    # --- SHADOWSYN AUDIT LOGIC ---
     if member.bot: return
     target, _ = await resolve_target(bot, DEFAULT_AUDIT_THREAD_ID)
     if not target: return
@@ -757,28 +756,40 @@ setup_welcome(bot)
 
 # ===================== NATIVE MUSIC: SEARCH & MENU ==================
 
-async def ensure_voice(interaction: discord.Interaction):
+async def ensure_voice_robust(interaction: discord.Interaction):
+    """
+    Robust connection handler. Detects stuck connections and fixes them.
+    """
     if not interaction.user.voice:
         await safe_reply(interaction, "❌ Join a VC first!", ephemeral=True)
         return None
+    
     channel = interaction.user.voice.channel
     vc = interaction.guild.voice_client
-    if vc and vc.is_connected():
-        if vc.channel.id != channel.id:
-            await vc.move_to(channel)
-    else:
-        vc = await channel.connect()
-    return vc
+
+    try:
+        if vc and vc.is_connected():
+            if vc.channel.id != channel.id:
+                await vc.move_to(channel)
+            return vc
+        else:
+            # Fix "zombie" connections where bot thinks it's connected but isn't
+            if vc: 
+                await vc.disconnect(force=True)
+                await asyncio.sleep(0.5)
+            
+            return await channel.connect(timeout=10, reconnect=True)
+    except Exception as e:
+        await safe_reply(interaction, f"❌ Voice Error: {e}", ephemeral=True)
+        return None
 
 class MusicSelect(Select):
     def __init__(self, tracks: List[dict]):
         self.tracks = tracks
-        # Build options for dropdown
         options = []
         for i, t in enumerate(tracks[:5]):
             label = t.get('title', 'Unknown Title')[:95]
             desc = t.get('channel', 'Unknown Artist')[:95]
-            # Use index as value since URLs can be long/complex
             options.append(SelectOption(label=f"{i+1}. {label}", description=desc, value=str(i), emoji="🎵"))
         
         super().__init__(placeholder="Select a song to play...", min_values=1, max_values=1, options=options)
@@ -790,20 +801,17 @@ class MusicSelect(Select):
         track = self.tracks[idx]
         url = track.get('url') or track.get('webpage_url')
         
-        vc = await ensure_voice(interaction)
+        vc = await ensure_voice_robust(interaction)
         if not vc: return
 
-        # Music overrides current queue/playing
         if vc.is_playing():
             vc.stop()
-            # Clear TTS queue if music starts
             bot.audio_queues[interaction.guild.id] = deque()
 
         try:
             player = await YTDLSource.from_url(url, loop=bot.loop, stream=True)
             vc.play(player, after=lambda e: print(f'Player error: {e}') if e else None)
             
-            # Update the original search message to show what is playing
             embed = discord.Embed(title="▶️ Now Playing", description=f"[{player.title}]({player.url})", color=THEME_PRIMARY)
             await interaction.edit_original_response(content="", embed=embed, view=None)
         except Exception as e:
@@ -817,11 +825,13 @@ class MusicSearchView(View):
 @bot.tree.command(name="play", description="Search & Play music")
 @app_commands.describe(search="Song name or URL")
 async def play(interaction: discord.Interaction, search: str):
+    # 1. DEFER IMMEDIATELY
+    # This prevents "Application did not respond" if search takes >3s
     await safe_defer(interaction, ephemeral=True)
     
-    # 1. Direct Link Check
+    # 2. Direct Link Check
     if re.match(r'^https?://', search):
-        vc = await ensure_voice(interaction)
+        vc = await ensure_voice_robust(interaction)
         if not vc: return
         if vc.is_playing(): vc.stop()
         try:
@@ -832,9 +842,8 @@ async def play(interaction: discord.Interaction, search: str):
             await safe_reply(interaction, f"❌ Error: {e}", ephemeral=True)
         return
 
-    # 2. Search Logic
+    # 3. Search Logic
     try:
-        # Run search in thread to avoid blocking
         data = await bot.loop.run_in_executor(
             None, 
             lambda: ytdl.extract_info(f"ytsearch5:{search}", download=False)
@@ -855,7 +864,6 @@ async def stop(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc:
         await vc.disconnect()
-        # Clear queue on stop
         if interaction.guild.id in bot.audio_queues:
             bot.audio_queues[interaction.guild.id].clear()
         await safe_reply(interaction, "⏹️ Disconnected.", ephemeral=True)
@@ -898,7 +906,7 @@ async def speak(interaction: discord.Interaction, text: str, language: app_comma
     await safe_defer(interaction, ephemeral=True)
     if not ffmpeg_available(): return await safe_reply(interaction, "❌ FFmpeg missing", ephemeral=True)
     
-    vc = await ensure_voice(interaction)
+    vc = await ensure_voice_robust(interaction)
     if not vc: return
 
     lang_code = (language.value if language else "en").lower()
@@ -923,7 +931,6 @@ async def speak(interaction: discord.Interaction, text: str, language: app_comma
             bot.audio_queues[guild_id] = deque()
 
         if vc.is_playing():
-            # Add to queue if busy
             bot.audio_queues[guild_id].append(tmp_path)
             await safe_reply(interaction, "✅ Queued text", ephemeral=True)
         else:
