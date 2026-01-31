@@ -1,10 +1,10 @@
-# bot.py — ShadowSyn (RESTORED: Role Picker + Audio Fix)
+# bot.py — ShadowSyn (Final: Role Picker Restored + Audio Logic Fixed)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
 # 2. Music: Queue System, Fast Search, Role Locked
 # 3. Clip System: Auto-buffers 30s -> Saves to channel 1467055136609271818
-# 4. Core: Audit, Roles (Restored), Welcome, TTS, Youtube Watcher
+# 4. Core: Audit, Roles (Restored Dual-View), Welcome, TTS, Youtube Watcher
 #
 # LIBRARY REQUIREMENT: py-cord[voice] (NOT discord.py)
 
@@ -166,20 +166,24 @@ if HAS_SINKS:
             self.buffer = {} # user_id -> deque of bytes
             self._debug_log_counter = 0
 
+        # FIXED: Handles both argument orders (user, data) vs (data, user)
         def write(self, user, data):
+            # Fallback: Swap if 'user' is actually the data bytes
+            if hasattr(user, "data") or isinstance(user, (bytes, bytearray)):
+                user, data = data, user
+
             if user not in self.buffer:
                 self.buffer[user] = deque(maxlen=int(self.time_limit * 50))
                 print(f"[DEBUG] User {user} joined audio stream.")
             
-            # --- AGGRESSIVE DATA EXTRACTION ---
-            # Try to get raw bytes from the packet object
+            # Robust data extraction
             audio_bytes = getattr(data, "data", None)
             if not audio_bytes:
                 audio_bytes = getattr(data, "pcm", None)
-            if not audio_bytes and isinstance(data, bytes):
+            if not audio_bytes and isinstance(data, (bytes, bytearray)):
                 audio_bytes = data
             
-            if audio_bytes and isinstance(audio_bytes, bytes):
+            if audio_bytes and isinstance(audio_bytes, (bytes, bytearray)):
                 self.buffer[user].append(audio_bytes)
                 self._debug_log_counter += 1
                 if self._debug_log_counter % 500 == 0:
@@ -208,6 +212,7 @@ if HAS_SINKS:
 else:
     RingBufferSink = None
 
+# FIXED: Must be async for Py-Cord
 async def dummy_callback(sink, *args):
     pass
 
