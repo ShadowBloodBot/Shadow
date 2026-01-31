@@ -1,10 +1,10 @@
-# bot.py — ShadowSyn (Ultimate: Fixed Recording Callback)
+# bot.py — ShadowSyn (RESTORED: Role Picker + Audio Fix)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
 # 2. Music: Queue System, Fast Search, Role Locked
 # 3. Clip System: Auto-buffers 30s -> Saves to channel 1467055136609271818
-# 4. Core: Audit, Roles, Welcome, TTS, Youtube Watcher
+# 4. Core: Audit, Roles (Restored), Welcome, TTS, Youtube Watcher
 #
 # LIBRARY REQUIREMENT: py-cord[voice] (NOT discord.py)
 
@@ -164,12 +164,26 @@ if HAS_SINKS:
             super().__init__()
             self.time_limit = time_limit
             self.buffer = {} # user_id -> deque of bytes
+            self._debug_log_counter = 0
 
         def write(self, user, data):
             if user not in self.buffer:
-                # 20ms packets * 50 = 1 sec. 
                 self.buffer[user] = deque(maxlen=int(self.time_limit * 50))
-            self.buffer[user].append(data)
+                print(f"[DEBUG] User {user} joined audio stream.")
+            
+            # --- AGGRESSIVE DATA EXTRACTION ---
+            # Try to get raw bytes from the packet object
+            audio_bytes = getattr(data, "data", None)
+            if not audio_bytes:
+                audio_bytes = getattr(data, "pcm", None)
+            if not audio_bytes and isinstance(data, bytes):
+                audio_bytes = data
+            
+            if audio_bytes and isinstance(audio_bytes, bytes):
+                self.buffer[user].append(audio_bytes)
+                self._debug_log_counter += 1
+                if self._debug_log_counter % 500 == 0:
+                    print(f"[DEBUG] Recording... (Packet count: {self._debug_log_counter})")
 
         def cleanup(self):
             self.finished = True
@@ -179,6 +193,7 @@ if HAS_SINKS:
             for user_id, audio_deque in self.buffer.items():
                 if not audio_deque: continue
                 data = b''.join(audio_deque)
+                if len(data) < 4000: continue # Skip if less than ~0.1s
                 
                 f = io.BytesIO()
                 with wave.open(f, 'wb') as wav:
@@ -193,7 +208,6 @@ if HAS_SINKS:
 else:
     RingBufferSink = None
 
-# --- FIXED: MUST BE ASYNC FOR PY-CORD ---
 async def dummy_callback(sink, *args):
     pass
 
@@ -1335,7 +1349,7 @@ async def normalize_channel_id(inp: str) -> Optional[str]:
     if re.fullmatch(r"UC[0-9A-Za-z_-]{10,}", (inp or "").strip()): return inp.strip()
     return None
 
-# =================== ROLE PICKER (DUAL VIEW) ==================
+# =================== ROLE PICKER (DUAL VIEW RESTORED) ==================
 
 def _sorted_opts(options: List[dict]) -> List[dict]:
     return sorted(options, key=lambda o: str(o.get("label", "")).casefold())
@@ -1347,17 +1361,29 @@ class DualRolePickerView(View):
         self.options = _sorted_opts(options)
         self.page: int = 0
         self.page_size: int = 25
-        self.add_select = Select(placeholder="Select your game roles…", min_values=0, max_values=0, options=[], custom_id=f"ss:roles:toggle:g{guild.id}")
-        self._refresh_add_select()
+        
+        # Manually create Select menu to ensure it works correctly
+        self.add_select = Select(
+            placeholder="Select your game roles…",
+            min_values=0,
+            max_values=1, # Updated dynamically
+            options=[],
+            custom_id=f"ss:roles:toggle:g{guild.id}"
+        )
         self.add_select.callback = self._on_select_toggle
+        
+        self._refresh_add_select()
         self.add_item(self.add_select)
+
         if self._total_pages() > 1:
             self.btn_prev = Button(emoji="⬅️", style=ButtonStyle.secondary, row=1, custom_id=f"ss:roles:page_prev:g{guild.id}")
             self.btn_prev.callback = self._on_prev_page
             self.add_item(self.btn_prev)
+            
             self.btn_next = Button(emoji="➡️", style=ButtonStyle.secondary, row=1, custom_id=f"ss:roles:page_next:g{guild.id}")
             self.btn_next.callback = self._on_next_page
             self.add_item(self.btn_next)
+            
             self._update_page_buttons()
 
     def _total_pages(self) -> int:
@@ -1371,10 +1397,12 @@ class DualRolePickerView(View):
         chunk = self._current_slice()
         if not chunk:
             self.add_select.options = []
-            self.add_select.max_values = 0
+            self.add_select.max_values = 1
+            self.add_select.disabled = True
         else:
             self.add_select.options = [SelectOption(label=o["label"], value=str(o["role_id"])) for o in chunk]
             self.add_select.max_values = len(chunk)
+            self.add_select.disabled = False
 
     def _update_page_buttons(self):
         if not hasattr(self, "btn_prev"): return
@@ -1382,7 +1410,7 @@ class DualRolePickerView(View):
         self.btn_next.disabled = self.page >= (self._total_pages() - 1)
 
     async def _on_prev_page(self, interaction: Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer() # Acknowledge but don't reply
         if self.page > 0:
             self.page -= 1
             self._refresh_add_select()
@@ -1400,15 +1428,19 @@ class DualRolePickerView(View):
             except: pass
 
     async def _on_select_toggle(self, interaction: Interaction):
+        # Ephemeral reply so only user sees their role changes
         await interaction.response.defer(ephemeral=True)
+        
         if not interaction.guild: return
         member = interaction.guild.get_member(interaction.user.id)
         bot_member = interaction.guild.me
+        
         page_roles = self._current_slice()
         page_ids = {int(o["role_id"]) for o in page_roles}
         allowed = {int(o["role_id"]) for o in self.options}
         current = {r.id for r in member.roles if r.id in allowed}
         selected = {int(v) for v in (self.add_select.values or [])}
+        
         to_add = (selected - (current & page_ids)) & page_ids
         to_remove = ((current & page_ids) - selected)
         
@@ -1428,6 +1460,7 @@ class DualRolePickerView(View):
         if added: embed.add_field(name="Added", value=", ".join(added), inline=False)
         if removed: embed.add_field(name="Removed", value=", ".join(removed), inline=False)
         if not added and not removed: embed.description = "No changes."
+        
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 def role_picker_embed() -> discord.Embed:
@@ -1443,6 +1476,7 @@ async def rehydrate_role_panel(client: discord.Client, guild: discord.Guild):
         except: return
     try:
         msg = await channel.fetch_message(panel.get("message_id"))
+        # Re-attach the view to the existing message so buttons work after restart
         client.add_view(DualRolePickerView(guild, cfg.get("options", [])), message_id=msg.id)
     except: pass
 
