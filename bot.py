@@ -1,9 +1,9 @@
-# bot.py — ShadowSyn Unified System (Fixed Imports)
+# bot.py — ShadowSyn Unified System (Debug + Failsafe Audio)
 #
 # === MODULES INCLUDED ===
 # 1. ShadowSyn Core (Welcome, Speak, Audit, Departures, Roles)
 # 2. VoiceMaster (Join-to-Create, Dynamic VCs, Control Panel)
-# 3. AudioEngine (yt-dlp Search Menu + FFmpeg + Auto-Fixer)
+# 3. AudioEngine (yt-dlp Search Menu + FFmpeg)
 #
 # Env: DISCORD_TOKEN
 # Persistence: role_picker.json, youtube_watch.json, invite_roles.json, active_vcs.json
@@ -22,7 +22,7 @@ from collections import deque
 
 import discord
 from discord import app_commands, ButtonStyle, SelectOption, Interaction
-# --- FIX: Added 'button' and 'select' to imports below ---
+# Imports for UI components
 from discord.ui import View, Button, Modal, TextInput, Select, button, select
 from gtts import gTTS
 from shutil import which
@@ -603,7 +603,6 @@ class ShadowSynBot(discord.Client):
             self._yt_task = asyncio.create_task(youtube_watch_loop(self))
 
     async def on_tree_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        # This catches errors and prevents "Application did not respond"
         traceback.print_exc()
         if interaction.response.is_done():
             await interaction.followup.send(f"⚠️ Command Error: `{error}`", ephemeral=True)
@@ -757,9 +756,9 @@ setup_welcome(bot)
 
 # ===================== NATIVE MUSIC: SEARCH & MENU ==================
 
-async def ensure_voice_robust(interaction: discord.Interaction):
+async def ensure_voice_simple(interaction: discord.Interaction):
     """
-    Robust connection handler. Detects stuck connections and fixes them.
+    Standard voice connection logic.
     """
     if not interaction.user.voice:
         await safe_reply(interaction, "❌ Join a VC first!", ephemeral=True)
@@ -774,13 +773,9 @@ async def ensure_voice_robust(interaction: discord.Interaction):
                 await vc.move_to(channel)
             return vc
         else:
-            # Fix "zombie" connections where bot thinks it's connected but isn't
-            if vc: 
-                await vc.disconnect(force=True)
-                await asyncio.sleep(0.5)
-            
             return await channel.connect(timeout=10, reconnect=True)
     except Exception as e:
+        print(f"[DEBUG] Voice Connect Error: {e}")
         await safe_reply(interaction, f"❌ Voice Error: {e}", ephemeral=True)
         return None
 
@@ -797,25 +792,30 @@ class MusicSelect(Select):
 
     async def callback(self, interaction: Interaction):
         await safe_defer(interaction)
+        print(f"[DEBUG] Selected song index: {self.values[0]}")
         
         idx = int(self.values[0])
         track = self.tracks[idx]
         url = track.get('url') or track.get('webpage_url')
         
-        vc = await ensure_voice_robust(interaction)
+        vc = await ensure_voice_simple(interaction)
         if not vc: return
 
         if vc.is_playing():
             vc.stop()
-            bot.audio_queues[interaction.guild.id] = deque()
+            if interaction.guild.id in bot.audio_queues:
+                bot.audio_queues[interaction.guild.id].clear()
 
         try:
+            print(f"[DEBUG] Extracting stream URL for: {url}")
             player = await YTDLSource.from_url(url, loop=bot.loop, stream=True)
+            print(f"[DEBUG] Playing: {player.title}")
             vc.play(player, after=lambda e: print(f'Player error: {e}') if e else None)
             
             embed = discord.Embed(title="▶️ Now Playing", description=f"[{player.title}]({player.url})", color=THEME_PRIMARY)
             await interaction.edit_original_response(content="", embed=embed, view=None)
         except Exception as e:
+            print(f"[DEBUG] Play Error: {e}")
             await interaction.followup.send(f"❌ Error playing track: {e}", ephemeral=True)
 
 class MusicSearchView(View):
@@ -827,38 +827,48 @@ class MusicSearchView(View):
 @app_commands.describe(search="Song name or URL")
 async def play(interaction: discord.Interaction, search: str):
     # 1. DEFER IMMEDIATELY
-    # This prevents "Application did not respond" if search takes >3s
-    await safe_defer(interaction, ephemeral=True)
-    
-    # 2. Direct Link Check
-    if re.match(r'^https?://', search):
-        vc = await ensure_voice_robust(interaction)
-        if not vc: return
-        if vc.is_playing(): vc.stop()
-        try:
+    print(f"[DEBUG] Play command received: {search}")
+    try:
+        await safe_defer(interaction, ephemeral=True)
+        print("[DEBUG] Interaction deferred")
+    except Exception as e:
+        print(f"[DEBUG] Defer failed: {e}")
+        return # If defer fails, we can't do anything
+
+    try:
+        # 2. Direct Link Check
+        if re.match(r'^https?://', search):
+            print("[DEBUG] Direct link detected")
+            vc = await ensure_voice_simple(interaction)
+            if not vc: return
+            if vc.is_playing(): vc.stop()
+            
+            print("[DEBUG] Processing direct link...")
             player = await YTDLSource.from_url(search, loop=bot.loop, stream=True)
             vc.play(player)
             await safe_reply(interaction, f"▶️ **Playing:** {player.title}", ephemeral=True)
-        except Exception as e:
-            await safe_reply(interaction, f"❌ Error: {e}", ephemeral=True)
-        return
+            return
 
-    # 3. Search Logic
-    try:
+        # 3. Search Logic
+        print("[DEBUG] Searching YouTube...")
         data = await bot.loop.run_in_executor(
             None, 
             lambda: ytdl.extract_info(f"ytsearch5:{search}", download=False)
         )
+        print("[DEBUG] Search complete")
         
         if 'entries' not in data or not data['entries']:
-            return await safe_reply(interaction, "❌ No results found.", ephemeral=True)
+            await safe_reply(interaction, "❌ No results found.", ephemeral=True)
+            return
             
         tracks = data['entries']
         view = MusicSearchView(tracks)
         await safe_reply(interaction, f"🔎 Results for **{search}**:", view=view, ephemeral=True)
 
     except Exception as e:
-        await safe_reply(interaction, f"❌ Search error: {e}", ephemeral=True)
+        print(f"[DEBUG] Critical Play Error: {e}")
+        traceback.print_exc()
+        await safe_reply(interaction, f"❌ Critical Error: `{e}`", ephemeral=True)
 
 @bot.tree.command(name="stop", description="Stop music and disconnect")
 async def stop(interaction: discord.Interaction):
@@ -907,7 +917,7 @@ async def speak(interaction: discord.Interaction, text: str, language: app_comma
     await safe_defer(interaction, ephemeral=True)
     if not ffmpeg_available(): return await safe_reply(interaction, "❌ FFmpeg missing", ephemeral=True)
     
-    vc = await ensure_voice_robust(interaction)
+    vc = await ensure_voice_simple(interaction)
     if not vc: return
 
     lang_code = (language.value if language else "en").lower()
