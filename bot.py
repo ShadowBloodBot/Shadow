@@ -1,12 +1,12 @@
-# bot.py — ShadowSyn (Ultimate: Auto-Clip to Specific Channel)
+# bot.py — ShadowSyn (Ultimate: Py-Cord Edition + Auto-Clip)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
-# 2. Music: Queue System, Fast Search, Role Locked, Crash-Proof Audio
+# 2. Music: Queue System, Fast Search, Role Locked
 # 3. Clip System: Auto-buffers 30s -> Saves to channel 1467055136609271818
 # 4. Core: Audit, Roles, Welcome, TTS, Youtube Watcher
 #
-# Env: DISCORD_TOKEN
+# LIBRARY REQUIREMENT: py-cord[voice] (NOT discord.py)
 
 import os
 import re
@@ -23,16 +23,17 @@ from datetime import datetime, timezone
 from collections import deque
 
 import discord
-from discord import app_commands, ButtonStyle, SelectOption, Interaction
-from discord.ui import View, Button, Modal, TextInput, Select, button, select
+from discord import Option, ButtonStyle, SelectOption, Interaction
+from discord.ui import View, Button, Modal, TextInput, Select
+from discord.ext import commands
 
-# --- AUDIO SINK ---
+# --- AUDIO SINK (Native to Py-Cord) ---
 try:
     from discord.sinks import Sink, Filters, default_filters
     HAS_SINKS = True
 except ImportError:
     HAS_SINKS = False
-    print("⚠️ WARNING: 'discord.sinks' not found. Clipping will not work (Requires Py-Cord).")
+    print("⚠️ WARNING: 'discord.sinks' not found. Ensure you are using py-cord.")
     class Sink: pass
 
 from gtts import gTTS
@@ -59,7 +60,7 @@ SPEAK_LOG_THREAD_ID     = 1400048671973703690
 DEPARTURES_THREAD_ID    = 960088192177029140
 DEFAULT_TARGET_ID       = 1166874144395247757
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
-CLIPS_TARGET_ID         = 1467055136609271818  # <--- UPDATED CLIP DESTINATION
+CLIPS_TARGET_ID         = 1467055136609271818
 
 # VoiceMaster Config
 JOIN_TO_CREATE_CHANNEL_ID = 1398618132788281364
@@ -83,20 +84,16 @@ if not TOKEN:
 
 translator = Translator()
 
+# Py-Cord uses list of strings for choices usually, or Option
 LANG_CHOICES = [
-    app_commands.Choice(name="English",    value="en"),
-    app_commands.Choice(name="Japanese",   value="ja"),
-    app_commands.Choice(name="German",     value="de"),
-    app_commands.Choice(name="Spanish",    value="es"),
-    app_commands.Choice(name="French",     value="fr"),
-    app_commands.Choice(name="Italian",    value="it"),
-    app_commands.Choice(name="Portuguese", value="pt"),
-    app_commands.Choice(name="Russian",    value="ru"),
-    app_commands.Choice(name="Korean",     value="ko"),
-    app_commands.Choice(name="Chinese",    value="zh-CN"),
-    app_commands.Choice(name="Hindi",      value="hi"),
-    app_commands.Choice(name="Indonesian", value="id"),
+    "English", "Japanese", "German", "Spanish", "French", 
+    "Italian", "Portuguese", "Russian", "Korean", "Chinese", "Hindi", "Indonesian"
 ]
+LANG_CODES = {
+    "English": "en", "Japanese": "ja", "German": "de", "Spanish": "es", 
+    "French": "fr", "Italian": "it", "Portuguese": "pt", "Russian": "ru",
+    "Korean": "ko", "Chinese": "zh-CN", "Hindi": "hi", "Indonesian": "id"
+}
 
 # ==================== PERSISTENCE ===================
 
@@ -184,12 +181,11 @@ if HAS_SINKS:
                 if not audio_deque: continue
                 data = b''.join(audio_deque)
                 
-                # Create in-memory WAV file
                 f = io.BytesIO()
                 with wave.open(f, 'wb') as wav:
-                    wav.setnchannels(2) # Stereo
-                    wav.setsampwidth(2) # 16-bit
-                    wav.setframerate(48000) # 48kHz
+                    wav.setnchannels(2) 
+                    wav.setsampwidth(2) 
+                    wav.setframerate(48000) 
                     wav.writeframes(data)
                 f.seek(0)
                 
@@ -231,17 +227,23 @@ def _to_sans_bold_italic(text: str) -> str:
 def _limit_channel_name(name: str, limit: int = 100) -> str:
     return name[:limit] if len(name) > limit else name
 
-async def safe_reply(inter: discord.Interaction, *args, **kwargs):
+# Modified safe_reply for Py-Cord Context (ctx) or Interaction
+async def safe_reply(ctx_or_inter, *args, **kwargs):
     try:
-        if not inter.response.is_done(): 
-            return await inter.response.send_message(*args, **kwargs)
-        else: 
-            return await inter.followup.send(*args, **kwargs)
+        # Py-Cord 'respond' handles both initial and followups
+        if hasattr(ctx_or_inter, 'respond'):
+            return await ctx_or_inter.respond(*args, **kwargs)
+        # Fallback for pure interactions in Views
+        elif hasattr(ctx_or_inter, 'response'):
+            if not ctx_or_inter.response.is_done():
+                return await ctx_or_inter.response.send_message(*args, **kwargs)
+            else:
+                return await ctx_or_inter.followup.send(*args, **kwargs)
     except: return None
 
-async def safe_defer(inter: discord.Interaction, *, ephemeral: bool = False):
+async def safe_defer(ctx, ephemeral=False):
     try:
-        if not inter.response.is_done(): await inter.response.defer(ephemeral=ephemeral)
+        await ctx.defer(ephemeral=ephemeral)
     except: pass
 
 async def resolve_target(client: discord.Client, target_id: int):
@@ -259,14 +261,15 @@ async def resolve_target(client: discord.Client, target_id: int):
         return ch, parent
     return None, None
 
-# --- AUTO-RECORDING VOICE HELPER ---
-async def ensure_voice_simple(interaction: discord.Interaction):
-    if not interaction.user.voice:
-        await safe_reply(interaction, "❌ Join a VC first!", ephemeral=True)
+async def ensure_voice_simple(ctx):
+    # Py-Cord 'ctx' has .author
+    user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
+    if not user.voice:
+        await safe_reply(ctx, "❌ Join a VC first!", ephemeral=True)
         return None
     
-    channel = interaction.user.voice.channel
-    vc = interaction.guild.voice_client
+    channel = user.voice.channel
+    vc = ctx.guild.voice_client
 
     try:
         if vc and vc.is_connected():
@@ -275,9 +278,10 @@ async def ensure_voice_simple(interaction: discord.Interaction):
         else:
             vc = await channel.connect(timeout=10, reconnect=True)
         
-        # --- AUTO RECORDING HOOK ---
+        # --- AUTO RECORDING HOOK (Py-Cord Native) ---
         if HAS_SINKS and vc and vc.is_connected():
-            if hasattr(vc, "recording") and not vc.recording:
+            # Py-Cord VCs have 'recording' attribute
+            if not vc.recording:
                 try:
                     vc.start_recording(RingBufferSink(time_limit=30), dummy_callback)
                     print(f"🎙️ Auto-recording started in {channel.name}")
@@ -286,36 +290,35 @@ async def ensure_voice_simple(interaction: discord.Interaction):
         
         return vc
     except Exception as e:
-        await safe_reply(interaction, f"❌ Voice Error: {e}", ephemeral=True)
+        await safe_reply(ctx, f"❌ Voice Error: {e}", ephemeral=True)
         return None
 
 def dj_role_check():
-    async def predicate(interaction: discord.Interaction):
-        if interaction.user.guild_permissions.manage_guild: return True
-        if any(role.id == DJ_ROLE_ID for role in interaction.user.roles): return True
-        await interaction.response.send_message("🚫 You need the **Music Role** to use this.", ephemeral=True)
+    def predicate(ctx):
+        if ctx.author.guild_permissions.manage_guild: return True
+        if any(role.id == DJ_ROLE_ID for role in ctx.author.roles): return True
         return False
-    return app_commands.check(predicate)
+    return commands.check(predicate)
 
 def admin_only():
-    async def predicate(inter: discord.Interaction) -> bool:
-        if not isinstance(inter.user, discord.Member): return False
-        return any(r.id == ROLE_ADMIN_ID for r in inter.user.roles)
-    return app_commands.check(predicate)
+    def predicate(ctx):
+        if not isinstance(ctx.author, discord.Member): return False
+        return any(r.id == ROLE_ADMIN_ID for r in ctx.author.roles)
+    return commands.check(predicate)
 
 # ==================== VOICEMASTER COMPONENTS =================
 
-class VCNameModal(Modal, title="Rename Voice Channel"):
+class VCNameModal(Modal):
     def __init__(self, vc):
-        super().__init__()
+        super().__init__(title="Rename Voice Channel")
         self.vc = vc
-        self.new_name = TextInput(label="New VC Name", placeholder="Enter name...", required=True, max_length=50)
-        self.add_item(self.new_name)
+        self.add_item(TextInput(label="New VC Name", placeholder="Enter name...", required=True, max_length=50))
 
-    async def on_submit(self, interaction: Interaction):
+    async def callback(self, interaction: Interaction):
+        new_name = self.children[0].value
         try:
-            await self.vc.edit(name=self.new_name.value)
-            await interaction.response.send_message(f"✅ Renamed to **{self.new_name.value}**", ephemeral=True)
+            await self.vc.edit(name=new_name)
+            await interaction.response.send_message(f"✅ Renamed to **{new_name}**", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
 
@@ -395,7 +398,7 @@ class VCControlPanel(View):
         return False
 
     @button(label="🔒 Lock", style=ButtonStyle.danger, custom_id="lock_vc")
-    async def lock(self, interaction: Interaction, button: Button):
+    async def lock(self, button: Button, interaction: Interaction):
         if not await self._check_perm(interaction): return
         try:
             overwrites = {interaction.guild.default_role: discord.PermissionOverwrite(connect=False), self.creator: discord.PermissionOverwrite(connect=True)}
@@ -406,7 +409,7 @@ class VCControlPanel(View):
         except Exception as e: await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
 
     @button(label="🔓 Unlock", style=ButtonStyle.success, custom_id="unlock_vc")
-    async def unlock(self, interaction: Interaction, button: Button):
+    async def unlock(self, button: Button, interaction: Interaction):
         if not await self._check_perm(interaction): return
         try:
             await self.vc.set_permissions(interaction.guild.default_role, connect=True)
@@ -414,7 +417,7 @@ class VCControlPanel(View):
         except: pass
 
     @button(label="❌ Delete", style=ButtonStyle.red, custom_id="delete_vc")
-    async def delete(self, interaction: Interaction, button: Button):
+    async def delete(self, button: Button, interaction: Interaction):
         if not await self._check_perm(interaction): return
         try:
             await self.vc.delete()
@@ -422,19 +425,19 @@ class VCControlPanel(View):
         except: pass
 
     @button(label="✏️ Rename", style=ButtonStyle.blurple, custom_id="rename_vc")
-    async def rename(self, interaction: Interaction, button: Button):
+    async def rename(self, button: Button, interaction: Interaction):
         if not await self._check_perm(interaction): return
         await interaction.response.send_modal(VCNameModal(self.vc))
 
     @button(label="👢 Kick", style=ButtonStyle.gray, custom_id="kick_members")
-    async def kick(self, interaction: Interaction, button: Button):
+    async def kick(self, button: Button, interaction: Interaction):
         if not await self._check_perm(interaction): return
         members = [m for m in self.vc.members if m != interaction.guild.me]
         if not members: return await interaction.response.send_message("⚠️ No members to kick.", ephemeral=True)
         await interaction.response.send_message("Select member:", view=KickMemberView(self.vc, members), ephemeral=True)
 
     @select(placeholder="Bitrate", options=[SelectOption(label="64 kbps", value="64000"), SelectOption(label="96 kbps", value="96000"), SelectOption(label="128 kbps", value="128000"), SelectOption(label="256 kbps", value="256000"), SelectOption(label="384 kbps", value="384000")], custom_id="bitrate_select")
-    async def bitrate(self, interaction: Interaction, select: Select):
+    async def bitrate(self, select: Select, interaction: Interaction):
         if not await self._check_perm(interaction): return
         try:
             await self.vc.edit(bitrate=int(select.values[0]))
@@ -442,7 +445,7 @@ class VCControlPanel(View):
         except Exception as e: await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
 
     @select(placeholder="User Limit", options=[SelectOption(label="Unlimited", value="0"), SelectOption(label="2", value="2"), SelectOption(label="5", value="5"), SelectOption(label="10", value="10"), SelectOption(label="25", value="25")], custom_id="limit_select")
-    async def limit(self, interaction: Interaction, select: Select):
+    async def limit(self, select: Select, interaction: Interaction):
         if not await self._check_perm(interaction): return
         try:
             await self.vc.edit(user_limit=int(select.values[0]))
@@ -545,6 +548,24 @@ def safe_avatar_url(member: Union[discord.Member, discord.User]) -> Optional[str
     try: return member.display_avatar.url
     except: return None
 
+def utcnow(): return datetime.now(timezone.utc)
+def ffmpeg_available() -> bool: return which("ffmpeg") is not None
+
+async def resolve_target(client: discord.Client, target_id: int):
+    ch = client.get_channel(target_id)
+    if ch is None:
+        try: ch = await client.fetch_channel(target_id)
+        except: return None, None
+    if isinstance(ch, discord.TextChannel): return ch, ch
+    if isinstance(ch, discord.Thread):
+        try:
+            if ch.archived or ch.locked: await ch.edit(archived=False, locked=False)
+            await ch.join()
+        except: pass
+        parent = ch.parent if isinstance(ch.parent, discord.TextChannel) else None
+        return ch, parent
+    return None, None
+
 def human_ago(dt: Optional[datetime]) -> str:
     if not isinstance(dt, datetime): return "Unknown"
     if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
@@ -631,60 +652,30 @@ async def _apply_invite_role(member: discord.Member, used_code: Optional[str]) -
         return True, role.name
     except Exception as e: return False, str(e)
 
-# ============================ BOT CORE ===========================
+# ============================ BOT CORE (Py-Cord) ===========================
 
-class ShadowSynBot(discord.Client):
+class ShadowSynBot(discord.Bot):
     def __init__(self):
-        intents = discord.Intents.default()
-        intents.guilds = True
-        intents.voice_states = True
-        intents.members = True
-        intents.message_content = True
-        super().__init__(intents=intents)
-        self.tree = app_commands.CommandTree(self)
+        super().__init__(intents=discord.Intents.all())
         self._yt_task: Optional[asyncio.Task] = None
-        self.audio_queues: Dict[int, deque] = {} # Guild ID -> Deque of (url, title)
+        self.audio_queues: Dict[int, deque] = {} 
         self.synced = False
-
-    async def setup_hook(self):
-        self.tree.on_error = self.on_tree_error
-        if self._yt_task is None:
-            self._yt_task = asyncio.create_task(youtube_watch_loop(self))
-
-    async def on_tree_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        traceback.print_exc()
-        if interaction.response.is_done():
-            await interaction.followup.send(f"⚠️ Command Error: `{error}`", ephemeral=True)
-        else:
-            await interaction.response.send_message(f"⚠️ Command Error: `{error}`", ephemeral=True)
 
 bot = ShadowSynBot()
 
 @bot.event
 async def on_ready():
-    print(f"✅ Logged in as {bot.user}")
+    print(f"✅ Logged in as {bot.user} (Py-Cord)")
+    if bot._yt_task is None:
+        bot._yt_task = asyncio.create_task(youtube_watch_loop(bot))
     
-    if not bot.synced:
-        print("🔄 Performing Cleanup Sync...")
-        try:
-            for guild in bot.guilds:
-                bot.tree.clear_commands(guild=guild)
-                await bot.tree.sync(guild=guild)
-                await _prime_invites_cache(guild)
-            
-            await bot.tree.sync()
-            print("✅ Sync Complete.")
-            bot.synced = True
-        except Exception as e:
-            print(f"❌ Sync Error: {e}")
-
-    try: bot.add_view(InviteCopyView())
-    except: pass
-    print(f"Active Temp VCs: {len(active_temp_vcs)} loaded from disk.")
-    
-    for g in bot.guilds:
-        try: await rehydrate_role_panel(bot, g)
+    # Primes invitation cache
+    for guild in bot.guilds:
+        await _prime_invites_cache(guild)
+        try: await rehydrate_role_panel(bot, guild)
         except: pass
+    
+    print(f"Active Temp VCs: {len(active_temp_vcs)} loaded from disk.")
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
@@ -714,13 +705,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             print(f"[JTC Debug] {member.display_name} joined JTC channel.")
             category = get(guild.categories, id=VC_CATEGORY_ID) or after.channel.category
             
-            if not guild.me.guild_permissions.manage_channels:
-                print("[JTC Error] Missing 'Manage Channels' permission.")
-                return
-            if not guild.me.guild_permissions.move_members:
-                print("[JTC Error] Missing 'Move Members' permission.")
-                return
-
             base = member.nick or member.name
             styled = _to_sans_bold_italic(f"{base}'s Room")
             final_name = _limit_channel_name(styled)
@@ -777,26 +761,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         except: pass
         return
 
-    if before.mute != after.mute:
-        entry = await _find_audit_action(member.guild, discord.AuditLogAction.member_update, member.id)
-        if entry:
-            actor = safe_display_name(entry.user)
-            try: await target.send(f"{actor} {'muted' if after.mute else 'unmuted'} {m_name}")
-            except: pass
-            return
-
-    if before.deaf != after.deaf:
-        entry = await _find_audit_action(member.guild, discord.AuditLogAction.member_update, member.id)
-        if entry:
-            actor = safe_display_name(entry.user)
-            try: await target.send(f"{actor} {'deafened' if after.deaf else 'undeafened'} {m_name}")
-            except: pass
-            return
-
-    if before.self_mute != after.self_mute or before.self_deaf != after.self_deaf:
-        try: await target.send(f"🎛️ {m_name} toggled mute/deafen")
-        except: pass
-
 # ================== WELCOME (Minion quick-grant) =================
 
 def setup_welcome(client: discord.Client):
@@ -848,20 +812,11 @@ def check_queue(guild_id: int, vc: discord.VoiceClient):
         return
     
     if guild_id in bot.audio_queues and bot.audio_queues[guild_id]:
-        # Get next track
         next_track = bot.audio_queues[guild_id].popleft()
         url, title = next_track
-        
-        # We need to run the async source creation in a threadsafe way
-        # Since 'after' callback is not async, we use run_coroutine_threadsafe
         future = asyncio.run_coroutine_threadsafe(play_track(vc, url, title, guild_id), bot.loop)
-        try:
-            future.result()
-        except:
-            pass
-    else:
-        # Queue empty
-        pass
+        try: future.result()
+        except: pass
 
 async def play_track(vc: discord.VoiceClient, url: str, title: str, guild_id: int):
     try:
@@ -884,7 +839,6 @@ class MusicSelect(Select):
 
     async def callback(self, interaction: Interaction):
         await safe_defer(interaction)
-        
         idx = int(self.values[0])
         track = self.tracks[idx]
         url = track.get('url') or track.get('webpage_url')
@@ -909,64 +863,60 @@ class MusicSearchView(View):
         super().__init__(timeout=60)
         self.add_item(MusicSelect(tracks))
 
-@bot.tree.command(name="play", description="Search & Play music (Queue enabled)")
-@app_commands.describe(search="Song name or URL")
+@bot.slash_command(name="play", description="Search & Play music (Queue enabled)")
 @dj_role_check()
-async def play(interaction: discord.Interaction, search: str):
-    await safe_defer(interaction, ephemeral=True)
+async def play(ctx: discord.ApplicationContext, search: Option(str, description="Song name or URL")):
+    await safe_defer(ctx)
     
     try:
-        # 1. Direct Link
         if re.match(r'^https?://', search):
-            vc = await ensure_voice_simple(interaction)
+            vc = await ensure_voice_simple(ctx)
             if not vc: return
             
-            guild_id = interaction.guild.id
+            guild_id = ctx.guild.id
             if guild_id not in bot.audio_queues:
                 bot.audio_queues[guild_id] = deque()
 
-            # Need to get title for direct link (fast extract)
             info = await bot.loop.run_in_executor(None, lambda: ytdl_search.extract_info(search, download=False))
             title = info.get('title', 'Unknown Track')
 
             if vc.is_playing():
                 bot.audio_queues[guild_id].append((search, title))
-                await safe_reply(interaction, f"📝 **Queued:** {title}", ephemeral=True)
+                await safe_reply(ctx, f"📝 **Queued:** {title}", ephemeral=True)
             else:
-                await safe_reply(interaction, f"▶️ **Playing:** {title}", ephemeral=True)
+                await safe_reply(ctx, f"▶️ **Playing:** {title}", ephemeral=True)
                 await play_track(vc, search, title, guild_id)
             return
 
-        # 2. Search
         data = await bot.loop.run_in_executor(None, lambda: ytdl_search.extract_info(f"ytsearch5:{search}", download=False))
         if 'entries' not in data or not data['entries']:
-            await safe_reply(interaction, "❌ No results found.", ephemeral=True)
+            await safe_reply(ctx, "❌ No results found.", ephemeral=True)
             return
             
         tracks = data['entries']
         view = MusicSearchView(tracks)
-        await safe_reply(interaction, f"🔎 Results for **{search}**:", view=view, ephemeral=True)
+        await safe_reply(ctx, f"🔎 Results for **{search}**:", view=view, ephemeral=True)
 
     except Exception as e:
         print(f"[DEBUG] Play Error: {e}")
-        await safe_reply(interaction, f"❌ Error: `{e}`", ephemeral=True)
+        await safe_reply(ctx, f"❌ Error: `{e}`", ephemeral=True)
 
-@bot.tree.command(name="skip", description="Skip the current song")
+@bot.slash_command(name="skip", description="Skip the current song")
 @dj_role_check()
-async def skip(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
+async def skip(ctx: discord.ApplicationContext):
+    vc = ctx.guild.voice_client
     if vc and vc.is_playing():
-        vc.stop() # This triggers 'after' callback which plays next
-        await safe_reply(interaction, "⏭️ Skipped.", ephemeral=True)
+        vc.stop()
+        await safe_reply(ctx, "⏭️ Skipped.", ephemeral=True)
     else:
-        await safe_reply(interaction, "❌ Nothing is playing.", ephemeral=True)
+        await safe_reply(ctx, "❌ Nothing is playing.", ephemeral=True)
 
-@bot.tree.command(name="queue", description="Show the music queue")
+@bot.slash_command(name="queue", description="Show the music queue")
 @dj_role_check()
-async def queue(interaction: discord.Interaction):
-    gid = interaction.guild.id
+async def queue(ctx: discord.ApplicationContext):
+    gid = ctx.guild.id
     if gid not in bot.audio_queues or not bot.audio_queues[gid]:
-        return await safe_reply(interaction, "ℹ️ Queue is empty.", ephemeral=True)
+        return await safe_reply(ctx, "ℹ️ Queue is empty.", ephemeral=True)
     
     lines = []
     for i, (url, title) in enumerate(list(bot.audio_queues[gid])[:10]):
@@ -976,98 +926,95 @@ async def queue(interaction: discord.Interaction):
     if len(bot.audio_queues[gid]) > 10:
         embed.set_footer(text=f"...and {len(bot.audio_queues[gid])-10} more")
     
-    await safe_reply(interaction, embed=embed, ephemeral=True)
+    await safe_reply(ctx, embed=embed, ephemeral=True)
 
-@bot.tree.command(name="stop", description="Stop music and clear queue")
+@bot.slash_command(name="stop", description="Stop music and clear queue")
 @dj_role_check()
-async def stop(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
+async def stop(ctx: discord.ApplicationContext):
+    vc = ctx.guild.voice_client
     if vc:
-        # Clear queue first so 'after' doesn't trigger next song
-        if interaction.guild.id in bot.audio_queues:
-            bot.audio_queues[interaction.guild.id].clear()
+        if ctx.guild.id in bot.audio_queues:
+            bot.audio_queues[ctx.guild.id].clear()
         
         await vc.disconnect()
-        await safe_reply(interaction, "⏹️ Stopped & Cleared.", ephemeral=True)
+        await safe_reply(ctx, "⏹️ Stopped & Cleared.", ephemeral=True)
     else:
-        await safe_reply(interaction, "ℹ️ Not connected.", ephemeral=True)
+        await safe_reply(ctx, "ℹ️ Not connected.", ephemeral=True)
 
 # ===================== CLIPPING COMMANDS =====================
 
-@bot.tree.command(name="join", description="Join VC and start Auto-Recording")
-async def join(interaction: discord.Interaction):
-    await safe_defer(interaction, ephemeral=True)
-    vc = await ensure_voice_simple(interaction)
+@bot.slash_command(name="join", description="Join VC and start Auto-Recording")
+async def join(ctx: discord.ApplicationContext):
+    await safe_defer(ctx)
+    vc = await ensure_voice_simple(ctx)
     if vc:
-        await safe_reply(interaction, f"✅ Joined {vc.channel.mention} and started auto-recording.", ephemeral=True)
+        await safe_reply(ctx, f"✅ Joined {vc.channel.mention} and started auto-recording.", ephemeral=True)
 
-@bot.tree.command(name="clip", description="Clip the last 30s of audio and save to thread")
-async def clip(interaction: discord.Interaction):
-    await safe_defer(interaction)
-    
-    vc = interaction.guild.voice_client
+@bot.slash_command(name="clip", description="Clip last 30s and save to channel")
+async def clip(ctx: discord.ApplicationContext):
+    await safe_defer(ctx)
+    vc = ctx.guild.voice_client
     if not vc or not vc.is_connected():
-        return await safe_reply(interaction, "❌ I am not in a voice channel.", ephemeral=True)
+        return await safe_reply(ctx, "❌ I am not in a voice channel.", ephemeral=True)
 
     if not HAS_SINKS:
-        return await safe_reply(interaction, "❌ Clipping not supported (Missing Py-Cord).", ephemeral=True)
+        return await safe_reply(ctx, "❌ Clipping not supported (Missing Py-Cord).", ephemeral=True)
 
-    # Check for active sink
     if not hasattr(vc, "recording") or not vc.recording:
-        # Try to start it now if it wasn't running
         try:
             vc.start_recording(RingBufferSink(time_limit=30), dummy_callback)
-            return await safe_reply(interaction, "⚠️ Recording was not active. Started now. Try again in 30s.", ephemeral=True)
+            return await safe_reply(ctx, "⚠️ Recording started now. Try again in 30s.", ephemeral=True)
         except:
-            return await safe_reply(interaction, "❌ Could not access recording stream.", ephemeral=True)
+            return await safe_reply(ctx, "❌ Could not access recording stream.", ephemeral=True)
 
     sink = vc.sink
     if not isinstance(sink, RingBufferSink):
-        return await safe_reply(interaction, "❌ Current recording format does not support clipping.", ephemeral=True)
+        return await safe_reply(ctx, "❌ Current recording format does not support clipping.", ephemeral=True)
 
     files = sink.get_recent_clips()
     if not files:
-        return await safe_reply(interaction, "ℹ️ No audio data found in buffer.", ephemeral=True)
+        return await safe_reply(ctx, "ℹ️ No audio data found in buffer.", ephemeral=True)
 
-    # --- SAVE TO TARGET CHANNEL/THREAD ---
     target_id = CLIPS_TARGET_ID
-    target_ch, _ = await resolve_target(interaction.client, target_id)
+    target_ch, _ = await resolve_target(ctx.bot, target_id)
     
     if target_ch:
         try:
-            msg = await target_ch.send(content=f"✂️ **Clip recorded by {interaction.user.mention}**", files=files)
-            await safe_reply(interaction, f"✅ Clip saved to {target_ch.mention}.", ephemeral=True)
+            await target_ch.send(content=f"✂️ **Clip recorded by {ctx.author.mention}**", files=files)
+            await safe_reply(ctx, f"✅ Clip saved to {target_ch.mention}.", ephemeral=True)
         except Exception as e:
-            await safe_reply(interaction, f"❌ Failed to save to target: {e}. Here it is instead:", files=files)
+            await safe_reply(ctx, f"❌ Failed to save to target: {e}. Here it is instead:", files=files)
     else:
-        await interaction.followup.send(content=f"⚠️ Clip target channel (`{target_id}`) not found. Here is your clip:", files=files)
+        await safe_reply(ctx, f"⚠️ Clip target channel (`{target_id}`) not found. Here is your clip:", files=files)
 
 # ===================== /SPEAK (TTS) ==================
 
-async def log_speak_usage(inter, text, lang):
+async def log_speak_usage(user, text, lang):
     target, _ = await resolve_target(bot, SPEAK_LOG_THREAD_ID)
     if target:
         embed = discord.Embed(title="🗣️ /speak used", color=THEME_PRIMARY)
-        embed.add_field(name="User", value=str(inter.user), inline=False)
+        embed.add_field(name="User", value=str(user), inline=False)
         embed.add_field(name="Language", value=lang, inline=True)
         embed.add_field(name="Text", value=text[:1024], inline=False)
         try: await target.send(embed=embed)
         except: pass
 
-@bot.tree.command(name="speak", description="Speak text in your VC")
-@app_commands.describe(text="Message", language="Target language")
-@app_commands.choices(language=LANG_CHOICES)
-async def speak(interaction: discord.Interaction, text: str, language: app_commands.Choice[str] = None):
-    if not isinstance(interaction.user, discord.Member) or not any(r.id == ROLE_MEMBER_ID for r in interaction.user.roles):
-        return await safe_reply(interaction, "❌ `/speak` is restricted to Members.", ephemeral=True)
+@bot.slash_command(name="speak", description="Speak text in your VC")
+async def speak(
+    ctx: discord.ApplicationContext, 
+    text: Option(str, "Message"), 
+    language: Option(str, "Language", choices=LANG_CHOICES, default="English")
+):
+    if not isinstance(ctx.author, discord.Member) or not any(r.id == ROLE_MEMBER_ID for r in ctx.author.roles):
+        return await safe_reply(ctx, "❌ `/speak` is restricted to Members.", ephemeral=True)
 
-    await safe_defer(interaction, ephemeral=True)
-    if not ffmpeg_available(): return await safe_reply(interaction, "❌ FFmpeg missing", ephemeral=True)
+    await safe_defer(ctx, ephemeral=True)
+    if not ffmpeg_available(): return await safe_reply(ctx, "❌ FFmpeg missing", ephemeral=True)
     
-    vc = await ensure_voice_simple(interaction)
+    vc = await ensure_voice_simple(ctx)
     if not vc: return
 
-    lang_code = (language.value if language else "en").lower()
+    lang_code = LANG_CODES.get(language, "en")
     try:
         to_say = text
         if lang_code != "en":
@@ -1078,34 +1025,34 @@ async def speak(interaction: discord.Interaction, text: str, language: app_comma
         gTTS(text=to_say, lang=lang_code).save(tmp)
         vc.play(discord.FFmpegPCMAudio(tmp))
         
-        await log_speak_usage(interaction, text, lang_code)
-        await safe_reply(interaction, "✅ Spoke text", ephemeral=True)
+        await log_speak_usage(ctx.author, text, lang_code)
+        await safe_reply(ctx, "✅ Spoke text", ephemeral=True)
     except Exception as e:
-        await safe_reply(interaction, f"❌ Error: `{e}`", ephemeral=True)
+        await safe_reply(ctx, f"❌ Error: `{e}`", ephemeral=True)
 
 # ======================== CUSTOM EMBED MODAL =====================
 
-class CustomEmbedModal(Modal, title="Send Custom Embed"):
-    def __init__(self, target_id: int):
-        super().__init__(timeout=300)
+class CustomEmbedModal(Modal):
+    def __init__(self, target_id: int, bot_ref):
+        super().__init__(title="Send Custom Embed")
         self.target_id = target_id
-        self.title_input = TextInput(label="Title", max_length=256)
-        self.message_input = TextInput(label="Message", style=discord.TextStyle.paragraph, max_length=4000)
-        self.add_item(self.title_input)
-        self.add_item(self.message_input)
+        self.bot_ref = bot_ref
+        self.add_item(TextInput(label="Title", max_length=256))
+        self.add_item(TextInput(label="Message", style=discord.InputTextStyle.paragraph, max_length=4000))
 
-    async def on_submit(self, interaction):
-        embed = discord.Embed(title=self.title_input.value, description=self.message_input.value, color=THEME_PRIMARY)
-        ch = interaction.client.get_channel(self.target_id)
+    async def callback(self, interaction: Interaction):
+        title = self.children[0].value
+        desc = self.children[1].value
+        embed = discord.Embed(title=title, description=desc, color=THEME_PRIMARY)
+        ch = self.bot_ref.get_channel(self.target_id)
         if ch:
             try: await ch.send(embed=embed)
-            except Exception as e: return await safe_reply(interaction, f"❌ Failed: `{e}`", ephemeral=True)
-        await safe_reply(interaction, "✅ Posted", ephemeral=True)
+            except Exception as e: return await interaction.response.send_message(f"❌ Failed: `{e}`", ephemeral=True)
+        await interaction.response.send_message("✅ Posted", ephemeral=True)
 
-@bot.tree.command(name="send_custom", description="Send a custom embed here")
-async def send_custom(interaction: discord.Interaction):
-    try: await interaction.response.send_modal(CustomEmbedModal(interaction.channel.id))
-    except: await safe_reply(interaction, "❌ Couldn't open modal.", ephemeral=True)
+@bot.slash_command(name="send_custom", description="Send a custom embed here")
+async def send_custom(ctx: discord.ApplicationContext):
+    await ctx.send_modal(CustomEmbedModal(ctx.channel.id, ctx.bot))
 
 # ====================== DURABLE WELCOME COMMANDS =================
 
@@ -1138,27 +1085,27 @@ class InviteCopyView(View):
 
     async def _send_copyable(self, interaction: discord.Interaction):
         msg = f"✅ Invite ready:\n```text\n{VANITY_INVITE}\n```"
-        await safe_reply(interaction, content=msg, view=CopyInviteEphemeralView(), ephemeral=True)
+        await interaction.response.send_message(content=msg, view=CopyInviteEphemeralView(), ephemeral=True)
 
+@bot.slash_command(name="send_welcome", description="Post the welcome card.")
 @admin_only()
-@bot.tree.command(name="send_welcome", description="Post the welcome card.")
-async def send_welcome(interaction: discord.Interaction, target: Union[discord.TextChannel, discord.Thread, None] = None):
-    await safe_defer(interaction, ephemeral=True)
-    dest = target or interaction.channel
+async def send_welcome(ctx: discord.ApplicationContext, target: Option(discord.TextChannel, required=False)):
+    await safe_defer(ctx, ephemeral=True)
+    dest = target or ctx.channel
     try:
         view = InviteCopyView()
         msg = await dest.send(embed=welcome_embed(), view=view)
         try: await msg.pin(reason="ShadowSyn Welcome")
         except: pass
-        await safe_reply(interaction, f"✅ Posted in {dest.mention}.", ephemeral=True)
+        await safe_reply(ctx, f"✅ Posted in {dest.mention}.", ephemeral=True)
     except Exception as e:
-        await safe_reply(interaction, f"❌ Failed: `{e}`", ephemeral=True)
+        await safe_reply(ctx, f"❌ Failed: `{e}`", ephemeral=True)
 
+@bot.slash_command(name="welcome_update", description="Update welcome card.")
 @admin_only()
-@bot.tree.command(name="welcome_update", description="Update welcome card.")
-async def welcome_update(interaction: discord.Interaction, message_id: Optional[str] = None, target: Union[discord.TextChannel, discord.Thread, None] = None):
-    await safe_defer(interaction, ephemeral=True)
-    dest = target or interaction.channel
+async def welcome_update(ctx: discord.ApplicationContext, message_id: Option(str, required=False), target: Option(discord.TextChannel, required=False)):
+    await safe_defer(ctx, ephemeral=True)
+    dest = target or ctx.channel
     msg = None
     if message_id:
         try: msg = await dest.fetch_message(int(message_id))
@@ -1171,58 +1118,55 @@ async def welcome_update(interaction: discord.Interaction, message_id: Optional[
                     msg = m
                     break
         except: pass
-    if not msg: return await safe_reply(interaction, "❌ Card not found.", ephemeral=True)
+    if not msg: return await safe_reply(ctx, "❌ Card not found.", ephemeral=True)
     try:
         await msg.edit(embed=welcome_embed(), view=InviteCopyView())
-        await safe_reply(interaction, "✅ Updated.", ephemeral=True)
+        await safe_reply(ctx, "✅ Updated.", ephemeral=True)
     except Exception as e:
-        await safe_reply(interaction, f"❌ Failed: `{e}`", ephemeral=True)
+        await safe_reply(ctx, f"❌ Failed: `{e}`", ephemeral=True)
 
 # ====================== INVITE→ROLE ADMIN COMMANDS ======================
 
-invite_role_group = app_commands.Group(name="invite_role", description="Map invite codes to auto-roles on join (admin).")
+invite_role_group = bot.create_group("invite_role", "Map invite codes to auto-roles on join (admin).")
 
 @invite_role_group.command(name="add", description="Map an invite (code/url/vanity) to a role.")
-@app_commands.describe(invite="Invite code, invite URL, or the word 'vanity'", role="Role to auto-assign")
 @admin_only()
-async def invite_role_add(interaction: discord.Interaction, invite: str, role: discord.Role):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
+async def invite_role_add(ctx: discord.ApplicationContext, invite: str, role: discord.Role):
+    await safe_defer(ctx, ephemeral=True)
+    guild = ctx.guild
     code = normalize_invite_code(invite)
-    if not code: return await safe_reply(interaction, "❌ Invalid invite.", ephemeral=True)
+    if not code: return await safe_reply(ctx, "❌ Invalid invite.", ephemeral=True)
     mapping = get_invite_role_map(guild.id)
     mapping[code] = role.id
     set_invite_role_map(guild.id, mapping)
     label = "vanity" if code == "vanity" else f"`{code}`"
-    await safe_reply(interaction, f"✅ Mapped {label} → {role.mention}", ephemeral=True)
+    await safe_reply(ctx, f"✅ Mapped {label} → {role.mention}", ephemeral=True)
 
 @invite_role_group.command(name="remove", description="Remove an invite→role mapping.")
 @admin_only()
-async def invite_role_remove(interaction: discord.Interaction, invite: str):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
+async def invite_role_remove(ctx: discord.ApplicationContext, invite: str):
+    await safe_defer(ctx, ephemeral=True)
+    guild = ctx.guild
     code = normalize_invite_code(invite)
-    if not code: return await safe_reply(interaction, "❌ Invalid invite.", ephemeral=True)
+    if not code: return await safe_reply(ctx, "❌ Invalid invite.", ephemeral=True)
     mapping = get_invite_role_map(guild.id)
-    if code not in mapping: return await safe_reply(interaction, "ℹ️ No mapping exists.", ephemeral=True)
+    if code not in mapping: return await safe_reply(ctx, "ℹ️ No mapping exists.", ephemeral=True)
     mapping.pop(code, None)
     set_invite_role_map(guild.id, mapping)
-    await safe_reply(interaction, f"✅ Removed mapping for {code}.", ephemeral=True)
+    await safe_reply(ctx, f"✅ Removed mapping for {code}.", ephemeral=True)
 
 @invite_role_group.command(name="list", description="List current invite→role mappings.")
 @admin_only()
-async def invite_role_list(interaction: discord.Interaction):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
+async def invite_role_list(ctx: discord.ApplicationContext):
+    await safe_defer(ctx, ephemeral=True)
+    guild = ctx.guild
     mapping = get_invite_role_map(guild.id)
-    if not mapping: return await safe_reply(interaction, "No invite-role mappings set.", ephemeral=True)
+    if not mapping: return await safe_reply(ctx, "No invite-role mappings set.", ephemeral=True)
     lines = []
     for code, role_id in sorted(mapping.items(), key=lambda kv: kv[0]):
         role = guild.get_role(int(role_id))
         lines.append(f"- **{code}** → {role.mention if role else role_id}")
-    await safe_reply(interaction, "\n".join(lines)[:4000], ephemeral=True)
-
-bot.tree.add_command(invite_role_group)
+    await safe_reply(ctx, "\n".join(lines)[:4000], ephemeral=True)
 
 # ============================ AUDIT & DEPARTURES ==========================
 
@@ -1283,8 +1227,9 @@ async def on_member_ban(guild, user):
 # =================== YOUTUBE WATCHER ==================
 
 def yt_locked():
-    async def predicate(inter): return isinstance(inter.user, discord.Member) and any(r.id == ROLE_YT_MANAGER_ID for r in inter.user.roles)
-    return app_commands.check(predicate)
+    def predicate(ctx):
+        return isinstance(ctx.author, discord.Member) and any(r.id == ROLE_YT_MANAGER_ID for r in ctx.author.roles)
+    return commands.check(predicate)
 
 async def fetch_feed_latest(session: aiohttp.ClientSession, channel_id: str) -> Optional[Dict[str, str]]:
     url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
@@ -1354,41 +1299,41 @@ async def youtube_watch_loop(client: discord.Client):
 
 # =================== YOUTUBE COMMANDS ==================
 
+@bot.slash_command(name="yt_add", description="Watch a YouTube channel.")
 @yt_locked()
-@bot.tree.command(name="yt_add", description="Watch a YouTube channel.")
-async def yt_add(interaction: discord.Interaction, channel_url_or_id: str):
-    await safe_defer(interaction, ephemeral=True)
+async def yt_add(ctx: discord.ApplicationContext, channel_url_or_id: str):
+    await safe_defer(ctx, ephemeral=True)
     ch_id = await normalize_channel_id(channel_url_or_id) if "normalize_channel_id" in globals() else channel_url_or_id
-    if not ch_id: return await safe_reply(interaction, "❌ Invalid channel.", ephemeral=True)
+    if not ch_id: return await safe_reply(ctx, "❌ Invalid channel.", ephemeral=True)
     store = _load_yt_store()
     store["channels"].setdefault(ch_id, {"last_video_id": None, "channel_title": ""})
     _save_yt_store(store)
     _add_alias(channel_url_or_id, ch_id)
-    await safe_reply(interaction, f"✅ Watching `{ch_id}`.", ephemeral=True)
+    await safe_reply(ctx, f"✅ Watching `{ch_id}`.", ephemeral=True)
 
+@bot.slash_command(name="yt_remove", description="Stop watching a YouTube channel.")
 @yt_locked()
-@bot.tree.command(name="yt_remove", description="Stop watching a YouTube channel.")
-async def yt_remove(interaction: discord.Interaction, channel_id_or_url: str):
-    await safe_defer(interaction, ephemeral=True)
+async def yt_remove(ctx: discord.ApplicationContext, channel_id_or_url: str):
+    await safe_defer(ctx, ephemeral=True)
     ch_id = _lookup_alias(channel_id_or_url)
     if not ch_id: ch_id = channel_id_or_url
     store = _load_yt_store()
-    if store.get("channels", {}).pop(ch_id, None) is None: return await safe_reply(interaction, "ℹ️ Not watching.", ephemeral=True)
+    if store.get("channels", {}).pop(ch_id, None) is None: return await safe_reply(ctx, "ℹ️ Not watching.", ephemeral=True)
     _save_yt_store(store)
-    await safe_reply(interaction, f"✅ Removed `{ch_id}`.", ephemeral=True)
+    await safe_reply(ctx, f"✅ Removed `{ch_id}`.", ephemeral=True)
 
+@bot.slash_command(name="yt_list", description="List watched YouTube channels.")
 @yt_locked()
-@bot.tree.command(name="yt_list", description="List watched YouTube channels.")
-async def yt_list(interaction: discord.Interaction):
-    await safe_defer(interaction, ephemeral=True)
+async def yt_list(ctx: discord.ApplicationContext):
+    await safe_defer(ctx, ephemeral=True)
     store = _load_yt_store()
     channels = store.get("channels", {})
-    if not channels: return await safe_reply(interaction, "No channels.", ephemeral=True)
+    if not channels: return await safe_reply(ctx, "No channels.", ephemeral=True)
     lines = []
     for ch_id, cfg in channels.items():
         title = cfg.get("channel_title") or "Unknown"
         lines.append(f"- **{title}** (`{ch_id}`)")
-    await safe_reply(interaction, "\n".join(lines)[:1990], ephemeral=True)
+    await safe_reply(ctx, "\n".join(lines)[:1990], ephemeral=True)
 
 async def normalize_channel_id(inp: str) -> Optional[str]:
     if re.fullmatch(r"UC[0-9A-Za-z_-]{10,}", (inp or "").strip()): return inp.strip()
@@ -1441,7 +1386,7 @@ class DualRolePickerView(View):
         self.btn_next.disabled = self.page >= (self._total_pages() - 1)
 
     async def _on_prev_page(self, interaction: Interaction):
-        await safe_defer(interaction)
+        await interaction.response.defer()
         if self.page > 0:
             self.page -= 1
             self._refresh_add_select()
@@ -1450,7 +1395,7 @@ class DualRolePickerView(View):
             except: pass
 
     async def _on_next_page(self, interaction: Interaction):
-        await safe_defer(interaction)
+        await interaction.response.defer()
         if self.page < self._total_pages() - 1:
             self.page += 1
             self._refresh_add_select()
@@ -1459,7 +1404,7 @@ class DualRolePickerView(View):
             except: pass
 
     async def _on_select_toggle(self, interaction: Interaction):
-        await safe_defer(interaction, ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
         if not interaction.guild: return
         member = interaction.guild.get_member(interaction.user.id)
         bot_member = interaction.guild.me
@@ -1487,7 +1432,7 @@ class DualRolePickerView(View):
         if added: embed.add_field(name="Added", value=", ".join(added), inline=False)
         if removed: embed.add_field(name="Removed", value=", ".join(removed), inline=False)
         if not added and not removed: embed.description = "No changes."
-        await safe_reply(interaction, embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 def role_picker_embed() -> discord.Embed:
     return discord.Embed(title="SELECT ROLES", description="Select items to instantly add/remove roles.", color=THEME_PRIMARY)
@@ -1509,13 +1454,13 @@ ROLE_MENTION_RE = re.compile(r"<@&(\d+)>")
 def _parse_role_mentions(text: str) -> List[int]:
     return [int(m) for m in ROLE_MENTION_RE.findall(text or "")]
 
+@bot.slash_command(name="roles_post", description="Post role panel.")
 @admin_only()
-@bot.tree.command(name="roles_post", description="Post role panel.")
-async def roles_post(interaction: discord.Interaction, target: Union[discord.TextChannel, discord.Thread, None] = None):
-    await safe_defer(interaction, ephemeral=True)
-    guild = interaction.guild
+async def roles_post(ctx: discord.ApplicationContext, target: Option(discord.TextChannel, required=False)):
+    await safe_defer(ctx, ephemeral=True)
+    guild = ctx.guild
     cfg = get_guild_role_cfg(guild.id)
-    dest = target or interaction.channel
+    dest = target or ctx.channel
     try:
         view = DualRolePickerView(guild, cfg.get("options", []))
         msg = await dest.send(embed=role_picker_embed(), view=view)
@@ -1523,53 +1468,53 @@ async def roles_post(interaction: discord.Interaction, target: Union[discord.Tex
         set_guild_role_cfg(guild.id, cfg)
         try: bot.add_view(view, message_id=msg.id)
         except: pass
-        await safe_reply(interaction, f"✅ Posted in {dest.mention}.", ephemeral=True)
-    except Exception as e: await safe_reply(interaction, f"❌ Failed: `{e}`", ephemeral=True)
+        await safe_reply(ctx, f"✅ Posted in {dest.mention}.", ephemeral=True)
+    except Exception as e: await safe_reply(ctx, f"❌ Failed: `{e}`", ephemeral=True)
 
+@bot.slash_command(name="roles_add", description="Add roles to picker.")
 @admin_only()
-@bot.tree.command(name="roles_add", description="Add roles to picker.")
-async def roles_add(interaction: discord.Interaction, roles: str):
-    await safe_defer(interaction, ephemeral=True)
+async def roles_add(ctx: discord.ApplicationContext, roles: str):
+    await safe_defer(ctx, ephemeral=True)
     ids = _parse_role_mentions(roles)
-    cfg = get_guild_role_cfg(interaction.guild.id)
+    cfg = get_guild_role_cfg(ctx.guild.id)
     existing = {int(o["role_id"]) for o in cfg.get("options", [])}
     added = []
     for rid in ids:
         if rid in existing: continue
-        r = interaction.guild.get_role(rid)
+        r = ctx.guild.get_role(rid)
         if r:
             cfg.setdefault("options", []).append({"role_id": r.id, "label": r.name})
             added.append(r.name)
-    set_guild_role_cfg(interaction.guild.id, cfg)
-    await safe_reply(interaction, f"✅ Added: {', '.join(added)}", ephemeral=True)
+    set_guild_role_cfg(ctx.guild.id, cfg)
+    await safe_reply(ctx, f"✅ Added: {', '.join(added)}", ephemeral=True)
 
+@bot.slash_command(name="roles_remove", description="Remove roles from picker.")
 @admin_only()
-@bot.tree.command(name="roles_remove", description="Remove roles from picker.")
-async def roles_remove(interaction: discord.Interaction, roles: str):
-    await safe_defer(interaction, ephemeral=True)
+async def roles_remove(ctx: discord.ApplicationContext, roles: str):
+    await safe_defer(ctx, ephemeral=True)
     ids = set(_parse_role_mentions(roles))
-    cfg = get_guild_role_cfg(interaction.guild.id)
+    cfg = get_guild_role_cfg(ctx.guild.id)
     opts = [o for o in cfg.get("options", []) if int(o["role_id"]) not in ids]
     cfg["options"] = opts
-    set_guild_role_cfg(interaction.guild.id, cfg)
-    await safe_reply(interaction, "✅ Removed roles.", ephemeral=True)
+    set_guild_role_cfg(ctx.guild.id, cfg)
+    await safe_reply(ctx, "✅ Removed roles.", ephemeral=True)
 
+@bot.slash_command(name="roles_sync", description="Refresh panel.")
 @admin_only()
-@bot.tree.command(name="roles_sync", description="Refresh panel.")
-async def roles_sync(interaction: discord.Interaction):
-    await safe_defer(interaction, ephemeral=True)
-    cfg = get_guild_role_cfg(interaction.guild.id)
+async def roles_sync(ctx: discord.ApplicationContext):
+    await safe_defer(ctx, ephemeral=True)
+    cfg = get_guild_role_cfg(ctx.guild.id)
     panel = cfg.get("panel")
-    if not panel: return await safe_reply(interaction, "No panel.", ephemeral=True)
+    if not panel: return await safe_reply(ctx, "No panel.", ephemeral=True)
     try:
-        ch = interaction.guild.get_channel(panel["channel_id"])
+        ch = ctx.guild.get_channel(panel["channel_id"])
         msg = await ch.fetch_message(panel["message_id"])
-        view = DualRolePickerView(interaction.guild, cfg.get("options", []))
+        view = DualRolePickerView(ctx.guild, cfg.get("options", []))
         await msg.edit(embed=role_picker_embed(), view=view)
         try: bot.add_view(view, message_id=msg.id)
         except: pass
-        await safe_reply(interaction, "✅ Synced.", ephemeral=True)
-    except: await safe_reply(interaction, "❌ Failed to sync.", ephemeral=True)
+        await safe_reply(ctx, "✅ Synced.", ephemeral=True)
+    except: await safe_reply(ctx, "❌ Failed to sync.", ephemeral=True)
 
 # =============================== RUN ============================
 
