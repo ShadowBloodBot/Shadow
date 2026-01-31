@@ -1,4 +1,4 @@
-# bot.py — ShadowSyn Unified System (Robust Native Audio)
+# bot.py — ShadowSyn Unified System (Fixed Imports)
 #
 # === MODULES INCLUDED ===
 # 1. ShadowSyn Core (Welcome, Speak, Audit, Departures, Roles)
@@ -22,7 +22,8 @@ from collections import deque
 
 import discord
 from discord import app_commands, ButtonStyle, SelectOption, Interaction
-from discord.ui import View, Button, Modal, TextInput, Select
+# --- FIX: Added 'button' and 'select' to imports below ---
+from discord.ui import View, Button, Modal, TextInput, Select, button, select
 from gtts import gTTS
 from shutil import which
 from googletrans import Translator
