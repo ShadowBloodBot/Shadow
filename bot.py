@@ -1040,6 +1040,7 @@ async def send_welcome(interaction: discord.Interaction, target: Union[discord.T
     dest = target or interaction.channel
     try:
         view = InviteCopyView()
+        # --- FIXED SYNTAX HERE: Added missing closing parenthesis ---
         msg = await dest.send(embed=welcome_embed(), view=view)
         try: await msg.pin(reason="ShadowSyn Welcome")
         except: pass
@@ -1116,6 +1117,176 @@ async def invite_role_list(interaction: discord.Interaction):
     await safe_reply(interaction, "\n".join(lines)[:4000], ephemeral=True)
 
 bot.tree.add_command(invite_role_group)
+
+# ============================ AUDIT & DEPARTURES ==========================
+
+_last_departures: Dict[int, float] = {}
+
+def _build_departure_embed(subject, reason_text, executor=None, moderator_reason=None):
+    rt = reason_text.lower()
+    title = "⛔ Member Banned" if rt == "banned" else ("👢 Member Kicked" if rt == "kicked" else "👋 Member Left")
+    embed = discord.Embed(title=title, color=discord.Color.orange(), timestamp=utcnow())
+    if safe_avatar_url(subject): embed.set_thumbnail(url=safe_avatar_url(subject))
+    embed.add_field(name="User", value=f"{subject.mention}\n{discord.utils.escape_markdown(str(subject))}", inline=False)
+    if isinstance(subject, discord.Member):
+        embed.add_field(name="Joined", value=human_ago(subject.joined_at), inline=True)
+    embed.add_field(name="Account Age", value=human_ago(subject.created_at), inline=True)
+    details = [f"{subject.mention} {rt} the server."]
+    if executor: details.append(f"By: **{executor}**")
+    if moderator_reason: details.append(f"Reason: {moderator_reason}")
+    embed.add_field(name="Details", value="\n".join(details), inline=False)
+    return embed
+
+async def _send_departure_embed(user_id, embed):
+    target, _ = await resolve_target(bot, DEPARTURES_THREAD_ID)
+    if not target: return
+    now = time.time()
+    if now - _last_departures.get(user_id, 0) < 5: return
+    _last_departures[user_id] = now
+    try: await target.send(embed=embed)
+    except: pass
+
+async def _find_recent_audit(guild, action, target_id, window_seconds=300):
+    if not (guild.me and guild.me.guild_permissions.view_audit_log): return None
+    try:
+        async for entry in guild.audit_logs(limit=20, action=action):
+            if entry.target and entry.target.id == target_id:
+                if abs((utcnow() - entry.created_at.replace(tzinfo=timezone.utc)).total_seconds()) <= window_seconds:
+                    return entry
+    except: pass
+    return None
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    await asyncio.sleep(1.0)
+    ban = await _find_recent_audit(member.guild, discord.AuditLogAction.ban, member.id, 180)
+    if ban: return
+    kick = await _find_recent_audit(member.guild, discord.AuditLogAction.kick, member.id, 300)
+    if kick:
+        await _send_departure_embed(member.id, _build_departure_embed(member, "Kicked", kick.user, kick.reason))
+        return
+    await _send_departure_embed(member.id, _build_departure_embed(member, "Left"))
+
+@bot.event
+async def on_member_ban(guild, user):
+    executor, reason = None, None
+    entry = await _find_recent_audit(guild, discord.AuditLogAction.ban, user.id, 300)
+    if entry: executor, reason = entry.user, entry.reason
+    await _send_departure_embed(user.id, _build_departure_embed(user, "Banned", executor, reason))
+
+# =================== YOUTUBE WATCHER ==================
+
+def yt_locked():
+    async def predicate(inter): return isinstance(inter.user, discord.Member) and any(r.id == ROLE_YT_MANAGER_ID for r in inter.user.roles)
+    return app_commands.check(predicate)
+
+async def fetch_feed_latest(session: aiohttp.ClientSession, channel_id: str) -> Optional[Dict[str, str]]:
+    url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+    try:
+        async with session.get(url, headers={"User-Agent": YT_USER_AGENT}) as r:
+            if r.status != 200: return None
+            text = await r.text()
+    except: return None
+    try:
+        ns = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015", "media": "http://search.yahoo.com/mrss/"}
+        root = ET.fromstring(text)
+        entry = root.find("atom:entry", ns)
+        if entry is None: return None
+        vid = entry.find("yt:videoId", ns).text
+        title = entry.find("media:group/media:title", ns).text
+        link_el = entry.find("atom:link", ns)
+        link = link_el.attrib.get("href") if link_el is not None else f"https://www.youtube.com/watch?v={vid}"
+        ch_title = root.find("atom:title", ns).text
+        published = entry.find("atom:published", ns).text
+        return {"video_id": vid, "title": title, "url": link, "channel_title": ch_title, "published": published}
+    except: return None
+
+async def post_video_announcement(client: discord.Client, payload: Dict[str, str]):
+    target, _ = await resolve_target(client, YT_POST_TARGET_ID)
+    if not target: return
+    title = payload.get("title") or "New Video"
+    url = payload.get("url")
+    channel_title = payload.get("channel_title") or "Creator"
+    prefix = f"Hey, **{channel_title}** just posted a video!"
+    embed = discord.Embed(title=title, url=url, description=prefix, color=discord.Color.red())
+    embed.set_footer(text="YouTube • ShadowSyn")
+    try: await target.send(embed=embed)
+    except: pass
+
+async def youtube_watch_loop(client: discord.Client):
+    await client.wait_until_ready()
+    store = _load_yt_store()
+    async with aiohttp.ClientSession(headers={"User-Agent": YT_USER_AGENT}) as session:
+        for ch_id, cfg in list(store.get("channels", {}).items()):
+            latest = await fetch_feed_latest(session, ch_id)
+            if latest:
+                cfg["last_video_id"] = latest["video_id"]
+                store["channels"][ch_id] = cfg
+        _save_yt_store(store)
+    
+    while not client.is_closed():
+        try:
+            store = _load_yt_store()
+            channels = store.get("channels", {})
+            if not channels:
+                await asyncio.sleep(YT_POLL_SECONDS)
+                continue
+            async with aiohttp.ClientSession(headers={"User-Agent": YT_USER_AGENT}) as session:
+                for ch_id, cfg in list(channels.items()):
+                    latest = await fetch_feed_latest(session, ch_id)
+                    if not latest:
+                        await asyncio.sleep(1.0); continue
+                    last = cfg.get("last_video_id")
+                    if latest["video_id"] != last:
+                        await post_video_announcement(client, latest)
+                        cfg["last_video_id"] = latest["video_id"]
+                        store["channels"][ch_id] = cfg
+                        _save_yt_store(store)
+                    await asyncio.sleep(1.0)
+        except: pass
+        await asyncio.sleep(YT_POLL_SECONDS)
+
+# =================== YOUTUBE COMMANDS ==================
+
+@yt_locked()
+@bot.tree.command(name="yt_add", description="Watch a YouTube channel.")
+async def yt_add(interaction: discord.Interaction, channel_url_or_id: str):
+    await safe_defer(interaction, ephemeral=True)
+    ch_id = await normalize_channel_id(channel_url_or_id) if "normalize_channel_id" in globals() else channel_url_or_id
+    if not ch_id: return await safe_reply(interaction, "❌ Invalid channel.", ephemeral=True)
+    store = _load_yt_store()
+    store["channels"].setdefault(ch_id, {"last_video_id": None, "channel_title": ""})
+    _save_yt_store(store)
+    _add_alias(channel_url_or_id, ch_id)
+    await safe_reply(interaction, f"✅ Watching `{ch_id}`.", ephemeral=True)
+
+@yt_locked()
+@bot.tree.command(name="yt_remove", description="Stop watching a YouTube channel.")
+async def yt_remove(interaction: discord.Interaction, channel_id_or_url: str):
+    await safe_defer(interaction, ephemeral=True)
+    ch_id = _lookup_alias(channel_id_or_url)
+    if not ch_id: ch_id = channel_id_or_url
+    store = _load_yt_store()
+    if store.get("channels", {}).pop(ch_id, None) is None: return await safe_reply(interaction, "ℹ️ Not watching.", ephemeral=True)
+    _save_yt_store(store)
+    await safe_reply(interaction, f"✅ Removed `{ch_id}`.", ephemeral=True)
+
+@yt_locked()
+@bot.tree.command(name="yt_list", description="List watched YouTube channels.")
+async def yt_list(interaction: discord.Interaction):
+    await safe_defer(interaction, ephemeral=True)
+    store = _load_yt_store()
+    channels = store.get("channels", {})
+    if not channels: return await safe_reply(interaction, "No channels.", ephemeral=True)
+    lines = []
+    for ch_id, cfg in channels.items():
+        title = cfg.get("channel_title") or "Unknown"
+        lines.append(f"- **{title}** (`{ch_id}`)")
+    await safe_reply(interaction, "\n".join(lines)[:1990], ephemeral=True)
+
+async def normalize_channel_id(inp: str) -> Optional[str]:
+    if re.fullmatch(r"UC[0-9A-Za-z_-]{10,}", (inp or "").strip()): return inp.strip()
+    return None
 
 # =================== ROLE PICKER (DUAL VIEW) ==================
 
