@@ -1,4 +1,4 @@
-# bot.py — ShadowSyn (Ultimate: Py-Cord Edition + Auto-Clip)
+# bot.py — ShadowSyn (Ultimate: Py-Cord Verified Fix)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
@@ -84,7 +84,6 @@ if not TOKEN:
 
 translator = Translator()
 
-# Py-Cord uses list of strings for choices usually, or Option
 LANG_CHOICES = [
     "English", "Japanese", "German", "Spanish", "French", 
     "Italian", "Portuguese", "Russian", "Korean", "Chinese", "Hindi", "Indonesian"
@@ -227,13 +226,10 @@ def _to_sans_bold_italic(text: str) -> str:
 def _limit_channel_name(name: str, limit: int = 100) -> str:
     return name[:limit] if len(name) > limit else name
 
-# Modified safe_reply for Py-Cord Context (ctx) or Interaction
 async def safe_reply(ctx_or_inter, *args, **kwargs):
     try:
-        # Py-Cord 'respond' handles both initial and followups
         if hasattr(ctx_or_inter, 'respond'):
             return await ctx_or_inter.respond(*args, **kwargs)
-        # Fallback for pure interactions in Views
         elif hasattr(ctx_or_inter, 'response'):
             if not ctx_or_inter.response.is_done():
                 return await ctx_or_inter.response.send_message(*args, **kwargs)
@@ -262,7 +258,6 @@ async def resolve_target(client: discord.Client, target_id: int):
     return None, None
 
 async def ensure_voice_simple(ctx):
-    # Py-Cord 'ctx' has .author
     user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
     if not user.voice:
         await safe_reply(ctx, "❌ Join a VC first!", ephemeral=True)
@@ -278,9 +273,7 @@ async def ensure_voice_simple(ctx):
         else:
             vc = await channel.connect(timeout=10, reconnect=True)
         
-        # --- AUTO RECORDING HOOK (Py-Cord Native) ---
         if HAS_SINKS and vc and vc.is_connected():
-            # Py-Cord VCs have 'recording' attribute
             if not vc.recording:
                 try:
                     vc.start_recording(RingBufferSink(time_limit=30), dummy_callback)
@@ -397,7 +390,7 @@ class VCControlPanel(View):
         await interaction.response.send_message("🚫 Only the VC creator can use this.", ephemeral=True)
         return False
 
-    @button(label="🔒 Lock", style=ButtonStyle.danger, custom_id="lock_vc")
+    @discord.ui.button(label="🔒 Lock", style=ButtonStyle.danger, custom_id="lock_vc")
     async def lock(self, button: Button, interaction: Interaction):
         if not await self._check_perm(interaction): return
         try:
@@ -408,7 +401,7 @@ class VCControlPanel(View):
             await interaction.response.send_message("🔒 VC locked.", ephemeral=True)
         except Exception as e: await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
 
-    @button(label="🔓 Unlock", style=ButtonStyle.success, custom_id="unlock_vc")
+    @discord.ui.button(label="🔓 Unlock", style=ButtonStyle.success, custom_id="unlock_vc")
     async def unlock(self, button: Button, interaction: Interaction):
         if not await self._check_perm(interaction): return
         try:
@@ -416,7 +409,7 @@ class VCControlPanel(View):
             await interaction.response.send_message("🔓 VC unlocked.", ephemeral=True)
         except: pass
 
-    @button(label="❌ Delete", style=ButtonStyle.red, custom_id="delete_vc")
+    @discord.ui.button(label="❌ Delete", style=ButtonStyle.red, custom_id="delete_vc")
     async def delete(self, button: Button, interaction: Interaction):
         if not await self._check_perm(interaction): return
         try:
@@ -424,19 +417,19 @@ class VCControlPanel(View):
             await interaction.response.send_message("🗑️ Deleted.", ephemeral=True)
         except: pass
 
-    @button(label="✏️ Rename", style=ButtonStyle.blurple, custom_id="rename_vc")
+    @discord.ui.button(label="✏️ Rename", style=ButtonStyle.blurple, custom_id="rename_vc")
     async def rename(self, button: Button, interaction: Interaction):
         if not await self._check_perm(interaction): return
         await interaction.response.send_modal(VCNameModal(self.vc))
 
-    @button(label="👢 Kick", style=ButtonStyle.gray, custom_id="kick_members")
+    @discord.ui.button(label="👢 Kick", style=ButtonStyle.gray, custom_id="kick_members")
     async def kick(self, button: Button, interaction: Interaction):
         if not await self._check_perm(interaction): return
         members = [m for m in self.vc.members if m != interaction.guild.me]
         if not members: return await interaction.response.send_message("⚠️ No members to kick.", ephemeral=True)
         await interaction.response.send_message("Select member:", view=KickMemberView(self.vc, members), ephemeral=True)
 
-    @select(placeholder="Bitrate", options=[SelectOption(label="64 kbps", value="64000"), SelectOption(label="96 kbps", value="96000"), SelectOption(label="128 kbps", value="128000"), SelectOption(label="256 kbps", value="256000"), SelectOption(label="384 kbps", value="384000")], custom_id="bitrate_select")
+    @discord.ui.select(placeholder="Bitrate", options=[SelectOption(label="64 kbps", value="64000"), SelectOption(label="96 kbps", value="96000"), SelectOption(label="128 kbps", value="128000"), SelectOption(label="256 kbps", value="256000"), SelectOption(label="384 kbps", value="384000")], custom_id="bitrate_select")
     async def bitrate(self, select: Select, interaction: Interaction):
         if not await self._check_perm(interaction): return
         try:
@@ -444,7 +437,7 @@ class VCControlPanel(View):
             await interaction.response.send_message(f"📶 Bitrate: {int(select.values[0])//1000} kbps.", ephemeral=True)
         except Exception as e: await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
 
-    @select(placeholder="User Limit", options=[SelectOption(label="Unlimited", value="0"), SelectOption(label="2", value="2"), SelectOption(label="5", value="5"), SelectOption(label="10", value="10"), SelectOption(label="25", value="25")], custom_id="limit_select")
+    @discord.ui.select(placeholder="User Limit", options=[SelectOption(label="Unlimited", value="0"), SelectOption(label="2", value="2"), SelectOption(label="5", value="5"), SelectOption(label="10", value="10"), SelectOption(label="25", value="25")], custom_id="limit_select")
     async def limit(self, select: Select, interaction: Interaction):
         if not await self._check_perm(interaction): return
         try:
