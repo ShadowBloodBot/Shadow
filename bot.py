@@ -1,9 +1,10 @@
-# bot.py — ShadowSyn (Ultimate: Verified Stable Build)
+# bot.py — ShadowSyn (Ultimate: Auto-Clip to Specific Channel)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
 # 2. Music: Queue System, Fast Search, Role Locked, Crash-Proof Audio
-# 3. Core: Audit, Roles, Welcome, TTS, Youtube Watcher
+# 3. Clip System: Auto-buffers 30s -> Saves to channel 1467055136609271818
+# 4. Core: Audit, Roles, Welcome, TTS, Youtube Watcher
 #
 # Env: DISCORD_TOKEN
 
@@ -14,6 +15,8 @@ import asyncio
 import tempfile
 import time
 import traceback
+import wave
+import io
 from pathlib import Path
 from typing import Optional, Tuple, Union, Dict, List, Set
 from datetime import datetime, timezone
@@ -21,8 +24,17 @@ from collections import deque
 
 import discord
 from discord import app_commands, ButtonStyle, SelectOption, Interaction
-# --- UI IMPORTS ---
 from discord.ui import View, Button, Modal, TextInput, Select, button, select
+
+# --- AUDIO SINK ---
+try:
+    from discord.sinks import Sink, Filters, default_filters
+    HAS_SINKS = True
+except ImportError:
+    HAS_SINKS = False
+    print("⚠️ WARNING: 'discord.sinks' not found. Clipping will not work (Requires Py-Cord).")
+    class Sink: pass
+
 from gtts import gTTS
 from shutil import which
 from googletrans import Translator
@@ -47,6 +59,7 @@ SPEAK_LOG_THREAD_ID     = 1400048671973703690
 DEPARTURES_THREAD_ID    = 960088192177029140
 DEFAULT_TARGET_ID       = 1166874144395247757
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
+CLIPS_TARGET_ID         = 1467055136609271818  # <--- UPDATED CLIP DESTINATION
 
 # VoiceMaster Config
 JOIN_TO_CREATE_CHANNEL_ID = 1398618132788281364
@@ -100,7 +113,6 @@ ACTIVE_VCS_STORE = (PERSIST_ROOT / "active_vcs.json")
 
 # ==================== MUSIC ENGINE CONFIG ====================
 
-# 1. PLAY Options
 YTDL_PLAY_OPTIONS = {
     'format': 'bestaudio/best',
     'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
@@ -117,14 +129,12 @@ YTDL_PLAY_OPTIONS = {
     'retries': 5,
 }
 
-# 2. SEARCH Options
 YTDL_SEARCH_OPTIONS = YTDL_PLAY_OPTIONS.copy()
 YTDL_SEARCH_OPTIONS.update({
     'extract_flat': True,
     'skip_download': True,
 })
 
-# 3. FFmpeg Options (Crash Fixed)
 FFMPEG_OPTIONS = {
     'options': '-vn',
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
@@ -148,6 +158,48 @@ class YTDLSource(discord.PCMVolumeTransformer):
             data = data['entries'][0]
         filename = data['url'] if stream else ytdl_play.prepare_filename(data)
         return cls(discord.FFmpegPCMAudio(filename, **FFMPEG_OPTIONS), data=data)
+
+# ==================== AUTO-CLIP SYSTEM ====================
+
+if HAS_SINKS:
+    class RingBufferSink(Sink):
+        """Captures the last N seconds of audio in a rolling buffer."""
+        def __init__(self, time_limit=30):
+            super().__init__()
+            self.time_limit = time_limit
+            self.buffer = {} # user_id -> deque of bytes
+
+        def write(self, data, user):
+            if user not in self.buffer:
+                # 20ms packets * 50 = 1 sec. 
+                self.buffer[user] = deque(maxlen=int(self.time_limit * 50))
+            self.buffer[user].append(data)
+
+        def cleanup(self):
+            self.finished = True
+
+        def get_recent_clips(self):
+            files = []
+            for user_id, audio_deque in self.buffer.items():
+                if not audio_deque: continue
+                data = b''.join(audio_deque)
+                
+                # Create in-memory WAV file
+                f = io.BytesIO()
+                with wave.open(f, 'wb') as wav:
+                    wav.setnchannels(2) # Stereo
+                    wav.setsampwidth(2) # 16-bit
+                    wav.setframerate(48000) # 48kHz
+                    wav.writeframes(data)
+                f.seek(0)
+                
+                files.append(discord.File(f, filename=f"clip_{user_id}_{int(time.time())}.wav"))
+            return files
+else:
+    RingBufferSink = None
+
+def dummy_callback(sink, *args):
+    pass
 
 # ==================== UTILS ====================
 
@@ -192,6 +244,22 @@ async def safe_defer(inter: discord.Interaction, *, ephemeral: bool = False):
         if not inter.response.is_done(): await inter.response.defer(ephemeral=ephemeral)
     except: pass
 
+async def resolve_target(client: discord.Client, target_id: int):
+    ch = client.get_channel(target_id)
+    if ch is None:
+        try: ch = await client.fetch_channel(target_id)
+        except: return None, None
+    if isinstance(ch, discord.TextChannel): return ch, ch
+    if isinstance(ch, discord.Thread):
+        try:
+            if ch.archived or ch.locked: await ch.edit(archived=False, locked=False)
+            await ch.join()
+        except: pass
+        parent = ch.parent if isinstance(ch.parent, discord.TextChannel) else None
+        return ch, parent
+    return None, None
+
+# --- AUTO-RECORDING VOICE HELPER ---
 async def ensure_voice_simple(interaction: discord.Interaction):
     if not interaction.user.voice:
         await safe_reply(interaction, "❌ Join a VC first!", ephemeral=True)
@@ -204,9 +272,19 @@ async def ensure_voice_simple(interaction: discord.Interaction):
         if vc and vc.is_connected():
             if vc.channel.id != channel.id:
                 await vc.move_to(channel)
-            return vc
         else:
-            return await channel.connect(timeout=10, reconnect=True)
+            vc = await channel.connect(timeout=10, reconnect=True)
+        
+        # --- AUTO RECORDING HOOK ---
+        if HAS_SINKS and vc and vc.is_connected():
+            if hasattr(vc, "recording") and not vc.recording:
+                try:
+                    vc.start_recording(RingBufferSink(time_limit=30), dummy_callback)
+                    print(f"🎙️ Auto-recording started in {channel.name}")
+                except Exception as e:
+                    print(f"⚠️ Auto-recording failed: {e}")
+        
+        return vc
     except Exception as e:
         await safe_reply(interaction, f"❌ Voice Error: {e}", ephemeral=True)
         return None
@@ -217,6 +295,12 @@ def dj_role_check():
         if any(role.id == DJ_ROLE_ID for role in interaction.user.roles): return True
         await interaction.response.send_message("🚫 You need the **Music Role** to use this.", ephemeral=True)
         return False
+    return app_commands.check(predicate)
+
+def admin_only():
+    async def predicate(inter: discord.Interaction) -> bool:
+        if not isinstance(inter.user, discord.Member): return False
+        return any(r.id == ROLE_ADMIN_ID for r in inter.user.roles)
     return app_commands.check(predicate)
 
 # ==================== VOICEMASTER COMPONENTS =================
@@ -460,24 +544,6 @@ def normalize_invite_code(text: str) -> Optional[str]:
 def safe_avatar_url(member: Union[discord.Member, discord.User]) -> Optional[str]:
     try: return member.display_avatar.url
     except: return None
-
-def utcnow(): return datetime.now(timezone.utc)
-def ffmpeg_available() -> bool: return which("ffmpeg") is not None
-
-async def resolve_target(client: discord.Client, target_id: int):
-    ch = client.get_channel(target_id)
-    if ch is None:
-        try: ch = await client.fetch_channel(target_id)
-        except: return None, None
-    if isinstance(ch, discord.TextChannel): return ch, ch
-    if isinstance(ch, discord.Thread):
-        try:
-            if ch.archived or ch.locked: await ch.edit(archived=False, locked=False)
-            await ch.join()
-        except: pass
-        parent = ch.parent if isinstance(ch.parent, discord.TextChannel) else None
-        return ch, parent
-    return None, None
 
 def human_ago(dt: Optional[datetime]) -> str:
     if not isinstance(dt, datetime): return "Unknown"
@@ -926,6 +992,56 @@ async def stop(interaction: discord.Interaction):
     else:
         await safe_reply(interaction, "ℹ️ Not connected.", ephemeral=True)
 
+# ===================== CLIPPING COMMANDS =====================
+
+@bot.tree.command(name="join", description="Join VC and start Auto-Recording")
+async def join(interaction: discord.Interaction):
+    await safe_defer(interaction, ephemeral=True)
+    vc = await ensure_voice_simple(interaction)
+    if vc:
+        await safe_reply(interaction, f"✅ Joined {vc.channel.mention} and started auto-recording.", ephemeral=True)
+
+@bot.tree.command(name="clip", description="Clip the last 30s of audio and save to thread")
+async def clip(interaction: discord.Interaction):
+    await safe_defer(interaction)
+    
+    vc = interaction.guild.voice_client
+    if not vc or not vc.is_connected():
+        return await safe_reply(interaction, "❌ I am not in a voice channel.", ephemeral=True)
+
+    if not HAS_SINKS:
+        return await safe_reply(interaction, "❌ Clipping not supported (Missing Py-Cord).", ephemeral=True)
+
+    # Check for active sink
+    if not hasattr(vc, "recording") or not vc.recording:
+        # Try to start it now if it wasn't running
+        try:
+            vc.start_recording(RingBufferSink(time_limit=30), dummy_callback)
+            return await safe_reply(interaction, "⚠️ Recording was not active. Started now. Try again in 30s.", ephemeral=True)
+        except:
+            return await safe_reply(interaction, "❌ Could not access recording stream.", ephemeral=True)
+
+    sink = vc.sink
+    if not isinstance(sink, RingBufferSink):
+        return await safe_reply(interaction, "❌ Current recording format does not support clipping.", ephemeral=True)
+
+    files = sink.get_recent_clips()
+    if not files:
+        return await safe_reply(interaction, "ℹ️ No audio data found in buffer.", ephemeral=True)
+
+    # --- SAVE TO TARGET CHANNEL/THREAD ---
+    target_id = CLIPS_TARGET_ID
+    target_ch, _ = await resolve_target(interaction.client, target_id)
+    
+    if target_ch:
+        try:
+            msg = await target_ch.send(content=f"✂️ **Clip recorded by {interaction.user.mention}**", files=files)
+            await safe_reply(interaction, f"✅ Clip saved to {target_ch.mention}.", ephemeral=True)
+        except Exception as e:
+            await safe_reply(interaction, f"❌ Failed to save to target: {e}. Here it is instead:", files=files)
+    else:
+        await interaction.followup.send(content=f"⚠️ Clip target channel (`{target_id}`) not found. Here is your clip:", files=files)
+
 # ===================== /SPEAK (TTS) ==================
 
 async def log_speak_usage(inter, text, lang):
@@ -1023,13 +1139,6 @@ class InviteCopyView(View):
     async def _send_copyable(self, interaction: discord.Interaction):
         msg = f"✅ Invite ready:\n```text\n{VANITY_INVITE}\n```"
         await safe_reply(interaction, content=msg, view=CopyInviteEphemeralView(), ephemeral=True)
-
-# --- RE-ADDED: Admin Only Decorator ---
-def admin_only():
-    async def predicate(inter: discord.Interaction) -> bool:
-        if not isinstance(inter.user, discord.Member): return False
-        return any(r.id == ROLE_ADMIN_ID for r in inter.user.roles)
-    return app_commands.check(predicate)
 
 @admin_only()
 @bot.tree.command(name="send_welcome", description="Post the welcome card.")
