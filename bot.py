@@ -1,8 +1,9 @@
-# bot.py — ShadowSyn Unified System
+# bot.py — ShadowSyn Unified System (Native Audio + Search Menu)
 #
 # === MODULES INCLUDED ===
 # 1. ShadowSyn Core (Welcome, Speak, Audit, Departures, Roles)
 # 2. VoiceMaster (Join-to-Create, Dynamic VCs, Control Panel)
+# 3. AudioEngine (yt-dlp Search Menu + FFmpeg)
 #
 # Env: DISCORD_TOKEN
 # Persistence: role_picker.json, youtube_watch.json, invite_roles.json, active_vcs.json
@@ -14,8 +15,9 @@ import asyncio
 import tempfile
 import time
 from pathlib import Path
-from typing import Optional, Tuple, Union, Dict, List, Set
+from typing import Optional, Tuple, Union, Dict, List, Set, Any
 from datetime import datetime, timezone
+from collections import deque
 
 import discord
 from discord import app_commands, ButtonStyle, SelectOption, Interaction
@@ -26,6 +28,9 @@ from googletrans import Translator
 import aiohttp
 import xml.etree.ElementTree as ET
 from discord.utils import get
+
+# --- NATIVE MUSIC DEPENDENCY ---
+import yt_dlp
 
 # =========================== CONSTANTS ===========================
 
@@ -40,7 +45,6 @@ ROLE_MEMBER_ID          = 955600320287887400
 SPEAK_LOG_THREAD_ID     = 1400048671973703690
 DEPARTURES_THREAD_ID    = 960088192177029140
 
-# --- CRITICAL CONSTANTS (Triple Checked) ---
 DEFAULT_TARGET_ID       = 1166874144395247757
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
 
@@ -60,6 +64,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
     raise SystemExit("❌ DISCORD_TOKEN is not set.")
 
+# Initialize Translator
 translator = Translator()
 
 LANG_CHOICES = [
@@ -85,12 +90,51 @@ try:
 except Exception:
     PERSIST_ROOT = Path(".").resolve()
 
-# --- Files ---
 ROLE_STORE = (PERSIST_ROOT / "role_picker.json")
 YT_STORE = (PERSIST_ROOT / "youtube_watch.json")
 INVITE_ROLE_STORE = (PERSIST_ROOT / "invite_roles.json")
 ACTIVE_VCS_STORE = (PERSIST_ROOT / "active_vcs.json")
 CONFIG_PATH = Path("welcome_config.json")
+
+# ==================== YOUTUBE DL & AUDIO CONFIG ====================
+
+# Options for yt-dlp to stream audio reliably
+YTDL_FORMAT_OPTIONS = {
+    'format': 'bestaudio/best',
+    'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
+    'restrictfilenames': True,
+    'noplaylist': True,
+    'nocheckcertificate': True,
+    'ignoreerrors': False,
+    'logtostderr': False,
+    'quiet': True,
+    'no_warnings': True,
+    'default_search': 'auto',
+    'source_address': '0.0.0.0', 
+}
+
+FFMPEG_OPTIONS = {
+    'options': '-vn',
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5' 
+}
+
+ytdl = yt_dlp.YoutubeDL(YTDL_FORMAT_OPTIONS)
+
+class YTDLSource(discord.PCMVolumeTransformer):
+    def __init__(self, source, *, data, volume=0.5):
+        super().__init__(source, volume)
+        self.data = data
+        self.title = data.get('title')
+        self.url = data.get('url')
+
+    @classmethod
+    async def from_url(cls, url, *, loop=None, stream=True):
+        loop = loop or asyncio.get_running_loop()
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
+        if 'entries' in data:
+            data = data['entries'][0]
+        filename = data['url'] if stream else ytdl.prepare_filename(data)
+        return cls(discord.FFmpegPCMAudio(filename, **FFMPEG_OPTIONS), data=data)
 
 # ==================== VOICEMASTER UTILS & PERSISTENCE =================
 
@@ -126,7 +170,6 @@ def _save_active_vcs(vcs: Set[int]) -> None:
     except Exception:
         pass
 
-# Global runtime registry (synced to disk)
 active_temp_vcs: Set[int] = _load_active_vcs()
 
 # ==================== VOICEMASTER UI COMPONENTS =================
@@ -174,7 +217,6 @@ class RoleRestrictSelect(Select):
         self.creator = creator
         options = [SelectOption(label="Everyone (default)", value="everyone", description="Allow all members")]
         roles = [r for r in vc.guild.roles if r != vc.guild.default_role and not r.managed]
-        # Sort by position, take top 24
         roles_sorted = sorted(roles, key=lambda r: r.position, reverse=True)[:24]
         for r in roles_sorted:
             label = (r.name or f"Role {r.id}")[:100]
@@ -184,7 +226,6 @@ class RoleRestrictSelect(Select):
     async def callback(self, interaction: Interaction):
         if interaction.user.id != self.creator.id:
             return await interaction.response.send_message("🚫 Only the VC creator can use this.", ephemeral=True)
-
         guild = interaction.guild
         admin_role = discord.utils.get(guild.roles, name=ADMIN_ROLE_NAME)
         try:
@@ -195,12 +236,10 @@ class RoleRestrictSelect(Select):
                 if admin_role: await self.vc.set_permissions(admin_role, connect=True)
                 await interaction.response.send_message("✅ Restriction cleared.", ephemeral=True)
                 return
-
             role_id = int(sel)
             selected_role = guild.get_role(role_id)
             if not selected_role:
                 return await interaction.response.send_message("⚠️ Role not found.", ephemeral=True)
-
             await self.vc.set_permissions(guild.default_role, connect=False)
             await self.vc.set_permissions(selected_role, connect=True)
             await self.vc.set_permissions(self.creator, connect=True)
@@ -222,7 +261,6 @@ class VCControlPanel(View):
     async def _check_perm(self, interaction: Interaction) -> bool:
         if interaction.user.id == self.creator.id:
             return True
-        # Allow admins to delete
         if interaction.data.get("custom_id") == "delete_vc":
             if any(r.name == ADMIN_ROLE_NAME or r.id == ROLE_ADMIN_ID for r in interaction.user.roles):
                 return True
@@ -317,8 +355,7 @@ class VCControlPanel(View):
 
 async def send_control_panel(vc: discord.VoiceChannel, creator: discord.Member):
     try:
-        await asyncio.sleep(2.0) # wait for connection
-        # Important: use vc.send() to message the Voice Text Channel
+        await asyncio.sleep(2.0)
         await vc.send(
             content=f"{creator.mention}, here is your **VoiceMaster** controls:",
             view=VCControlPanel(vc, creator)
@@ -548,10 +585,16 @@ async def _apply_invite_role(member: discord.Member, used_code: Optional[str]) -
 
 class ShadowSynBot(discord.Client):
     def __init__(self):
-        intents = discord.Intents.all()
+        intents = discord.Intents.default()
+        intents.guilds = True
+        intents.voice_states = True
+        intents.members = True
+        intents.message_content = True
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         self._yt_task: Optional[asyncio.Task] = None
+        # Stores simple file paths for TTS, cleared when Music starts
+        self.audio_queues: Dict[int, deque] = {}
 
     async def setup_hook(self):
         for g in self.guilds:
@@ -581,7 +624,6 @@ async def on_guild_join(guild: discord.Guild):
     except: pass
 
 # ==================== UNIFIED EVENT HANDLING ====================
-# Merges VoiceMaster (Creation/Cleanup) + ShadowSyn (Audit)
 
 async def _find_audit_action(guild, action, target_id, window_seconds=30):
     if not (guild.me and guild.me.guild_permissions.view_audit_log): return None
@@ -597,63 +639,44 @@ async def _find_audit_action(guild, action, target_id, window_seconds=30):
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
     guild = member.guild
     
-    # -----------------------------------------------
-    # 1. VOICEMASTER LOGIC (Join to Create)
-    # -----------------------------------------------
-    
-    # CASE A: User Joined Master Channel
+    # --- VOICEMASTER LOGIC ---
     if after.channel and after.channel.id == JOIN_TO_CREATE_CHANNEL_ID:
         try:
             category = get(guild.categories, id=VC_CATEGORY_ID) or after.channel.category
             base = member.nick or member.name
             styled = _to_sans_bold_italic(f"{base}'s Room")
             final_name = _limit_channel_name(styled)
-            
             new_vc = await guild.create_voice_channel(
                 name=final_name,
                 category=category,
                 user_limit=VC_DEFAULT_USER_LIMIT,
                 bitrate=VC_DEFAULT_BITRATE
             )
-            
-            # Register & Move
             active_temp_vcs.add(new_vc.id)
-            _save_active_vcs(active_temp_vcs) # Persist immediately
+            _save_active_vcs(active_temp_vcs)
             await member.move_to(new_vc)
-            
-            # Send Control Panel
             asyncio.create_task(send_control_panel(new_vc, member))
-            
         except Exception as e:
             print(f"[JTC Error] {e}")
 
-    # CASE B: User Left a Temp Channel (Auto-Delete)
     if before.channel and before.channel.id != JOIN_TO_CREATE_CHANNEL_ID:
         if before.channel.id in active_temp_vcs:
             if len(before.channel.members) == 0:
                 try:
                     await before.channel.delete()
                     active_temp_vcs.discard(before.channel.id)
-                    _save_active_vcs(active_temp_vcs) # Update persistence
+                    _save_active_vcs(active_temp_vcs)
                 except Exception as e:
                     print(f"[JTC Delete Error] {e}")
-            elif before.channel != after.channel:
-                 # Optional: If creator left, maybe transfer ownership? (Logic omitted for simplicity)
-                 pass
 
-    # -----------------------------------------------
-    # 2. SHADOWSYN LOGIC (Audit Logging)
-    # -----------------------------------------------
+    # --- SHADOWSYN AUDIT LOGIC ---
     if member.bot: return
     target, _ = await resolve_target(bot, DEFAULT_AUDIT_THREAD_ID)
     if not target: return
 
     m_name = safe_display_name(member)
 
-    # Moves/Joins/Leaves
     if before.channel != after.channel:
-        # Avoid logging the "Move to temp VC" spam if desired, 
-        # but technically it is a move, so we keep logging it.
         entry = await _find_audit_action(member.guild, discord.AuditLogAction.member_move, member.id)
         if entry:
             actor = safe_display_name(entry.user)
@@ -668,7 +691,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         except: pass
         return
 
-    # Mute/Deafen (Moderator actions)
     if before.mute != after.mute:
         entry = await _find_audit_action(member.guild, discord.AuditLogAction.member_update, member.id)
         if entry:
@@ -677,7 +699,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             except: pass
             return
 
-    # Deaf/Undeaf (Moderator actions)
     if before.deaf != after.deaf:
         entry = await _find_audit_action(member.guild, discord.AuditLogAction.member_update, member.id)
         if entry:
@@ -686,7 +707,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             except: pass
             return
 
-    # Self Toggles
     if before.self_mute != after.self_mute or before.self_deaf != after.self_deaf:
         try: await target.send(f"🎛️ {m_name} toggled mute/deafen")
         except: pass
@@ -735,26 +755,128 @@ def setup_welcome(client: discord.Client):
 
 setup_welcome(bot)
 
-# ===================== /SPEAK (TTS + translate) ==================
+# ===================== NATIVE MUSIC: SEARCH & MENU ==================
 
-async def ensure_voice(inter: discord.Interaction):
-    try:
-        if not inter.guild or not isinstance(inter.user, discord.Member):
-            await safe_reply(inter, "❌ No guild/member", ephemeral=True)
-            return None
-        state = inter.user.voice
-        if not state or not state.channel:
-            await safe_reply(inter, "❌ Join a VC first.", ephemeral=True)
-            return None
-        vc = discord.utils.get(bot.voice_clients, guild=inter.guild)
-        if vc and vc.is_connected():
-            if vc.channel.id == state.channel.id: return vc
-            await vc.move_to(state.channel)
-            return vc
-        return await state.channel.connect(reconnect=True, timeout=15)
-    except Exception as e:
-        await safe_reply(inter, f"❌ VC error: `{e}`", ephemeral=True)
+async def ensure_voice(interaction: discord.Interaction):
+    if not interaction.user.voice:
+        await safe_reply(interaction, "❌ Join a VC first!", ephemeral=True)
         return None
+    channel = interaction.user.voice.channel
+    vc = interaction.guild.voice_client
+    if vc and vc.is_connected():
+        if vc.channel.id != channel.id:
+            await vc.move_to(channel)
+    else:
+        vc = await channel.connect()
+    return vc
+
+class MusicSelect(Select):
+    def __init__(self, tracks: List[dict]):
+        self.tracks = tracks
+        # Build options for dropdown
+        options = []
+        for i, t in enumerate(tracks[:5]):
+            label = t.get('title', 'Unknown Title')[:95]
+            desc = t.get('channel', 'Unknown Artist')[:95]
+            # Use index as value since URLs can be long/complex
+            options.append(SelectOption(label=f"{i+1}. {label}", description=desc, value=str(i), emoji="🎵"))
+        
+        super().__init__(placeholder="Select a song to play...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: Interaction):
+        await safe_defer(interaction)
+        
+        idx = int(self.values[0])
+        track = self.tracks[idx]
+        url = track.get('url') or track.get('webpage_url')
+        
+        vc = await ensure_voice(interaction)
+        if not vc: return
+
+        # Music overrides current queue/playing
+        if vc.is_playing():
+            vc.stop()
+            # Clear TTS queue if music starts
+            bot.audio_queues[interaction.guild.id] = deque()
+
+        try:
+            player = await YTDLSource.from_url(url, loop=bot.loop, stream=True)
+            vc.play(player, after=lambda e: print(f'Player error: {e}') if e else None)
+            
+            # Update the original search message to show what is playing
+            embed = discord.Embed(title="▶️ Now Playing", description=f"[{player.title}]({player.url})", color=THEME_PRIMARY)
+            await interaction.edit_original_response(content="", embed=embed, view=None)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error playing track: {e}", ephemeral=True)
+
+class MusicSearchView(View):
+    def __init__(self, tracks: List[dict]):
+        super().__init__(timeout=60)
+        self.add_item(MusicSelect(tracks))
+
+@bot.tree.command(name="play", description="Search & Play music")
+@app_commands.describe(search="Song name or URL")
+async def play(interaction: discord.Interaction, search: str):
+    await safe_defer(interaction, ephemeral=True)
+    
+    # 1. Direct Link Check
+    if re.match(r'^https?://', search):
+        vc = await ensure_voice(interaction)
+        if not vc: return
+        if vc.is_playing(): vc.stop()
+        try:
+            player = await YTDLSource.from_url(search, loop=bot.loop, stream=True)
+            vc.play(player)
+            await safe_reply(interaction, f"▶️ **Playing:** {player.title}", ephemeral=True)
+        except Exception as e:
+            await safe_reply(interaction, f"❌ Error: {e}", ephemeral=True)
+        return
+
+    # 2. Search Logic
+    try:
+        # Run search in thread to avoid blocking
+        data = await bot.loop.run_in_executor(
+            None, 
+            lambda: ytdl.extract_info(f"ytsearch5:{search}", download=False)
+        )
+        
+        if 'entries' not in data or not data['entries']:
+            return await safe_reply(interaction, "❌ No results found.", ephemeral=True)
+            
+        tracks = data['entries']
+        view = MusicSearchView(tracks)
+        await safe_reply(interaction, f"🔎 Results for **{search}**:", view=view, ephemeral=True)
+
+    except Exception as e:
+        await safe_reply(interaction, f"❌ Search error: {e}", ephemeral=True)
+
+@bot.tree.command(name="stop", description="Stop music and disconnect")
+async def stop(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    if vc:
+        await vc.disconnect()
+        # Clear queue on stop
+        if interaction.guild.id in bot.audio_queues:
+            bot.audio_queues[interaction.guild.id].clear()
+        await safe_reply(interaction, "⏹️ Disconnected.", ephemeral=True)
+    else:
+        await safe_reply(interaction, "ℹ️ Not connected.", ephemeral=True)
+
+# ===================== /SPEAK (TTS QUEUE) ==================
+
+def check_queue(guild_id: int, voice_client: discord.VoiceClient):
+    if not voice_client or not voice_client.is_connected():
+        return
+    q = bot.audio_queues.get(guild_id)
+    if q and len(q) > 0:
+        next_file = q.popleft()
+        if os.path.exists(next_file):
+            voice_client.play(
+                discord.FFmpegPCMAudio(next_file),
+                after=lambda e: check_queue(guild_id, voice_client)
+            )
+        else:
+            check_queue(guild_id, voice_client)
 
 async def log_speak_usage(inter, text, lang):
     target, _ = await resolve_target(bot, SPEAK_LOG_THREAD_ID)
@@ -775,21 +897,44 @@ async def speak(interaction: discord.Interaction, text: str, language: app_comma
 
     await safe_defer(interaction, ephemeral=True)
     if not ffmpeg_available(): return await safe_reply(interaction, "❌ FFmpeg missing", ephemeral=True)
+    
     vc = await ensure_voice(interaction)
-    if vc is None: return
+    if not vc: return
 
     lang_code = (language.value if language else "en").lower()
-    to_say = text
-    if lang_code != "en":
-        try: to_say = translator.translate(text, src="en", dest=lang_code).text
-        except: await safe_reply(interaction, "⚠️ Translate failed, using original.", ephemeral=True)
+    loop = asyncio.get_running_loop()
 
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f: tmp = f.name
-        gTTS(text=to_say, lang=lang_code).save(tmp)
-        vc.play(discord.FFmpegPCMAudio(tmp))
+        to_say = text
+        if lang_code != "en":
+            try:
+                translation = await loop.run_in_executor(None, lambda: translator.translate(text, src="en", dest=lang_code))
+                to_say = translation.text
+            except: 
+                await safe_reply(interaction, "⚠️ Translate failed, using original.", ephemeral=True)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f: 
+            tmp_path = f.name
+        
+        await loop.run_in_executor(None, lambda: gTTS(text=to_say, lang=lang_code).save(tmp_path))
+
+        guild_id = interaction.guild.id
+        if guild_id not in bot.audio_queues:
+            bot.audio_queues[guild_id] = deque()
+
+        if vc.is_playing():
+            # Add to queue if busy
+            bot.audio_queues[guild_id].append(tmp_path)
+            await safe_reply(interaction, "✅ Queued text", ephemeral=True)
+        else:
+            vc.play(
+                discord.FFmpegPCMAudio(tmp_path),
+                after=lambda e: check_queue(guild_id, vc)
+            )
+            await safe_reply(interaction, "✅ Spoke text", ephemeral=True)
+            
         await log_speak_usage(interaction, text, lang_code)
-        await safe_reply(interaction, "✅ Spoke text", ephemeral=True)
+        
     except Exception as e:
         await safe_reply(interaction, f"❌ Error: `{e}`", ephemeral=True)
 
@@ -863,7 +1008,6 @@ async def send_welcome(interaction: discord.Interaction, target: Union[discord.T
     dest = target or interaction.channel
     try:
         view = InviteCopyView()
-        # --- FIXED SYNTAX HERE: Added missing closing parenthesis ---
         msg = await dest.send(embed=welcome_embed(), view=view)
         try: await msg.pin(reason="ShadowSyn Welcome")
         except: pass
@@ -1075,8 +1219,7 @@ async def youtube_watch_loop(client: discord.Client):
 @bot.tree.command(name="yt_add", description="Watch a YouTube channel.")
 async def yt_add(interaction: discord.Interaction, channel_url_or_id: str):
     await safe_defer(interaction, ephemeral=True)
-    ch_id = await normalize_channel_id(channel_url_or_id) if "normalize_channel_id" in globals() else channel_url_or_id # simple fallback
-    # re-implementing normalize because it was in Safe Helpers originally
+    ch_id = await normalize_channel_id(channel_url_or_id) if "normalize_channel_id" in globals() else channel_url_or_id
     if not ch_id: return await safe_reply(interaction, "❌ Invalid channel.", ephemeral=True)
     store = _load_yt_store()
     store["channels"].setdefault(ch_id, {"last_video_id": None, "channel_title": ""})
@@ -1109,7 +1252,6 @@ async def yt_list(interaction: discord.Interaction):
     await safe_reply(interaction, "\n".join(lines)[:1990], ephemeral=True)
 
 async def normalize_channel_id(inp: str) -> Optional[str]:
-    # Simplified regex check
     if re.fullmatch(r"UC[0-9A-Za-z_-]{10,}", (inp or "").strip()): return inp.strip()
     return None
 
