@@ -1,4 +1,4 @@
-# bot.py — ShadowSyn (Ultimate: Py-Cord Verified Fix)
+# bot.py — ShadowSyn (Ultimate: Fixed Audio Buffer + Ephemeral)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
@@ -165,7 +165,8 @@ if HAS_SINKS:
             self.time_limit = time_limit
             self.buffer = {} # user_id -> deque of bytes
 
-        def write(self, data, user):
+        # FIXED: Py-Cord sends (user, data), NOT (data, user)
+        def write(self, user, data):
             if user not in self.buffer:
                 # 20ms packets * 50 = 1 sec. 
                 self.buffer[user] = deque(maxlen=int(self.time_limit * 50))
@@ -938,14 +939,16 @@ async def stop(ctx: discord.ApplicationContext):
 
 @bot.slash_command(name="join", description="Join VC and start Auto-Recording")
 async def join(ctx: discord.ApplicationContext):
-    await safe_defer(ctx)
+    # EPHEMERAL: Only user sees this
+    await safe_defer(ctx, ephemeral=True)
     vc = await ensure_voice_simple(ctx)
     if vc:
         await safe_reply(ctx, f"✅ Joined {vc.channel.mention} and started auto-recording.", ephemeral=True)
 
 @bot.slash_command(name="clip", description="Clip last 30s and save to channel")
 async def clip(ctx: discord.ApplicationContext):
-    await safe_defer(ctx)
+    # EPHEMERAL: Only user sees this
+    await safe_defer(ctx, ephemeral=True)
     vc = ctx.guild.voice_client
     if not vc or not vc.is_connected():
         return await safe_reply(ctx, "❌ I am not in a voice channel.", ephemeral=True)
