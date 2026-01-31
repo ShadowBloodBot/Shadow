@@ -1,4 +1,4 @@
-# bot.py — ShadowSyn (Ultimate: Fixed Audio Buffer + Ephemeral)
+# bot.py — ShadowSyn (Ultimate: Fixed Recording Callback)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
@@ -165,7 +165,6 @@ if HAS_SINKS:
             self.time_limit = time_limit
             self.buffer = {} # user_id -> deque of bytes
 
-        # FIXED: Py-Cord sends (user, data), NOT (data, user)
         def write(self, user, data):
             if user not in self.buffer:
                 # 20ms packets * 50 = 1 sec. 
@@ -194,7 +193,8 @@ if HAS_SINKS:
 else:
     RingBufferSink = None
 
-def dummy_callback(sink, *args):
+# --- FIXED: MUST BE ASYNC FOR PY-CORD ---
+async def dummy_callback(sink, *args):
     pass
 
 # ==================== UTILS ====================
