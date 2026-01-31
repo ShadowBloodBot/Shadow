@@ -1,4 +1,4 @@
-# bot.py — ShadowSyn (Ultimate: Stable + Connection Fix)
+# bot.py — ShadowSyn (Ultimate: Stable + Audio Fix)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs
@@ -21,6 +21,7 @@ from collections import deque
 
 import discord
 from discord import app_commands, ButtonStyle, SelectOption, Interaction
+# --- UI IMPORTS ---
 from discord.ui import View, Button, Modal, TextInput, Select, button, select
 from gtts import gTTS
 from shutil import which
@@ -97,9 +98,9 @@ YT_STORE = (PERSIST_ROOT / "youtube_watch.json")
 INVITE_ROLE_STORE = (PERSIST_ROOT / "invite_roles.json")
 ACTIVE_VCS_STORE = (PERSIST_ROOT / "active_vcs.json")
 
-# ==================== MUSIC ENGINE CONFIG ====================
+# ==================== MUSIC ENGINE CONFIG (PATCHED) ====================
 
-# 1. PLAY Options (High Quality)
+# 1. PLAY Options (Specific Format Fix)
 YTDL_PLAY_OPTIONS = {
     'format': 'bestaudio/best',
     'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
@@ -112,20 +113,28 @@ YTDL_PLAY_OPTIONS = {
     'no_warnings': True,
     'default_search': 'auto',
     'source_address': '0.0.0.0',
+    # NETWORK FIXES
+    'socket_timeout': 10,
+    'retries': 5,
 }
 
-# 2. SEARCH Options (Fast)
+# 2. SEARCH Options
 YTDL_SEARCH_OPTIONS = YTDL_PLAY_OPTIONS.copy()
 YTDL_SEARCH_OPTIONS.update({
     'extract_flat': True,
     'skip_download': True,
 })
 
-# 3. FFmpeg Options (Patched for Connection Resets)
+# 3. FFmpeg Options (Robust Reconnection)
 FFMPEG_OPTIONS = {
     'options': '-vn',
-    # Added -http_persistent 0 to stop "Connection reset by peer" errors
-    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -http_persistent 0' 
+    'before_options': (
+        '-reconnect 1 '
+        '-reconnect_streamed 1 '
+        '-reconnect_delay_max 5 '
+        '-http_persistent 0 '  # Fixes "Connection reset by peer"
+        '-rw_timeout 15000000' # Timeout fix
+    )
 }
 
 ytdl_play = yt_dlp.YoutubeDL(YTDL_PLAY_OPTIONS)
@@ -142,8 +151,10 @@ class YTDLSource(discord.PCMVolumeTransformer):
     async def from_url(cls, url, *, loop=None, stream=True):
         loop = loop or asyncio.get_running_loop()
         data = await loop.run_in_executor(None, lambda: ytdl_play.extract_info(url, download=not stream))
+        
         if 'entries' in data:
             data = data['entries'][0]
+            
         filename = data['url'] if stream else ytdl_play.prepare_filename(data)
         return cls(discord.FFmpegPCMAudio(filename, **FFMPEG_OPTIONS), data=data)
 
@@ -209,15 +220,10 @@ async def ensure_voice_simple(interaction: discord.Interaction):
         await safe_reply(interaction, f"❌ Voice Error: {e}", ephemeral=True)
         return None
 
-# --- ROLE LOCK CHECK ---
 def dj_role_check():
     async def predicate(interaction: discord.Interaction):
-        # Allow admins (Manage Guild) always
-        if interaction.user.guild_permissions.manage_guild:
-            return True
-        # Check specific role
-        if any(role.id == DJ_ROLE_ID for role in interaction.user.roles):
-            return True
+        if interaction.user.guild_permissions.manage_guild: return True
+        if any(role.id == DJ_ROLE_ID for role in interaction.user.roles): return True
         await interaction.response.send_message("🚫 You need the **Music Role** to use this.", ephemeral=True)
         return False
     return app_commands.check(predicate)
@@ -1027,12 +1033,6 @@ class InviteCopyView(View):
         msg = f"✅ Invite ready:\n```text\n{VANITY_INVITE}\n```"
         await safe_reply(interaction, content=msg, view=CopyInviteEphemeralView(), ephemeral=True)
 
-def admin_only():
-    async def predicate(inter: discord.Interaction) -> bool:
-        if not isinstance(inter.user, discord.Member): return False
-        return any(r.id == ROLE_ADMIN_ID for r in inter.user.roles)
-    return app_commands.check(predicate)
-
 @admin_only()
 @bot.tree.command(name="send_welcome", description="Post the welcome card.")
 async def send_welcome(interaction: discord.Interaction, target: Union[discord.TextChannel, discord.Thread, None] = None):
@@ -1117,67 +1117,7 @@ async def invite_role_list(interaction: discord.Interaction):
 
 bot.tree.add_command(invite_role_group)
 
-# ============================ AUDIT & DEPARTURES ==========================
-
-_last_departures: Dict[int, float] = {}
-
-def _build_departure_embed(subject, reason_text, executor=None, moderator_reason=None):
-    rt = reason_text.lower()
-    title = "⛔ Member Banned" if rt == "banned" else ("👢 Member Kicked" if rt == "kicked" else "👋 Member Left")
-    embed = discord.Embed(title=title, color=discord.Color.orange(), timestamp=utcnow())
-    if safe_avatar_url(subject): embed.set_thumbnail(url=safe_avatar_url(subject))
-    embed.add_field(name="User", value=f"{subject.mention}\n{discord.utils.escape_markdown(str(subject))}", inline=False)
-    if isinstance(subject, discord.Member):
-        embed.add_field(name="Joined", value=human_ago(subject.joined_at), inline=True)
-    embed.add_field(name="Account Age", value=human_ago(subject.created_at), inline=True)
-    details = [f"{subject.mention} {rt} the server."]
-    if executor: details.append(f"By: **{executor}**")
-    if moderator_reason: details.append(f"Reason: {moderator_reason}")
-    embed.add_field(name="Details", value="\n".join(details), inline=False)
-    return embed
-
-async def _send_departure_embed(user_id, embed):
-    target, _ = await resolve_target(bot, DEPARTURES_THREAD_ID)
-    if not target: return
-    now = time.time()
-    if now - _last_departures.get(user_id, 0) < 5: return
-    _last_departures[user_id] = now
-    try: await target.send(embed=embed)
-    except: pass
-
-async def _find_recent_audit(guild, action, target_id, window_seconds=300):
-    if not (guild.me and guild.me.guild_permissions.view_audit_log): return None
-    try:
-        async for entry in guild.audit_logs(limit=20, action=action):
-            if entry.target and entry.target.id == target_id:
-                if abs((utcnow() - entry.created_at.replace(tzinfo=timezone.utc)).total_seconds()) <= window_seconds:
-                    return entry
-    except: pass
-    return None
-
-@bot.event
-async def on_member_remove(member: discord.Member):
-    await asyncio.sleep(1.0)
-    ban = await _find_recent_audit(member.guild, discord.AuditLogAction.ban, member.id, 180)
-    if ban: return
-    kick = await _find_recent_audit(member.guild, discord.AuditLogAction.kick, member.id, 300)
-    if kick:
-        await _send_departure_embed(member.id, _build_departure_embed(member, "Kicked", kick.user, kick.reason))
-        return
-    await _send_departure_embed(member.id, _build_departure_embed(member, "Left"))
-
-@bot.event
-async def on_member_ban(guild, user):
-    executor, reason = None, None
-    entry = await _find_recent_audit(guild, discord.AuditLogAction.ban, user.id, 300)
-    if entry: executor, reason = entry.user, entry.reason
-    await _send_departure_embed(user.id, _build_departure_embed(user, "Banned", executor, reason))
-
 # =================== YOUTUBE WATCHER ==================
-
-def yt_locked():
-    async def predicate(inter): return isinstance(inter.user, discord.Member) and any(r.id == ROLE_YT_MANAGER_ID for r in inter.user.roles)
-    return app_commands.check(predicate)
 
 async def fetch_feed_latest(session: aiohttp.ClientSession, channel_id: str) -> Optional[Dict[str, str]]:
     url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
@@ -1245,7 +1185,9 @@ async def youtube_watch_loop(client: discord.Client):
         except: pass
         await asyncio.sleep(YT_POLL_SECONDS)
 
-# =================== YOUTUBE COMMANDS ==================
+def yt_locked():
+    async def predicate(inter): return isinstance(inter.user, discord.Member) and any(r.id == ROLE_YT_MANAGER_ID for r in inter.user.roles)
+    return app_commands.check(predicate)
 
 @yt_locked()
 @bot.tree.command(name="yt_add", description="Watch a YouTube channel.")
