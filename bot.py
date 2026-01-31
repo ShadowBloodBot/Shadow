@@ -1,4 +1,4 @@
-# bot.py — ShadowSyn (Ultimate: Mixed Audio Clips + ID Indexing)
+# bot.py — ShadowSyn (Final: Relaxed Filters + Safe Recording)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
@@ -167,21 +167,23 @@ if HAS_SINKS:
             self.buffer = {} # user_id -> deque of bytes
             self._debug_log_counter = 0
 
-        # FIXED: Robust data extraction + ID Indexing
         def write(self, user, data):
-            # Fallback: Swap args if Py-Cord sends them backwards
+            # 1. Swap args if Py-Cord sends them backwards
             if hasattr(user, "data") or isinstance(user, (bytes, bytearray)):
                 user, data = data, user
 
-            # Use User ID as key to prevent duplicate files for same person
-            user_id = getattr(user, "id", None)
-            if user_id is None: return
-
+            # 2. Robust User ID Extraction
+            user_id = "unknown"
+            if user:
+                try: user_id = user.id
+                except: pass
+            
+            # Use 'unknown' if we can't find ID, so we still capture audio
             if user_id not in self.buffer:
                 self.buffer[user_id] = deque(maxlen=int(self.time_limit * 50))
-                print(f"[DEBUG] User ID {user_id} joined audio stream.")
+                print(f"[DEBUG] User {user_id} joined audio stream.")
             
-            # Robust data extraction
+            # 3. Robust Data Extraction
             audio_bytes = getattr(data, "data", None)
             if not audio_bytes:
                 audio_bytes = getattr(data, "pcm", None)
@@ -191,8 +193,9 @@ if HAS_SINKS:
             if audio_bytes and isinstance(audio_bytes, (bytes, bytearray)):
                 self.buffer[user_id].append(audio_bytes)
                 self._debug_log_counter += 1
+                # Log occasionally
                 if self._debug_log_counter % 500 == 0:
-                    print(f"[DEBUG] Recording packet stream...")
+                    print(f"[DEBUG] Recording... Total packets: {self._debug_log_counter}")
 
         def cleanup(self):
             self.finished = True
@@ -200,7 +203,6 @@ if HAS_SINKS:
 else:
     RingBufferSink = None
 
-# FIXED: Must be async for Py-Cord
 async def dummy_callback(sink, *args):
     pass
 
@@ -982,8 +984,8 @@ async def clip(ctx: discord.ApplicationContext):
         for user_id, audio_deque in sink.buffer.items():
             if not audio_deque: continue
             data = b''.join(audio_deque)
-            # Skip junk audio (< 50KB)
-            if len(data) < 50000: continue
+            # RELAXED FILTER: Skip only tiny junk (< 10KB ~0.05s)
+            if len(data) < 10000: continue
 
             f_path = f"temp_{user_id}_{int(time.time())}.wav"
             with wave.open(f_path, 'wb') as wav:
@@ -1454,7 +1456,7 @@ class DualRolePickerView(View):
         self.btn_next.disabled = self.page >= (self._total_pages() - 1)
 
     async def _on_prev_page(self, interaction: Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer() # Acknowledge but don't reply
         if self.page > 0:
             self.page -= 1
             self._refresh_add_select()
@@ -1472,15 +1474,19 @@ class DualRolePickerView(View):
             except: pass
 
     async def _on_select_toggle(self, interaction: Interaction):
+        # Ephemeral reply so only user sees their role changes
         await interaction.response.defer(ephemeral=True)
+        
         if not interaction.guild: return
         member = interaction.guild.get_member(interaction.user.id)
         bot_member = interaction.guild.me
+        
         page_roles = self._current_slice()
         page_ids = {int(o["role_id"]) for o in page_roles}
         allowed = {int(o["role_id"]) for o in self.options}
         current = {r.id for r in member.roles if r.id in allowed}
         selected = {int(v) for v in (self.add_select.values or [])}
+        
         to_add = (selected - (current & page_ids)) & page_ids
         to_remove = ((current & page_ids) - selected)
         
@@ -1500,6 +1506,7 @@ class DualRolePickerView(View):
         if added: embed.add_field(name="Added", value=", ".join(added), inline=False)
         if removed: embed.add_field(name="Removed", value=", ".join(removed), inline=False)
         if not added and not removed: embed.description = "No changes."
+        
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 def role_picker_embed() -> discord.Embed:
@@ -1515,6 +1522,7 @@ async def rehydrate_role_panel(client: discord.Client, guild: discord.Guild):
         except: return
     try:
         msg = await channel.fetch_message(panel.get("message_id"))
+        # Re-attach the view to the existing message so buttons work after restart
         client.add_view(DualRolePickerView(guild, cfg.get("options", [])), message_id=msg.id)
     except: pass
 
