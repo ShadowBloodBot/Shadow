@@ -1,9 +1,9 @@
-# bot.py — ShadowSyn (Music + Core Only)
+# bot.py — ShadowSyn Unified (Restored VoiceMaster + Music)
 #
 # === MODULES ===
-# 1. Music (Native Search & Play)
-# 2. Core (Welcome, Speak, Audit, Roles)
-# 3. NO VoiceMaster (Removed as requested)
+# 1. ShadowSyn Core (Welcome, Speak, Audit, Roles)
+# 2. VoiceMaster (Restored & Fixed)
+# 3. AudioEngine (Native Music)
 #
 # Env: DISCORD_TOKEN
 
@@ -21,6 +21,7 @@ from collections import deque
 
 import discord
 from discord import app_commands, ButtonStyle, SelectOption, Interaction
+# --- FIX: 'button' and 'select' must be imported for VoiceMaster menus ---
 from discord.ui import View, Button, Modal, TextInput, Select, button, select
 from gtts import gTTS
 from shutil import which
@@ -46,6 +47,13 @@ SPEAK_LOG_THREAD_ID     = 1400048671973703690
 DEPARTURES_THREAD_ID    = 960088192177029140
 DEFAULT_TARGET_ID       = 1166874144395247757
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
+
+# VoiceMaster Config
+JOIN_TO_CREATE_CHANNEL_ID = 1398618132788281364
+VC_CATEGORY_ID            = 908659586536468542
+VC_DEFAULT_BITRATE        = 384000
+VC_DEFAULT_USER_LIMIT     = 0
+ADMIN_ROLE_NAME           = "SHADOW"
 
 # Youtube Watcher Config
 ROLE_YT_MANAGER_ID      = 960088893351415898
@@ -85,7 +93,231 @@ except:
 ROLE_STORE = (PERSIST_ROOT / "role_picker.json")
 YT_STORE = (PERSIST_ROOT / "youtube_watch.json")
 INVITE_ROLE_STORE = (PERSIST_ROOT / "invite_roles.json")
-# ACTIVE_VCS_STORE removed as VoiceMaster is gone
+ACTIVE_VCS_STORE = (PERSIST_ROOT / "active_vcs.json")
+
+# ==================== VOICEMASTER UTILS =================
+
+_SANS_BOLD_ITALIC_MAP = {
+    "A": "𝘼", "B": "𝘽", "C": "𝘾", "D": "𝘿", "E": "𝙀", "F": "𝙁", "G": "𝙂",
+    "H": "𝙃", "I": "𝙄", "J": "𝙅", "K": "𝙆", "L": "𝙇", "M": "𝙈", "N": "𝙉",
+    "O": "𝙊", "P": "𝙋", "Q": "𝙌", "R": "𝙍", "S": "𝙎", "T": "𝙏", "U": "𝙐",
+    "V": "𝙑", "W": "𝙒", "X": "𝙓", "Y": "𝙔", "Z": "𝙕",
+    "a": "𝙖", "b": "𝙗", "c": "𝙘", "d": "𝙙", "e": "𝙚", "f": "𝙛", "g": "𝙜",
+    "h": "𝙝", "i": "𝙞", "j": "𝙟", "k": "𝙠", "l": "𝙡", "m": "𝙢", "n": "𝙣",
+    "o": "𝙤", "p": "𝙥", "q": "𝙦", "r": "𝙧", "s": "𝙨", "t": "𝙩", "u": "𝙪",
+    "v": "𝙫", "w": "𝙬", "x": "𝙭", "y": "𝙮", "z": "𝙯",
+}
+
+def _to_sans_bold_italic(text: str) -> str:
+    return "".join(_SANS_BOLD_ITALIC_MAP.get(ch, ch) for ch in text)
+
+def _limit_channel_name(name: str, limit: int = 100) -> str:
+    return name[:limit] if len(name) > limit else name
+
+def _load_active_vcs() -> Set[int]:
+    if ACTIVE_VCS_STORE.exists():
+        try:
+            return set(json.loads(ACTIVE_VCS_STORE.read_text()))
+        except: return set()
+    return set()
+
+def _save_active_vcs(vcs: Set[int]) -> None:
+    try:
+        ACTIVE_VCS_STORE.write_text(json.dumps(list(vcs)))
+    except: pass
+
+active_temp_vcs: Set[int] = _load_active_vcs()
+
+# ==================== VOICEMASTER UI =================
+
+class VCNameModal(Modal, title="Rename Voice Channel"):
+    def __init__(self, vc):
+        super().__init__()
+        self.vc = vc
+        self.new_name = TextInput(label="New VC Name", placeholder="Enter name...", required=True, max_length=50)
+        self.add_item(self.new_name)
+
+    async def on_submit(self, interaction: Interaction):
+        try:
+            await self.vc.edit(name=self.new_name.value)
+            await interaction.response.send_message(f"✅ Renamed to **{self.new_name.value}**", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+class KickMemberDropdown(Select):
+    def __init__(self, vc, members):
+        options = [SelectOption(label=m.display_name, value=str(m.id)) for m in members]
+        super().__init__(placeholder="Select member to kick...", options=options, min_values=1, max_values=1)
+        self.vc = vc
+
+    async def callback(self, interaction: Interaction):
+        try:
+            member_id = int(self.values[0])
+            member = self.vc.guild.get_member(member_id)
+            if member and member in self.vc.members:
+                await member.move_to(None)
+                await interaction.response.send_message(f"👢 Kicked {member.display_name}.", ephemeral=True)
+            else:
+                await interaction.response.send_message("⚠️ Member no longer in VC.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+class KickMemberView(View):
+    def __init__(self, vc: discord.VoiceChannel, members):
+        super().__init__(timeout=30)
+        self.add_item(KickMemberDropdown(vc, members))
+
+class RoleRestrictSelect(Select):
+    def __init__(self, vc: discord.VoiceChannel, creator: discord.Member):
+        self.vc = vc
+        self.creator = creator
+        options = [SelectOption(label="Everyone (default)", value="everyone", description="Allow all members")]
+        roles = [r for r in vc.guild.roles if r != vc.guild.default_role and not r.managed]
+        roles_sorted = sorted(roles, key=lambda r: r.position, reverse=True)[:24]
+        for r in roles_sorted:
+            label = (r.name or f"Role {r.id}")[:100]
+            options.append(SelectOption(label=label, value=str(r.id)))
+        super().__init__(placeholder="Restrict VC to a role…", options=options, min_values=1, max_values=1, custom_id="restrict_role_select")
+
+    async def callback(self, interaction: Interaction):
+        if interaction.user.id != self.creator.id:
+            return await interaction.response.send_message("🚫 Only the VC creator can use this.", ephemeral=True)
+        guild = interaction.guild
+        admin_role = discord.utils.get(guild.roles, name=ADMIN_ROLE_NAME)
+        try:
+            sel = self.values[0]
+            if sel == "everyone":
+                await self.vc.set_permissions(guild.default_role, connect=True)
+                await self.vc.set_permissions(self.creator, connect=True)
+                if admin_role: await self.vc.set_permissions(admin_role, connect=True)
+                await interaction.response.send_message("✅ Restriction cleared.", ephemeral=True)
+                return
+            role_id = int(sel)
+            selected_role = guild.get_role(role_id)
+            if not selected_role:
+                return await interaction.response.send_message("⚠️ Role not found.", ephemeral=True)
+            await self.vc.set_permissions(guild.default_role, connect=False)
+            await self.vc.set_permissions(selected_role, connect=True)
+            await self.vc.set_permissions(self.creator, connect=True)
+            if admin_role: await self.vc.set_permissions(admin_role, connect=True)
+            await interaction.response.send_message(f"🔐 Restricted to: **{selected_role.name}**.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+class VCControlPanel(View):
+    def __init__(self, vc: discord.VoiceChannel, creator: discord.Member):
+        super().__init__(timeout=None)
+        self.vc = vc
+        self.creator = creator
+        try:
+            self.add_item(RoleRestrictSelect(vc, creator))
+        except Exception:
+            pass
+
+    async def _check_perm(self, interaction: Interaction) -> bool:
+        if interaction.user.id == self.creator.id:
+            return True
+        if interaction.data.get("custom_id") == "delete_vc":
+            if any(r.name == ADMIN_ROLE_NAME or r.id == ROLE_ADMIN_ID for r in interaction.user.roles):
+                return True
+        await interaction.response.send_message("🚫 Only the VC creator can use this.", ephemeral=True)
+        return False
+
+    @button(label="🔒 Lock", style=ButtonStyle.danger, custom_id="lock_vc")
+    async def lock(self, interaction: Interaction, button: Button):
+        if not await self._check_perm(interaction): return
+        try:
+            overwrites = {
+                interaction.guild.default_role: discord.PermissionOverwrite(connect=False),
+                self.creator: discord.PermissionOverwrite(connect=True),
+            }
+            ar = discord.utils.get(interaction.guild.roles, name=ADMIN_ROLE_NAME)
+            if ar: overwrites[ar] = discord.PermissionOverwrite(connect=True)
+            await self.vc.edit(overwrites=overwrites)
+            await interaction.response.send_message("🔒 VC locked.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+    @button(label="🔓 Unlock", style=ButtonStyle.success, custom_id="unlock_vc")
+    async def unlock(self, interaction: Interaction, button: Button):
+        if not await self._check_perm(interaction): return
+        try:
+            await self.vc.set_permissions(interaction.guild.default_role, connect=True)
+            await interaction.response.send_message("🔓 VC unlocked.", ephemeral=True)
+        except Exception:
+            pass
+
+    @button(label="❌ Delete", style=ButtonStyle.red, custom_id="delete_vc")
+    async def delete(self, interaction: Interaction, button: Button):
+        if not await self._check_perm(interaction): return
+        try:
+            await self.vc.delete()
+            await interaction.response.send_message("🗑️ Deleted.", ephemeral=True)
+        except Exception:
+            pass
+
+    @button(label="✏️ Rename", style=ButtonStyle.blurple, custom_id="rename_vc")
+    async def rename(self, interaction: Interaction, button: Button):
+        if not await self._check_perm(interaction): return
+        await interaction.response.send_modal(VCNameModal(self.vc))
+
+    @button(label="👢 Kick", style=ButtonStyle.gray, custom_id="kick_members")
+    async def kick(self, interaction: Interaction, button: Button):
+        if not await self._check_perm(interaction): return
+        members = [m for m in self.vc.members if m != interaction.guild.me]
+        if not members:
+            return await interaction.response.send_message("⚠️ No members to kick.", ephemeral=True)
+        await interaction.response.send_message("Select member:", view=KickMemberView(self.vc, members), ephemeral=True)
+
+    @select(
+        placeholder="Bitrate",
+        options=[
+            SelectOption(label="64 kbps", value="64000"),
+            SelectOption(label="96 kbps", value="96000"),
+            SelectOption(label="128 kbps", value="128000"),
+            SelectOption(label="256 kbps", value="256000"),
+            SelectOption(label="384 kbps", value="384000"),
+        ],
+        custom_id="bitrate_select"
+    )
+    async def bitrate(self, interaction: Interaction, select: Select):
+        if not await self._check_perm(interaction): return
+        try:
+            val = int(select.values[0])
+            await self.vc.edit(bitrate=val)
+            await interaction.response.send_message(f"📶 Bitrate: {val//1000} kbps.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+    @select(
+        placeholder="User Limit",
+        options=[
+            SelectOption(label="Unlimited", value="0"),
+            SelectOption(label="2", value="2"),
+            SelectOption(label="5", value="5"),
+            SelectOption(label="10", value="10"),
+            SelectOption(label="25", value="25"),
+        ],
+        custom_id="limit_select"
+    )
+    async def limit(self, interaction: Interaction, select: Select):
+        if not await self._check_perm(interaction): return
+        try:
+            val = int(select.values[0])
+            await self.vc.edit(user_limit=val)
+            await interaction.response.send_message(f"👥 Limit: {val if val else 'Unlimited'}.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+async def send_control_panel(vc: discord.VoiceChannel, creator: discord.Member):
+    try:
+        await asyncio.sleep(2.0)
+        await vc.send(
+            content=f"{creator.mention}, here is your **VoiceMaster** controls:",
+            view=VCControlPanel(vc, creator)
+        )
+    except Exception as e:
+        print(f"JTC Error: {e}")
 
 # ==================== MUSIC CONFIG ====================
 
@@ -337,6 +569,7 @@ async def _apply_invite_role(member: discord.Member, used_code: Optional[str]) -
 
 class ShadowSynBot(discord.Client):
     def __init__(self):
+        # ⚠️ CRITICAL: Enforce Privileged Intents
         intents = discord.Intents.default()
         intents.guilds = True
         intents.voice_states = True
@@ -349,7 +582,6 @@ class ShadowSynBot(discord.Client):
         self.synced = False
 
     async def setup_hook(self):
-        # We hook error here but defer sync to on_ready to see guilds
         self.tree.on_error = self.on_tree_error
         
         if self._yt_task is None:
@@ -368,25 +600,26 @@ bot = ShadowSynBot()
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     
-    # --- CLEAN SYNC (Removes the Broken Command) ---
+    # --- COMMAND SYNC ---
     if not bot.synced:
         print("🔄 Performing Cleanup Sync...")
         try:
-            # 1. Clear GUILD commands (This removes the duplicate/broken ones)
+            # 1. Clear GUILD commands (Removes duplicates from cached guilds)
             for guild in bot.guilds:
                 bot.tree.clear_commands(guild=guild)
                 await bot.tree.sync(guild=guild)
                 await _prime_invites_cache(guild)
             
-            # 2. Sync GLOBAL commands (The working ones)
+            # 2. Sync GLOBAL commands
             await bot.tree.sync()
-            print("✅ Sync Complete. Broken commands removed.")
+            print("✅ Sync Complete.")
             bot.synced = True
         except Exception as e:
             print(f"❌ Sync Error: {e}")
 
     try: bot.add_view(InviteCopyView())
     except: pass
+    print(f"Active Temp VCs: {len(active_temp_vcs)} loaded from disk.")
     
     for g in bot.guilds:
         try: await rehydrate_role_panel(bot, g)
@@ -398,7 +631,7 @@ async def on_guild_join(guild: discord.Guild):
     try: await rehydrate_role_panel(bot, guild)
     except: pass
 
-# ==================== CORE EVENT HANDLING (Audit Only) ====================
+# ==================== UNIFIED EVENT HANDLING ====================
 
 async def _find_audit_action(guild, action, target_id, window_seconds=30):
     if not (guild.me and guild.me.guild_permissions.view_audit_log): return None
@@ -412,8 +645,57 @@ async def _find_audit_action(guild, action, target_id, window_seconds=30):
 
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-    # --- NO VOICEMASTER LOGIC HERE ---
+    guild = member.guild
     
+    # --- VOICEMASTER LOGIC (Join to Create) ---
+    if after.channel and after.channel.id == JOIN_TO_CREATE_CHANNEL_ID:
+        try:
+            print(f"[JTC Debug] {member.display_name} joined JTC channel.")
+            category = get(guild.categories, id=VC_CATEGORY_ID) or after.channel.category
+            
+            # Check permissions
+            if not guild.me.guild_permissions.manage_channels:
+                print("[JTC Error] Missing 'Manage Channels' permission.")
+                return
+            if not guild.me.guild_permissions.move_members:
+                print("[JTC Error] Missing 'Move Members' permission.")
+                return
+
+            base = member.nick or member.name
+            styled = _to_sans_bold_italic(f"{base}'s Room")
+            final_name = _limit_channel_name(styled)
+            
+            new_vc = await guild.create_voice_channel(
+                name=final_name,
+                category=category,
+                user_limit=VC_DEFAULT_USER_LIMIT,
+                bitrate=VC_DEFAULT_BITRATE
+            )
+            
+            active_temp_vcs.add(new_vc.id)
+            _save_active_vcs(active_temp_vcs)
+            await member.move_to(new_vc)
+            print(f"[JTC Success] Created {new_vc.name} and moved member.")
+            
+            # Send Control Panel
+            asyncio.create_task(send_control_panel(new_vc, member))
+            
+        except Exception as e:
+            print(f"[JTC Error] {e}")
+            traceback.print_exc()
+
+    # --- AUTO-DELETE LOGIC ---
+    if before.channel and before.channel.id != JOIN_TO_CREATE_CHANNEL_ID:
+        if before.channel.id in active_temp_vcs:
+            if len(before.channel.members) == 0:
+                try:
+                    await before.channel.delete()
+                    active_temp_vcs.discard(before.channel.id)
+                    _save_active_vcs(active_temp_vcs)
+                    print(f"[JTC Info] Deleted empty channel {before.channel.id}")
+                except Exception as e:
+                    print(f"[JTC Delete Error] {e}")
+
     # --- SHADOWSYN AUDIT LOGIC ---
     if member.bot: return
     target, _ = await resolve_target(bot, DEFAULT_AUDIT_THREAD_ID)
@@ -421,7 +703,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
     m_name = safe_display_name(member)
 
-    # Moves/Joins/Leaves Logging
     if before.channel != after.channel:
         entry = await _find_audit_action(member.guild, discord.AuditLogAction.member_move, member.id)
         if entry:
@@ -437,7 +718,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         except: pass
         return
 
-    # Mute/Deafen (Moderator actions)
     if before.mute != after.mute:
         entry = await _find_audit_action(member.guild, discord.AuditLogAction.member_update, member.id)
         if entry:
@@ -446,7 +726,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             except: pass
             return
 
-    # Deaf/Undeaf (Moderator actions)
     if before.deaf != after.deaf:
         entry = await _find_audit_action(member.guild, discord.AuditLogAction.member_update, member.id)
         if entry:
@@ -455,7 +734,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             except: pass
             return
 
-    # Self Toggles
     if before.self_mute != after.self_mute or before.self_deaf != after.self_deaf:
         try: await target.send(f"🎛️ {m_name} toggled mute/deafen")
         except: pass
@@ -504,7 +782,7 @@ def setup_welcome(client: discord.Client):
 
 setup_welcome(bot)
 
-# ===================== MUSIC COMMANDS (NATIVE) ==================
+# ===================== NATIVE MUSIC: SEARCH & MENU ==================
 
 async def ensure_voice_simple(interaction: discord.Interaction):
     if not interaction.user.voice:
@@ -539,6 +817,7 @@ class MusicSelect(Select):
 
     async def callback(self, interaction: Interaction):
         await safe_defer(interaction)
+        print(f"[DEBUG] Selected song index: {self.values[0]}")
         
         idx = int(self.values[0])
         track = self.tracks[idx]
@@ -553,12 +832,15 @@ class MusicSelect(Select):
                 bot.audio_queues[interaction.guild.id].clear()
 
         try:
+            print(f"[DEBUG] Extracting stream URL for: {url}")
             player = await YTDLSource.from_url(url, loop=bot.loop, stream=True)
-            vc.play(player)
+            print(f"[DEBUG] Playing: {player.title}")
+            vc.play(player, after=lambda e: print(f'Player error: {e}') if e else None)
             
             embed = discord.Embed(title="▶️ Now Playing", description=f"[{player.title}]({player.url})", color=THEME_PRIMARY)
             await interaction.edit_original_response(content="", embed=embed, view=None)
         except Exception as e:
+            print(f"[DEBUG] Play Error: {e}")
             await interaction.followup.send(f"❌ Error playing track: {e}", ephemeral=True)
 
 class MusicSearchView(View):
@@ -569,22 +851,36 @@ class MusicSearchView(View):
 @bot.tree.command(name="play", description="Search & Play music")
 @app_commands.describe(search="Song name or URL")
 async def play(interaction: discord.Interaction, search: str):
-    await safe_defer(interaction, ephemeral=True)
-    
+    # 1. DEFER IMMEDIATELY
+    print(f"[DEBUG] Play command received: {search}")
     try:
-        # 1. Direct Link
+        await safe_defer(interaction, ephemeral=True)
+        print("[DEBUG] Interaction deferred")
+    except Exception as e:
+        print(f"[DEBUG] Defer failed: {e}")
+        return 
+
+    try:
+        # 2. Direct Link Check
         if re.match(r'^https?://', search):
+            print("[DEBUG] Direct link detected")
             vc = await ensure_voice_simple(interaction)
             if not vc: return
             if vc.is_playing(): vc.stop()
             
+            print("[DEBUG] Processing direct link...")
             player = await YTDLSource.from_url(search, loop=bot.loop, stream=True)
             vc.play(player)
             await safe_reply(interaction, f"▶️ **Playing:** {player.title}", ephemeral=True)
             return
 
-        # 2. Search
-        data = await bot.loop.run_in_executor(None, lambda: ytdl.extract_info(f"ytsearch5:{search}", download=False))
+        # 3. Search Logic
+        print("[DEBUG] Searching YouTube...")
+        data = await bot.loop.run_in_executor(
+            None, 
+            lambda: ytdl.extract_info(f"ytsearch5:{search}", download=False)
+        )
+        print("[DEBUG] Search complete")
         
         if 'entries' not in data or not data['entries']:
             await safe_reply(interaction, "❌ No results found.", ephemeral=True)
@@ -595,8 +891,9 @@ async def play(interaction: discord.Interaction, search: str):
         await safe_reply(interaction, f"🔎 Results for **{search}**:", view=view, ephemeral=True)
 
     except Exception as e:
-        print(f"[DEBUG] Play Error: {e}")
-        await safe_reply(interaction, f"❌ Error: `{e}`", ephemeral=True)
+        print(f"[DEBUG] Critical Play Error: {e}")
+        traceback.print_exc()
+        await safe_reply(interaction, f"❌ Critical Error: `{e}`", ephemeral=True)
 
 @bot.tree.command(name="stop", description="Stop music and disconnect")
 async def stop(interaction: discord.Interaction):
