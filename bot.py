@@ -1,10 +1,9 @@
-# bot.py — ShadowSyn (Final: Relaxed Filters + Safe Recording)
+# bot.py — ShadowSyn (Final Fix: Music Crash Patch + Force Recording)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
-# 2. Music: Queue System, Fast Search, Role Locked
-# 3. Clip System: Mixes all users into ONE file (MP3)
-# 4. Core: Audit, Roles, Welcome, TTS, Youtube Watcher
+# 2. Music: Crash-Proof Playback (Fixes 404 Webhook Error)
+# 3. Clip System: Force Recording (Records "Unknown" users too)
 #
 # LIBRARY REQUIREMENT: py-cord[voice] (NOT discord.py)
 
@@ -167,35 +166,30 @@ if HAS_SINKS:
             self.buffer = {} # user_id -> deque of bytes
             self._debug_log_counter = 0
 
+        # FIXED: Removed 'return' blocker. Now captures EVERYTHING.
         def write(self, user, data):
-            # 1. Swap args if Py-Cord sends them backwards
             if hasattr(user, "data") or isinstance(user, (bytes, bytearray)):
                 user, data = data, user
 
-            # 2. Robust User ID Extraction
+            # Robust ID extraction - Default to 'unknown' if missing
             user_id = "unknown"
-            if user:
-                try: user_id = user.id
-                except: pass
-            
-            # Use 'unknown' if we can't find ID, so we still capture audio
+            if user and hasattr(user, 'id'):
+                user_id = user.id
+
             if user_id not in self.buffer:
                 self.buffer[user_id] = deque(maxlen=int(self.time_limit * 50))
                 print(f"[DEBUG] User {user_id} joined audio stream.")
             
-            # 3. Robust Data Extraction
-            audio_bytes = getattr(data, "data", None)
-            if not audio_bytes:
-                audio_bytes = getattr(data, "pcm", None)
+            # Robust data extraction
+            audio_bytes = getattr(data, "pcm", None) or getattr(data, "data", None)
             if not audio_bytes and isinstance(data, (bytes, bytearray)):
                 audio_bytes = data
             
             if audio_bytes and isinstance(audio_bytes, (bytes, bytearray)):
                 self.buffer[user_id].append(audio_bytes)
                 self._debug_log_counter += 1
-                # Log occasionally
                 if self._debug_log_counter % 500 == 0:
-                    print(f"[DEBUG] Recording... Total packets: {self._debug_log_counter}")
+                    print(f"[DEBUG] Recording packet #{self._debug_log_counter}")
 
         def cleanup(self):
             self.finished = True
@@ -858,7 +852,11 @@ class MusicSelect(Select):
             bot.audio_queues[guild_id].append((url, title))
             await interaction.followup.send(f"📝 **Queued:** {title}", ephemeral=True)
         else:
-            await interaction.edit_original_response(content=f"▶️ **Playing:** {title}", view=None)
+            # FIXED: Wrapped in try/except to prevent UI error from stopping music
+            try:
+                await interaction.edit_original_response(content=f"▶️ **Playing:** {title}", view=None)
+            except: pass 
+            
             await play_track(vc, url, title, guild_id)
 
 class MusicSearchView(View):
@@ -984,8 +982,8 @@ async def clip(ctx: discord.ApplicationContext):
         for user_id, audio_deque in sink.buffer.items():
             if not audio_deque: continue
             data = b''.join(audio_deque)
-            # RELAXED FILTER: Skip only tiny junk (< 10KB ~0.05s)
-            if len(data) < 10000: continue
+            # ZERO FILTER: Capture everything > 0 bytes
+            if len(data) == 0: continue
 
             f_path = f"temp_{user_id}_{int(time.time())}.wav"
             with wave.open(f_path, 'wb') as wav:
@@ -998,7 +996,7 @@ async def clip(ctx: discord.ApplicationContext):
             temp_files_to_cleanup.append(f_path)
 
         if not input_files:
-            return await safe_reply(ctx, "ℹ️ No recent audio found.", ephemeral=True)
+            return await safe_reply(ctx, "ℹ️ No recent audio found (Buffer empty). Speak for 5 seconds and try again.", ephemeral=True)
 
         final_file = None
         
@@ -1456,7 +1454,7 @@ class DualRolePickerView(View):
         self.btn_next.disabled = self.page >= (self._total_pages() - 1)
 
     async def _on_prev_page(self, interaction: Interaction):
-        await interaction.response.defer() # Acknowledge but don't reply
+        await interaction.response.defer()
         if self.page > 0:
             self.page -= 1
             self._refresh_add_select()
@@ -1474,19 +1472,15 @@ class DualRolePickerView(View):
             except: pass
 
     async def _on_select_toggle(self, interaction: Interaction):
-        # Ephemeral reply so only user sees their role changes
         await interaction.response.defer(ephemeral=True)
-        
         if not interaction.guild: return
         member = interaction.guild.get_member(interaction.user.id)
         bot_member = interaction.guild.me
-        
         page_roles = self._current_slice()
         page_ids = {int(o["role_id"]) for o in page_roles}
         allowed = {int(o["role_id"]) for o in self.options}
         current = {r.id for r in member.roles if r.id in allowed}
         selected = {int(v) for v in (self.add_select.values or [])}
-        
         to_add = (selected - (current & page_ids)) & page_ids
         to_remove = ((current & page_ids) - selected)
         
@@ -1506,7 +1500,6 @@ class DualRolePickerView(View):
         if added: embed.add_field(name="Added", value=", ".join(added), inline=False)
         if removed: embed.add_field(name="Removed", value=", ".join(removed), inline=False)
         if not added and not removed: embed.description = "No changes."
-        
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 def role_picker_embed() -> discord.Embed:
@@ -1522,7 +1515,6 @@ async def rehydrate_role_panel(client: discord.Client, guild: discord.Guild):
         except: return
     try:
         msg = await channel.fetch_message(panel.get("message_id"))
-        # Re-attach the view to the existing message so buttons work after restart
         client.add_view(DualRolePickerView(guild, cfg.get("options", [])), message_id=msg.id)
     except: pass
 
