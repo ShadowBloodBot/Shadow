@@ -1,9 +1,10 @@
-# bot.py — ShadowSyn (Final: Zombie Connection Fix + Force Recording)
+# bot.py — ShadowSyn (Final: /haste + Zombie Fix + Force Recording)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
 # 2. Music: Crash-Proof Playback + Zombie Connection Fix
 # 3. Clip System: Force Recording (Records "Unknown" users too)
+# 4. Haste Facts: Random fact generator
 #
 # LIBRARY REQUIREMENT: py-cord[voice] (NOT discord.py)
 
@@ -17,6 +18,7 @@ import traceback
 import wave
 import io
 import subprocess
+import random
 from pathlib import Path
 from typing import Optional, Tuple, Union, Dict, List, Set
 from datetime import datetime, timezone
@@ -77,6 +79,35 @@ ROLE_YT_MANAGER_ID      = 960088893351415898
 YT_POST_TARGET_ID       = 959631286882934784
 YT_POLL_SECONDS         = 180
 YT_USER_AGENT           = "ShadowSynBot/YouTubeWatcher"
+
+# Haste Facts List
+HASTE_FACTS = [
+    "Haste is a man lover",
+    "Haste feeds knights to spearmen",
+    "Haste is the potato peeler",
+    "Haste hates women",
+    "Haste loves fat chicks",
+    "Haste would die for brightwood, bro",
+    "Haste is a fitzroy enjoyer",
+    "Haste used to get feudal in 3mins... used to",
+    "Haste goes Pro scout",
+    "Haste is in a good mood. Jks.",
+    "Haste loves dating paki protestors",
+    "Haste is a lefty greeny",
+    "Haste has no dps",
+    "Haste has beef with a dev of a game with sub 1000 players",
+    "Haste cant afford ranger gear so he blames the dev",
+    "Haste thinks Maya is fat",
+    "Haste was MIA in Shadow Until Jed showed up",
+    "Everyone prefers Haste over Boet",
+    "Everyone likes it when Haste has a break down",
+    "Everyone is scared Haste might get bashed at his restaurant",
+    "Haste earns 70k a year and that gives Blood anxiety",
+    "Haste Likes using a bow",
+    "Haste doesn't have the muscle mass to carry a real life weapon. That's why he hates Military Sim Games.",
+    "Haste never let go of New world, and it affects all of his current relationships.",
+    "Haste only played Vrising cause he thought the outfits were cute."
+]
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
@@ -1090,6 +1121,14 @@ async def speak(
         await safe_reply(ctx, "✅ Spoke text", ephemeral=True)
     except Exception as e:
         await safe_reply(ctx, f"❌ Error: `{e}`", ephemeral=True)
+
+# ======================== HASTE FACTS COMMAND =====================
+
+@bot.slash_command(name="haste", description="Get a random fact about Haste")
+async def haste(ctx: discord.ApplicationContext):
+    # safe_reply handles interaction response automatically
+    fact = random.choice(HASTE_FACTS)
+    await safe_reply(ctx, f"🧠 **Haste Fact:** {fact}")
 
 # ======================== CUSTOM EMBED MODAL =====================
 
