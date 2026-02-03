@@ -1,8 +1,8 @@
-# bot.py — ShadowSyn (Final Fix: Music Crash Patch + Force Recording)
+# bot.py — ShadowSyn (Final: Zombie Connection Fix + Force Recording)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
-# 2. Music: Crash-Proof Playback (Fixes 404 Webhook Error)
+# 2. Music: Crash-Proof Playback + Zombie Connection Fix
 # 3. Clip System: Force Recording (Records "Unknown" users too)
 #
 # LIBRARY REQUIREMENT: py-cord[voice] (NOT discord.py)
@@ -271,7 +271,13 @@ async def ensure_voice_simple(ctx):
     vc = ctx.guild.voice_client
 
     try:
-        if vc and vc.is_connected():
+        # ZOMBIE KILLER: If we have a VC object but it's not connected, kill it.
+        if vc and not vc.is_connected():
+            try: await vc.disconnect(force=True)
+            except: pass
+            vc = None
+
+        if vc:
             if vc.channel.id != channel.id:
                 await vc.move_to(channel)
         else:
