@@ -1,10 +1,10 @@
-# bot.py — ShadowSyn (Final: Clean Haste Facts + All Fixes)
+# bot.py — ShadowSyn (Ultimate: Dynamic Haste Facts + All Fixes)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
 # 2. Music: Crash-Proof Playback + Zombie Connection Fix
 # 3. Clip System: Force Recording (Records "Unknown" users too)
-# 4. Haste Facts: /haste command (Clean output)
+# 4. Haste Facts: /haste (Random) + /morehaste (Add new ones)
 #
 # LIBRARY REQUIREMENT: py-cord[voice] (NOT discord.py)
 
@@ -80,8 +80,8 @@ YT_POST_TARGET_ID       = 959631286882934784
 YT_POLL_SECONDS         = 180
 YT_USER_AGENT           = "ShadowSynBot/YouTubeWatcher"
 
-# Haste Facts List
-HASTE_FACTS = [
+# Default Haste Facts (Used if no file exists)
+DEFAULT_HASTE_FACTS = [
     "Haste is a man lover",
     "Haste feeds knights to spearmen",
     "Haste is the potato peeler",
@@ -137,6 +137,26 @@ ROLE_STORE = (PERSIST_ROOT / "role_picker.json")
 YT_STORE = (PERSIST_ROOT / "youtube_watch.json")
 INVITE_ROLE_STORE = (PERSIST_ROOT / "invite_roles.json")
 ACTIVE_VCS_STORE = (PERSIST_ROOT / "active_vcs.json")
+HASTE_FACTS_STORE = (PERSIST_ROOT / "haste_facts.json")
+
+# Global Variable for Facts
+active_haste_facts = []
+
+def _load_haste_facts():
+    global active_haste_facts
+    if HASTE_FACTS_STORE.exists():
+        try:
+            active_haste_facts = json.loads(HASTE_FACTS_STORE.read_text())
+            print(f"Loaded {len(active_haste_facts)} Haste Facts from disk.")
+            return
+        except: pass
+    active_haste_facts = list(DEFAULT_HASTE_FACTS)
+    print("Loaded Default Haste Facts.")
+
+def _save_haste_facts():
+    try:
+        HASTE_FACTS_STORE.write_text(json.dumps(active_haste_facts))
+    except: pass
 
 # ==================== MUSIC ENGINE CONFIG ====================
 
@@ -703,6 +723,9 @@ async def on_ready():
     if bot._yt_task is None:
         bot._yt_task = asyncio.create_task(youtube_watch_loop(bot))
     
+    # Load Haste Facts from disk
+    _load_haste_facts()
+
     # Primes invitation cache
     for guild in bot.guilds:
         await _prime_invites_cache(guild)
@@ -1122,13 +1145,29 @@ async def speak(
     except Exception as e:
         await safe_reply(ctx, f"❌ Error: `{e}`", ephemeral=True)
 
-# ======================== HASTE FACTS COMMAND =====================
+# ======================== HASTE FACTS COMMANDS =====================
 
 @bot.slash_command(name="haste", description="Get a random fact about Haste")
 async def haste(ctx: discord.ApplicationContext):
-    # safe_reply handles interaction response automatically
-    fact = random.choice(HASTE_FACTS)
+    # Uses the DYNAMIC list now
+    if not active_haste_facts:
+        return await safe_reply(ctx, "No facts available.")
+    fact = random.choice(active_haste_facts)
     await safe_reply(ctx, fact)
+
+@bot.slash_command(name="morehaste", description="Add a new Haste fact")
+async def morehaste(ctx: discord.ApplicationContext, fact: Option(str, "The fact to add")):
+    # Role check: 1214794734770323466
+    if not isinstance(ctx.author, discord.Member):
+        return await safe_reply(ctx, "❌ Cannot use in DMs.", ephemeral=True)
+        
+    has_perm = any(r.id == 1214794734770323466 for r in ctx.author.roles)
+    if not has_perm:
+        return await safe_reply(ctx, "🚫 You do not have permission to add Haste facts.", ephemeral=True)
+
+    active_haste_facts.append(fact)
+    _save_haste_facts()
+    await safe_reply(ctx, f"✅ Added fact: \"{fact}\"")
 
 # ======================== CUSTOM EMBED MODAL =====================
 
