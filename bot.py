@@ -1,10 +1,10 @@
-# bot.py — ShadowSyn (Final: /haste + Zombie Fix + Force Recording)
+# bot.py — ShadowSyn (Final: Clean Haste Facts + All Fixes)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
 # 2. Music: Crash-Proof Playback + Zombie Connection Fix
 # 3. Clip System: Force Recording (Records "Unknown" users too)
-# 4. Haste Facts: Random fact generator
+# 4. Haste Facts: /haste command (Clean output)
 #
 # LIBRARY REQUIREMENT: py-cord[voice] (NOT discord.py)
 
@@ -1128,7 +1128,7 @@ async def speak(
 async def haste(ctx: discord.ApplicationContext):
     # safe_reply handles interaction response automatically
     fact = random.choice(HASTE_FACTS)
-    await safe_reply(ctx, f"🧠 **Haste Fact:** {fact}")
+    await safe_reply(ctx, fact)
 
 # ======================== CUSTOM EMBED MODAL =====================
 
