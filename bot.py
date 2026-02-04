@@ -1,4 +1,4 @@
-# bot.py — ShadowSyn (Final: Duel Command + Casino Dashboard)
+# bot.py — ShadowSyn (Final: Crash Fix + Duel @User System)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
@@ -273,29 +273,6 @@ class ShopSelect(Select):
                 update_balance(user_id, cost) # Refund
                 await interaction.response.send_message(f"❌ Failed (Refunded): Bot lacks permission.", ephemeral=True)
 
-class DuelUserSelect(discord.ui.UserSelect):
-    def __init__(self, challenger_bal):
-        super().__init__(placeholder="Select opponent...", min_values=1, max_values=1)
-        self.challenger_bal = challenger_bal
-
-    async def callback(self, interaction: Interaction):
-        opponent = self.values[0]
-        if opponent.id == interaction.user.id:
-            return await interaction.response.send_message("❌ Cannot duel yourself.", ephemeral=True)
-        if opponent.bot:
-            return await interaction.response.send_message("❌ Cannot duel bots.", ephemeral=True)
-        
-        async def start_duel(inter, amount):
-            opp_bal = get_balance(str(opponent.id))
-            if opp_bal < amount:
-                return await inter.response.send_message(f"❌ {opponent.display_name} only has {opp_bal} Scoins.", ephemeral=True)
-            
-            # Send Challenge
-            embed = discord.Embed(title="⚔️ DUEL CHALLENGE", description=f"{interaction.user.mention} challenges {opponent.mention}!\n💰 **Pot:** {amount*2} Scoins\n\nClick **Accept** to fight.", color=discord.Color.red())
-            await inter.response.send_message(content=opponent.mention, embed=embed, view=DuelAcceptView(interaction.user, opponent, amount))
-
-        await interaction.response.send_modal(BetAmountModal(f"Duel vs {opponent.display_name}", self.challenger_bal, start_duel))
-
 class DuelAcceptView(View):
     def __init__(self, p1, p2, amount):
         super().__init__(timeout=60)
@@ -375,10 +352,8 @@ class CasinoDashboard(View):
 
     @discord.ui.button(label="Duel", style=ButtonStyle.danger, emoji="⚔️", row=0)
     async def duel(self, button, interaction: Interaction):
-        bal = get_balance(str(interaction.user.id))
-        view = View()
-        view.add_item(DuelUserSelect(bal))
-        await interaction.response.send_message("Select opponent:", view=view, ephemeral=True)
+        # FIXED: Removed broken UserSelect. Now instructs to use slash command.
+        await interaction.response.send_message("⚔️ To duel someone, use the command:\n`/duel @user [amount]`", ephemeral=True)
 
     @discord.ui.button(label="Shop", style=ButtonStyle.secondary, emoji="🛒", row=1)
     async def shop(self, button, interaction: Interaction):
@@ -727,6 +702,38 @@ async def play(ctx: discord.ApplicationContext, search: Option(str, description=
     except Exception as e:
         print(f"[DEBUG] Play Error: {e}")
         await safe_reply(ctx, f"❌ Error: `{e}`", ephemeral=True)
+
+class MusicSelect(Select):
+    def __init__(self, tracks: List[dict]):
+        self.tracks = tracks
+        options = []
+        for i, t in enumerate(tracks[:5]):
+            label = t.get('title', 'Unknown Title')[:95]
+            desc = t.get('channel', 'Unknown Artist')[:95]
+            options.append(SelectOption(label=f"{i+1}. {label}", description=desc, value=str(i), emoji="🎵"))
+        super().__init__(placeholder="Select a song...", min_values=1, max_values=1, options=options)
+    async def callback(self, interaction: Interaction):
+        await safe_defer(interaction)
+        idx = int(self.values[0])
+        track = self.tracks[idx]
+        url = track.get('url') or track.get('webpage_url')
+        title = track.get('title', 'Unknown')
+        vc = await ensure_voice_simple(interaction)
+        if not vc: return
+        guild_id = interaction.guild.id
+        if guild_id not in bot.audio_queues: bot.audio_queues[guild_id] = deque()
+        if vc.is_playing():
+            bot.audio_queues[guild_id].append((url, title))
+            await interaction.followup.send(f"📝 **Queued:** {title}", ephemeral=True)
+        else:
+            try: await interaction.edit_original_response(content=f"▶️ **Playing:** {title}", view=None)
+            except: pass
+            await play_track(vc, url, title, guild_id)
+
+class MusicSearchView(View):
+    def __init__(self, tracks: List[dict]):
+        super().__init__(timeout=60)
+        self.add_item(MusicSelect(tracks))
 
 @bot.slash_command(name="skip", description="Skip the current song")
 @dj_or_admin()
