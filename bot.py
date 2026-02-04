@@ -1,4 +1,4 @@
-# bot.py — ShadowSyn (Final: Shop TBA + All Fixes)
+# bot.py — ShadowSyn (Final: Visual Polish for Slots)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
@@ -311,6 +311,13 @@ class CasinoDashboard(View):
                 msg = f"🎰 **{a} | {b} | {c}**\n❌ **Lost** {amount}"
             
             embed = discord.Embed(description=msg, color=col)
+            # --- VISUAL POLISH: Added User Info ---
+            if inter.user.display_avatar:
+                embed.set_author(name=f"{inter.user.display_name}'s Spin", icon_url=inter.user.display_avatar.url)
+            else:
+                embed.set_author(name=f"{inter.user.display_name}'s Spin")
+            embed.set_footer(text=f"Bet: {amount} Scoins")
+            
             await inter.response.send_message(embed=embed)
 
         await interaction.response.send_modal(BetAmountModal("Slots Bet", bal, run_slots))
