@@ -1,10 +1,11 @@
-# bot.py — ShadowSyn (Ultimate: Dynamic Haste Facts + All Fixes)
+# bot.py — ShadowSyn (Final: Owner-Only Economy Control)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
 # 2. Music: Crash-Proof Playback + Zombie Connection Fix
 # 3. Clip System: Force Recording (Records "Unknown" users too)
-# 4. Haste Facts: /haste (Random) + /morehaste (Add new ones)
+# 4. Haste Facts: /haste (Public) + /morehaste (Admin)
+# 5. Scoins Economy: /pull, /bet (Visuals), /wallet, /leaderboard
 #
 # LIBRARY REQUIREMENT: py-cord[voice] (NOT discord.py)
 
@@ -21,7 +22,7 @@ import subprocess
 import random
 from pathlib import Path
 from typing import Optional, Tuple, Union, Dict, List, Set
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from collections import deque
 
 import discord
@@ -41,8 +42,6 @@ except ImportError:
 from gtts import gTTS
 from shutil import which
 from googletrans import Translator
-import aiohttp
-import xml.etree.ElementTree as ET
 from discord.utils import get
 
 # --- NATIVE MUSIC DEPENDENCY ---
@@ -52,17 +51,23 @@ import yt_dlp
 
 VANITY_INVITE  = "https://discord.gg/shadowsyn"
 THEME_PRIMARY  = 0x2B0B35
+THEME_WIN      = 0x43B581 # Green
+THEME_LOSS     = 0xF04747 # Red
+THEME_GOLD     = 0xFFD700 # Gold
 
 # Channel & Role IDs
 ARRIVALS_THREAD_ID      = 959629903186259978
 ROLE_MINION_ID          = 955600021502431233
-ROLE_ADMIN_ID           = 1214794734770323466
-ROLE_MEMBER_ID          = 955600320287887400
 SPEAK_LOG_THREAD_ID     = 1400048671973703690
 DEPARTURES_THREAD_ID    = 960088192177029140
 DEFAULT_TARGET_ID       = 1166874144395247757
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
 CLIPS_TARGET_ID         = 1467055136609271818
+
+# --- PERMISSION ROLES & USERS ---
+ROLE_ADMIN_ID           = 1214794734770323466 
+ROLE_DJ_ID              = 955600320287887400
+OWNER_ID                = 482463400929263627 
 
 # VoiceMaster Config
 JOIN_TO_CREATE_CHANNEL_ID = 1398618132788281364
@@ -71,16 +76,11 @@ VC_DEFAULT_BITRATE        = 384000
 VC_DEFAULT_USER_LIMIT     = 0
 ADMIN_ROLE_NAME           = "SHADOW"
 
-# Music Config
-DJ_ROLE_ID              = 955600320287887400
+# Economy Config
+SCOIN_PULL_AMOUNT = 5
+SCOIN_COOLDOWN_HOURS = 24
 
-# Youtube Watcher Config
-ROLE_YT_MANAGER_ID      = 960088893351415898
-YT_POST_TARGET_ID       = 959631286882934784
-YT_POLL_SECONDS         = 180
-YT_USER_AGENT           = "ShadowSynBot/YouTubeWatcher"
-
-# Default Haste Facts (Used if no file exists)
+# Default Haste Facts
 DEFAULT_HASTE_FACTS = [
     "Haste is a man lover",
     "Haste feeds knights to spearmen",
@@ -134,29 +134,72 @@ except:
     PERSIST_ROOT = Path(".").resolve()
 
 ROLE_STORE = (PERSIST_ROOT / "role_picker.json")
-YT_STORE = (PERSIST_ROOT / "youtube_watch.json")
 INVITE_ROLE_STORE = (PERSIST_ROOT / "invite_roles.json")
 ACTIVE_VCS_STORE = (PERSIST_ROOT / "active_vcs.json")
 HASTE_FACTS_STORE = (PERSIST_ROOT / "haste_facts.json")
+SCOINS_STORE = (PERSIST_ROOT / "scoins.json")
 
-# Global Variable for Facts
+# Global Variables
 active_haste_facts = []
+scoins_db = {} # {user_id: {"balance": int, "last_pull": float}}
 
-def _load_haste_facts():
-    global active_haste_facts
+def _load_persistence():
+    global active_haste_facts, scoins_db
+    
+    # Haste Facts
     if HASTE_FACTS_STORE.exists():
-        try:
-            active_haste_facts = json.loads(HASTE_FACTS_STORE.read_text())
-            print(f"Loaded {len(active_haste_facts)} Haste Facts from disk.")
-            return
-        except: pass
-    active_haste_facts = list(DEFAULT_HASTE_FACTS)
-    print("Loaded Default Haste Facts.")
+        try: active_haste_facts = json.loads(HASTE_FACTS_STORE.read_text())
+        except: active_haste_facts = list(DEFAULT_HASTE_FACTS)
+    else:
+        active_haste_facts = list(DEFAULT_HASTE_FACTS)
+        
+    # Scoins
+    if SCOINS_STORE.exists():
+        try: scoins_db = json.loads(SCOINS_STORE.read_text())
+        except: scoins_db = {}
+    else:
+        scoins_db = {}
 
 def _save_haste_facts():
-    try:
-        HASTE_FACTS_STORE.write_text(json.dumps(active_haste_facts))
+    try: HASTE_FACTS_STORE.write_text(json.dumps(active_haste_facts))
     except: pass
+
+def _save_scoins():
+    try: SCOINS_STORE.write_text(json.dumps(scoins_db))
+    except: pass
+
+# --- SCOINS HELPERS ---
+def get_balance(user_id: str) -> int:
+    return scoins_db.get(user_id, {}).get("balance", 0)
+
+def update_balance(user_id: str, amount: int):
+    user_id = str(user_id)
+    if user_id not in scoins_db:
+        scoins_db[user_id] = {"balance": 0, "last_pull": 0}
+    scoins_db[user_id]["balance"] += amount
+    _save_scoins()
+
+# ==================== PERMISSION DECORATORS ====================
+
+def admin_only():
+    def predicate(ctx):
+        if not isinstance(ctx.author, discord.Member): return False
+        return any(r.id == ROLE_ADMIN_ID for r in ctx.author.roles)
+    return commands.check(predicate)
+
+def dj_or_admin():
+    def predicate(ctx):
+        if not isinstance(ctx.author, discord.Member): return False
+        # Allow if Admin OR DJ
+        if any(r.id == ROLE_ADMIN_ID for r in ctx.author.roles): return True
+        if any(r.id == ROLE_DJ_ID for r in ctx.author.roles): return True
+        return False
+    return commands.check(predicate)
+
+def owner_only():
+    def predicate(ctx):
+        return ctx.author.id == OWNER_ID
+    return commands.check(predicate)
 
 # ==================== MUSIC ENGINE CONFIG ====================
 
@@ -217,30 +260,23 @@ if HAS_SINKS:
             self.buffer = {} # user_id -> deque of bytes
             self._debug_log_counter = 0
 
-        # FIXED: Removed 'return' blocker. Now captures EVERYTHING.
         def write(self, user, data):
             if hasattr(user, "data") or isinstance(user, (bytes, bytearray)):
                 user, data = data, user
 
-            # Robust ID extraction - Default to 'unknown' if missing
             user_id = "unknown"
             if user and hasattr(user, 'id'):
                 user_id = user.id
 
             if user_id not in self.buffer:
                 self.buffer[user_id] = deque(maxlen=int(self.time_limit * 50))
-                print(f"[DEBUG] User {user_id} joined audio stream.")
             
-            # Robust data extraction
             audio_bytes = getattr(data, "pcm", None) or getattr(data, "data", None)
             if not audio_bytes and isinstance(data, (bytes, bytearray)):
                 audio_bytes = data
             
             if audio_bytes and isinstance(audio_bytes, (bytes, bytearray)):
                 self.buffer[user_id].append(audio_bytes)
-                self._debug_log_counter += 1
-                if self._debug_log_counter % 500 == 0:
-                    print(f"[DEBUG] Recording packet #{self._debug_log_counter}")
 
         def cleanup(self):
             self.finished = True
@@ -322,7 +358,6 @@ async def ensure_voice_simple(ctx):
     vc = ctx.guild.voice_client
 
     try:
-        # ZOMBIE KILLER: If we have a VC object but it's not connected, kill it.
         if vc and not vc.is_connected():
             try: await vc.disconnect(force=True)
             except: pass
@@ -346,19 +381,6 @@ async def ensure_voice_simple(ctx):
     except Exception as e:
         await safe_reply(ctx, f"❌ Voice Error: {e}", ephemeral=True)
         return None
-
-def dj_role_check():
-    def predicate(ctx):
-        if ctx.author.guild_permissions.manage_guild: return True
-        if any(role.id == DJ_ROLE_ID for role in ctx.author.roles): return True
-        return False
-    return commands.check(predicate)
-
-def admin_only():
-    def predicate(ctx):
-        if not isinstance(ctx.author, discord.Member): return False
-        return any(r.id == ROLE_ADMIN_ID for r in ctx.author.roles)
-    return commands.check(predicate)
 
 # ==================== VOICEMASTER COMPONENTS =================
 
@@ -536,37 +558,6 @@ def set_guild_role_cfg(gid: int, cfg: dict) -> None:
     store[str(gid)] = cfg
     _save_role_store(store)
 
-def _load_yt_store() -> Dict[str, dict]:
-    base = {"channels": {}, "aliases": {}}
-    if YT_STORE.exists():
-        try:
-            data = json.loads(YT_STORE.read_text())
-            if isinstance(data, dict): base.update(data)
-        except: pass
-    base.setdefault("channels", {})
-    base.setdefault("aliases", {})
-    return base
-
-def _save_yt_store(data: Dict[str, dict]) -> None:
-    data.setdefault("channels", {})
-    data.setdefault("aliases", {})
-    try: YT_STORE.write_text(json.dumps(data, indent=2))
-    except: pass
-
-def _alias_key(text: str) -> str:
-    s = (text or "").strip().lower().rstrip("/")
-    s = re.sub(r"^https?://(www\.)?", "", s)
-    return s
-
-def _add_alias(user_input: str, uc_id: str):
-    if not user_input or not uc_id: return
-    store = _load_yt_store()
-    store["aliases"][_alias_key(user_input)] = uc_id
-    _save_yt_store(store)
-
-def _lookup_alias(user_input: str) -> Optional[str]:
-    return _load_yt_store().get("aliases", {}).get(_alias_key(user_input))
-
 def _load_invite_role_store() -> Dict[str, dict]:
     if INVITE_ROLE_STORE.exists():
         try: return json.loads(INVITE_ROLE_STORE.read_text())
@@ -711,7 +702,6 @@ async def _apply_invite_role(member: discord.Member, used_code: Optional[str]) -
 class ShadowSynBot(discord.Bot):
     def __init__(self):
         super().__init__(intents=discord.Intents.all())
-        self._yt_task: Optional[asyncio.Task] = None
         self.audio_queues: Dict[int, deque] = {} 
         self.synced = False
 
@@ -720,11 +710,9 @@ bot = ShadowSynBot()
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user} (Py-Cord)")
-    if bot._yt_task is None:
-        bot._yt_task = asyncio.create_task(youtube_watch_loop(bot))
     
-    # Load Haste Facts from disk
-    _load_haste_facts()
+    # Load persistence
+    _load_persistence()
 
     # Primes invitation cache
     for guild in bot.guilds:
@@ -912,7 +900,6 @@ class MusicSelect(Select):
             bot.audio_queues[guild_id].append((url, title))
             await interaction.followup.send(f"📝 **Queued:** {title}", ephemeral=True)
         else:
-            # FIXED: Wrapped in try/except to prevent UI error from stopping music
             try:
                 await interaction.edit_original_response(content=f"▶️ **Playing:** {title}", view=None)
             except: pass 
@@ -925,7 +912,7 @@ class MusicSearchView(View):
         self.add_item(MusicSelect(tracks))
 
 @bot.slash_command(name="play", description="Search & Play music (Queue enabled)")
-@dj_role_check()
+@dj_or_admin()
 async def play(ctx: discord.ApplicationContext, search: Option(str, description="Song name or URL")):
     await safe_defer(ctx)
     
@@ -963,7 +950,7 @@ async def play(ctx: discord.ApplicationContext, search: Option(str, description=
         await safe_reply(ctx, f"❌ Error: `{e}`", ephemeral=True)
 
 @bot.slash_command(name="skip", description="Skip the current song")
-@dj_role_check()
+@dj_or_admin()
 async def skip(ctx: discord.ApplicationContext):
     vc = ctx.guild.voice_client
     if vc and vc.is_playing():
@@ -973,7 +960,7 @@ async def skip(ctx: discord.ApplicationContext):
         await safe_reply(ctx, "❌ Nothing is playing.", ephemeral=True)
 
 @bot.slash_command(name="queue", description="Show the music queue")
-@dj_role_check()
+@dj_or_admin()
 async def queue(ctx: discord.ApplicationContext):
     gid = ctx.guild.id
     if gid not in bot.audio_queues or not bot.audio_queues[gid]:
@@ -990,7 +977,7 @@ async def queue(ctx: discord.ApplicationContext):
     await safe_reply(ctx, embed=embed, ephemeral=True)
 
 @bot.slash_command(name="stop", description="Stop music and clear queue")
-@dj_role_check()
+@dj_or_admin()
 async def stop(ctx: discord.ApplicationContext):
     vc = ctx.guild.voice_client
     if vc:
@@ -1005,6 +992,7 @@ async def stop(ctx: discord.ApplicationContext):
 # ===================== CLIPPING COMMANDS =====================
 
 @bot.slash_command(name="join", description="Join VC and start Auto-Recording")
+@dj_or_admin()
 async def join(ctx: discord.ApplicationContext):
     # EPHEMERAL: Only user sees this
     await safe_defer(ctx, ephemeral=True)
@@ -1013,6 +1001,7 @@ async def join(ctx: discord.ApplicationContext):
         await safe_reply(ctx, f"✅ Joined {vc.channel.mention} and started auto-recording.", ephemeral=True)
 
 @bot.slash_command(name="clip", description="Clip last 30s and save to channel")
+@dj_or_admin()
 async def clip(ctx: discord.ApplicationContext):
     await safe_defer(ctx, ephemeral=True)
     vc = ctx.guild.voice_client
@@ -1115,14 +1104,12 @@ async def log_speak_usage(user, text, lang):
         except: pass
 
 @bot.slash_command(name="speak", description="Speak text in your VC")
+@dj_or_admin()
 async def speak(
     ctx: discord.ApplicationContext, 
     text: Option(str, "Message"), 
     language: Option(str, "Language", choices=LANG_CHOICES, default="English")
 ):
-    if not isinstance(ctx.author, discord.Member) or not any(r.id == ROLE_MEMBER_ID for r in ctx.author.roles):
-        return await safe_reply(ctx, "❌ `/speak` is restricted to Members.", ephemeral=True)
-
     await safe_defer(ctx, ephemeral=True)
     if not ffmpeg_available(): return await safe_reply(ctx, "❌ FFmpeg missing", ephemeral=True)
     
@@ -1145,26 +1132,114 @@ async def speak(
     except Exception as e:
         await safe_reply(ctx, f"❌ Error: `{e}`", ephemeral=True)
 
+# ======================== SCOINS ECONOMY =====================
+
+@bot.slash_command(name="pull", description="Get your daily Scoins (24h Cooldown)")
+async def pull(ctx: discord.ApplicationContext):
+    user_id = str(ctx.author.id)
+    user_data = scoins_db.get(user_id, {"balance": 0, "last_pull": 0})
+    last = user_data["last_pull"]
+    now = time.time()
+    
+    # 24h = 86400 seconds
+    if now - last < (SCOIN_COOLDOWN_HOURS * 3600):
+        remaining = (SCOIN_COOLDOWN_HOURS * 3600) - (now - last)
+        hours = int(remaining // 3600)
+        mins = int((remaining % 3600) // 60)
+        embed = discord.Embed(description=f"⏳ **Cooldown:** Return in `{hours}h {mins}m`.", color=discord.Color.red())
+        return await safe_reply(ctx, embed=embed, ephemeral=True)
+    
+    new_bal = user_data["balance"] + SCOIN_PULL_AMOUNT
+    scoins_db[user_id] = {"balance": new_bal, "last_pull": now}
+    _save_scoins()
+    
+    embed = discord.Embed(description=f"💰 **Payday!** Received **{SCOIN_PULL_AMOUNT} Scoins**.\n💳 Balance: `{new_bal}`", color=THEME_WIN)
+    await safe_reply(ctx, embed=embed)
+
+@bot.slash_command(name="wallet", description="Check your Scoins balance")
+async def wallet(ctx: discord.ApplicationContext, user: Option(discord.User, required=False)):
+    target = user or ctx.author
+    bal = get_balance(str(target.id))
+    embed = discord.Embed(description=f"💳 **{target.display_name}** has `{bal}` Scoins.", color=THEME_PRIMARY)
+    await safe_reply(ctx, embed=embed)
+
+@bot.slash_command(name="bet", description="Gamble Scoins (Double or Nothing)")
+async def bet(ctx: discord.ApplicationContext, amount: Option(str, "Amount to bet (or 'all')")):
+    user_id = str(ctx.author.id)
+    bal = get_balance(user_id)
+    
+    # Parse amount
+    if amount.lower() == "all":
+        bet_amount = bal
+    else:
+        try: bet_amount = int(amount)
+        except: return await safe_reply(ctx, "❌ Invalid amount.", ephemeral=True)
+    
+    if bet_amount <= 0: return await safe_reply(ctx, "❌ Must bet at least 1.", ephemeral=True)
+    if bet_amount > bal: return await safe_reply(ctx, "❌ Insufficient funds.", ephemeral=True)
+    
+    # 1. VISUAL: Rolling Animation
+    roll_embed = discord.Embed(description="🎲 **Rolling the bones...**", color=THEME_PRIMARY)
+    interaction = await ctx.respond(embed=roll_embed)
+    if hasattr(interaction, 'message'): msg = interaction.message
+    else: msg = await interaction.original_response()
+    
+    await asyncio.sleep(1.5) # Suspense
+    
+    # 2. LOGIC: Roll
+    roll = random.randint(1, 100)
+    
+    if roll == 100: # JACKPOT 5x
+        winnings = bet_amount * 5
+        update_balance(user_id, winnings)
+        res_embed = discord.Embed(title="🎰 JACKPOT! 🎰", description=f"🎲 Rolled: **{roll}**\n💸 Won: **{winnings}** Scoins!", color=THEME_GOLD)
+    elif roll > 50: # WIN 2x (Profit = Amount)
+        update_balance(user_id, bet_amount)
+        res_embed = discord.Embed(title="✅ YOU WIN", description=f"🎲 Rolled: **{roll}**\n💸 Won: **{bet_amount}** Scoins", color=THEME_WIN)
+    else: # LOSS
+        update_balance(user_id, -bet_amount)
+        res_embed = discord.Embed(title="❌ YOU LOSE", description=f"🎲 Rolled: **{roll}**\n💸 Lost: **{bet_amount}** Scoins", color=THEME_LOSS)
+        
+    res_embed.set_footer(text=f"New Balance: {get_balance(user_id)}")
+    try: await msg.edit(embed=res_embed)
+    except: await ctx.send(embed=res_embed)
+
+@bot.slash_command(name="leaderboard", description="Top 10 Scoin Rich List")
+async def leaderboard(ctx: discord.ApplicationContext):
+    # Sort by balance descending
+    sorted_users = sorted(scoins_db.items(), key=lambda x: x[1].get("balance", 0), reverse=True)
+    top_10 = sorted_users[:10]
+    
+    lines = []
+    for i, (uid, data) in enumerate(top_10):
+        try: member = ctx.guild.get_member(int(uid)) or await ctx.guild.fetch_member(int(uid))
+        except: member = None
+        name = member.display_name if member else "Unknown"
+        bal = data.get("balance", 0)
+        lines.append(f"`{i+1}.` **{name}** — {bal} 💰")
+        
+    if not lines: lines = ["No data yet."]
+    
+    embed = discord.Embed(title="🏆 Scoin Leaderboard", description="\n".join(lines), color=THEME_GOLD)
+    await safe_reply(ctx, embed=embed)
+
+@bot.slash_command(name="give_scoins", description="Owner Only: Add/Remove Scoins")
+@owner_only()
+async def give_scoins(ctx: discord.ApplicationContext, user: discord.Member, amount: int):
+    update_balance(str(user.id), amount)
+    new_bal = get_balance(str(user.id))
+    await safe_reply(ctx, f"✅ Adjusted **{user.display_name}** by `{amount}`.\nNew Balance: `{new_bal}`", ephemeral=True)
+
 # ======================== HASTE FACTS COMMANDS =====================
 
 @bot.slash_command(name="haste", description="Get a random fact about Haste")
 async def haste(ctx: discord.ApplicationContext):
-    # Uses the DYNAMIC list now
-    if not active_haste_facts:
-        return await safe_reply(ctx, "No facts available.")
     fact = random.choice(active_haste_facts)
     await safe_reply(ctx, fact)
 
 @bot.slash_command(name="morehaste", description="Add a new Haste fact")
+@admin_only()
 async def morehaste(ctx: discord.ApplicationContext, fact: Option(str, "The fact to add")):
-    # Role check: 1214794734770323466
-    if not isinstance(ctx.author, discord.Member):
-        return await safe_reply(ctx, "❌ Cannot use in DMs.", ephemeral=True)
-        
-    has_perm = any(r.id == 1214794734770323466 for r in ctx.author.roles)
-    if not has_perm:
-        return await safe_reply(ctx, "🚫 You do not have permission to add Haste facts.", ephemeral=True)
-
     active_haste_facts.append(fact)
     _save_haste_facts()
     await safe_reply(ctx, f"✅ Added fact: \"{fact}\"")
@@ -1190,6 +1265,7 @@ class CustomEmbedModal(Modal):
         await interaction.response.send_message("✅ Posted", ephemeral=True)
 
 @bot.slash_command(name="send_custom", description="Send a custom embed here")
+@admin_only()
 async def send_custom(ctx: discord.ApplicationContext):
     await ctx.send_modal(CustomEmbedModal(ctx.channel.id, ctx.bot))
 
@@ -1362,121 +1438,6 @@ async def on_member_ban(guild, user):
     entry = await _find_recent_audit(guild, discord.AuditLogAction.ban, user.id, 300)
     if entry: executor, reason = entry.user, entry.reason
     await _send_departure_embed(user.id, _build_departure_embed(user, "Banned", executor, reason))
-
-# =================== YOUTUBE WATCHER ==================
-
-def yt_locked():
-    def predicate(ctx):
-        return isinstance(ctx.author, discord.Member) and any(r.id == ROLE_YT_MANAGER_ID for r in ctx.author.roles)
-    return commands.check(predicate)
-
-async def fetch_feed_latest(session: aiohttp.ClientSession, channel_id: str) -> Optional[Dict[str, str]]:
-    url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-    try:
-        async with session.get(url, headers={"User-Agent": YT_USER_AGENT}) as r:
-            if r.status != 200: return None
-            text = await r.text()
-    except: return None
-    try:
-        ns = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015", "media": "http://search.yahoo.com/mrss/"}
-        root = ET.fromstring(text)
-        entry = root.find("atom:entry", ns)
-        if entry is None: return None
-        vid = entry.find("yt:videoId", ns).text
-        title = entry.find("media:group/media:title", ns).text
-        link_el = entry.find("atom:link", ns)
-        link = link_el.attrib.get("href") if link_el is not None else f"https://www.youtube.com/watch?v={vid}"
-        ch_title = root.find("atom:title", ns).text
-        published = entry.find("atom:published", ns).text
-        return {"video_id": vid, "title": title, "url": link, "channel_title": ch_title, "published": published}
-    except: return None
-
-async def post_video_announcement(client: discord.Client, payload: Dict[str, str]):
-    target, _ = await resolve_target(client, YT_POST_TARGET_ID)
-    if not target: return
-    title = payload.get("title") or "New Video"
-    url = payload.get("url")
-    channel_title = payload.get("channel_title") or "Creator"
-    prefix = f"Hey, **{channel_title}** just posted a video!"
-    embed = discord.Embed(title=title, url=url, description=prefix, color=discord.Color.red())
-    embed.set_footer(text="YouTube • ShadowSyn")
-    try: await target.send(embed=embed)
-    except: pass
-
-async def youtube_watch_loop(client: discord.Client):
-    await client.wait_until_ready()
-    store = _load_yt_store()
-    async with aiohttp.ClientSession(headers={"User-Agent": YT_USER_AGENT}) as session:
-        for ch_id, cfg in list(store.get("channels", {}).items()):
-            latest = await fetch_feed_latest(session, ch_id)
-            if latest:
-                cfg["last_video_id"] = latest["video_id"]
-                store["channels"][ch_id] = cfg
-        _save_yt_store(store)
-    
-    while not client.is_closed():
-        try:
-            store = _load_yt_store()
-            channels = store.get("channels", {})
-            if not channels:
-                await asyncio.sleep(YT_POLL_SECONDS)
-                continue
-            async with aiohttp.ClientSession(headers={"User-Agent": YT_USER_AGENT}) as session:
-                for ch_id, cfg in list(channels.items()):
-                    latest = await fetch_feed_latest(session, ch_id)
-                    if not latest:
-                        await asyncio.sleep(1.0); continue
-                    last = cfg.get("last_video_id")
-                    if latest["video_id"] != last:
-                        await post_video_announcement(client, latest)
-                        cfg["last_video_id"] = latest["video_id"]
-                        store["channels"][ch_id] = cfg
-                        _save_yt_store(store)
-                    await asyncio.sleep(1.0)
-        except: pass
-        await asyncio.sleep(YT_POLL_SECONDS)
-
-# =================== YOUTUBE COMMANDS ==================
-
-@bot.slash_command(name="yt_add", description="Watch a YouTube channel.")
-@yt_locked()
-async def yt_add(ctx: discord.ApplicationContext, channel_url_or_id: str):
-    await safe_defer(ctx, ephemeral=True)
-    ch_id = await normalize_channel_id(channel_url_or_id) if "normalize_channel_id" in globals() else channel_url_or_id
-    if not ch_id: return await safe_reply(ctx, "❌ Invalid channel.", ephemeral=True)
-    store = _load_yt_store()
-    store["channels"].setdefault(ch_id, {"last_video_id": None, "channel_title": ""})
-    _save_yt_store(store)
-    _add_alias(channel_url_or_id, ch_id)
-    await safe_reply(ctx, f"✅ Watching `{ch_id}`.", ephemeral=True)
-
-@bot.slash_command(name="yt_remove", description="Stop watching a YouTube channel.")
-@yt_locked()
-async def yt_remove(ctx: discord.ApplicationContext, channel_id_or_url: str):
-    await safe_defer(ctx, ephemeral=True)
-    ch_id = _lookup_alias(channel_id_or_url)
-    if not ch_id: ch_id = channel_id_or_url
-    store = _load_yt_store()
-    if store.get("channels", {}).pop(ch_id, None) is None: return await safe_reply(ctx, "ℹ️ Not watching.", ephemeral=True)
-    _save_yt_store(store)
-    await safe_reply(ctx, f"✅ Removed `{ch_id}`.", ephemeral=True)
-
-@bot.slash_command(name="yt_list", description="List watched YouTube channels.")
-@yt_locked()
-async def yt_list(ctx: discord.ApplicationContext):
-    await safe_defer(ctx, ephemeral=True)
-    store = _load_yt_store()
-    channels = store.get("channels", {})
-    if not channels: return await safe_reply(ctx, "No channels.", ephemeral=True)
-    lines = []
-    for ch_id, cfg in channels.items():
-        title = cfg.get("channel_title") or "Unknown"
-        lines.append(f"- **{title}** (`{ch_id}`)")
-    await safe_reply(ctx, "\n".join(lines)[:1990], ephemeral=True)
-
-async def normalize_channel_id(inp: str) -> Optional[str]:
-    if re.fullmatch(r"UC[0-9A-Za-z_-]{10,}", (inp or "").strip()): return inp.strip()
-    return None
 
 # =================== ROLE PICKER (DUAL VIEW RESTORED) ==================
 
