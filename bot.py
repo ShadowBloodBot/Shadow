@@ -1,8 +1,9 @@
-# bot.py — ShadowSyn (Gold Master: Arrivals & Alerts Protected)
+# bot.py — ShadowSyn (Final: No Pings in Audit)
 #
 # === FEATURE MANIFEST ===
 # [x] Arrivals: "Welcome" card + Minion Button sent to ARRIVALS_THREAD_ID
 # [x] Alerts: Detailed Voice Logs (Mute/Stream/Cam/Move) sent to DEFAULT_AUDIT_THREAD_ID
+#     *** FIX: Uses Display Names instead of Mentions (No Pings) ***
 # [x] VoiceMaster: JTC + Control Panel (Lock, Unlock, Kick, Rename, Bitrate)
 # [x] Self Roles: Persistent Dropdown Menus
 # [x] Custom Embeds: /send_custom restored
@@ -58,12 +59,12 @@ THEME_LOSS     = 0xF04747
 THEME_GOLD     = 0xFFD700 
 
 # --- CONFIGURATION IDs ---
-ARRIVALS_THREAD_ID      = 959629903186259978  # <--- ARRIVALS CHANNEL
+ARRIVALS_THREAD_ID      = 959629903186259978
 ROLE_MINION_ID          = 955600021502431233
 SPEAK_LOG_THREAD_ID     = 1400048671973703690
 DEPARTURES_THREAD_ID    = 960088192177029140
 DEFAULT_TARGET_ID       = 1166874144395247757
-DEFAULT_AUDIT_THREAD_ID = 961726632249425930  # <--- ALERT CHANNEL
+DEFAULT_AUDIT_THREAD_ID = 961726632249425930
 CLIPS_TARGET_ID         = 1467055136609271818
 
 # --- PERMISSIONS ---
@@ -639,7 +640,6 @@ async def on_ready():
 async def on_guild_join(guild):
     await _prime_invites_cache(guild)
 
-# ##### WELCOME / ARRIVALS SYSTEM #####
 def setup_welcome(client):
     class MinionView(View):
         def __init__(self, target_member_id):
@@ -660,7 +660,6 @@ def setup_welcome(client):
             code = await _detect_used_invite_code(member)
             if code: await _apply_invite_role(member, code)
         except: pass
-        # --- SEND TO ARRIVALS CHANNEL ---
         ch = client.get_channel(ARRIVALS_THREAD_ID)
         if ch:
             src = await _detect_join_source(member)
@@ -716,7 +715,7 @@ async def on_voice_state_update(member, before, after):
         try: await before.channel.delete(); active_temp_vcs.discard(before.channel.id); _save_active_vcs(active_temp_vcs)
         except: pass
     
-    # ##### ALERT / AUDIT SYSTEM #####
+    # ##### ALERT / AUDIT SYSTEM (NO PINGS) #####
     if member.bot: return
     # --- SEND TO ALERT CHANNEL ---
     target, _ = await resolve_target(bot, DEFAULT_AUDIT_THREAD_ID)
@@ -727,44 +726,44 @@ async def on_voice_state_update(member, before, after):
     # 1. Join/Leave/Move
     if before.channel != after.channel:
         if before.channel is None and after.channel is not None:
-            msg = f"🟢 {member.mention} joined **{after.channel.name}**."
+            msg = f"🟢 **{member.display_name}** joined **{after.channel.name}**."
         elif before.channel is not None and after.channel is None:
-            msg = f"🔴 {member.mention} left **{before.channel.name}**."
+            msg = f"🔴 **{member.display_name}** left **{before.channel.name}**."
         elif before.channel is not None and after.channel is not None:
             entry = await _find_audit_action(guild, discord.AuditLogAction.member_move, member.id)
             if entry:
-                actor = entry.user.mention
-                msg = f"🔀 {member.mention} moved **{before.channel.name}** ➜ **{after.channel.name}** by {actor}."
+                actor = f"**{entry.user.display_name}**"
+                msg = f"🔀 **{member.display_name}** moved **{before.channel.name}** ➜ **{after.channel.name}** by {actor}."
             else:
-                msg = f"🔀 {member.mention} moved **{before.channel.name}** ➜ **{after.channel.name}**."
+                msg = f"🔀 **{member.display_name}** moved **{before.channel.name}** ➜ **{after.channel.name}**."
 
     # 2. Self Mute/Deafen (Granular Check)
     elif before.self_mute != after.self_mute:
         status = "muted" if after.self_mute else "unmuted"
-        msg = f"🎤 {member.mention} **self-{status}**."
+        msg = f"🎤 **{member.display_name}** **self-{status}**."
     elif before.self_deaf != after.self_deaf:
         status = "deafened" if after.self_deaf else "undeafened"
-        msg = f"🎧 {member.mention} **self-{status}**."
+        msg = f"🎧 **{member.display_name}** **self-{status}**."
 
     # 3. Server Mute/Deafen (Admin Abilities Check)
     elif before.mute != after.mute:
         status = "server-muted" if after.mute else "server-unmuted"
         entry = await _find_audit_action(guild, discord.AuditLogAction.member_update, member.id)
-        actor = entry.user.mention if entry else "Unknown Admin"
-        msg = f"🙊 {member.mention} was **{status}** by {actor}."
+        actor = f"**{entry.user.display_name}**" if entry else "Unknown Admin"
+        msg = f"🙊 **{member.display_name}** was **{status}** by {actor}."
     elif before.deaf != after.deaf:
         status = "server-deafened" if after.deaf else "server-undeafened"
         entry = await _find_audit_action(guild, discord.AuditLogAction.member_update, member.id)
-        actor = entry.user.mention if entry else "Unknown Admin"
-        msg = f"🙉 {member.mention} was **{status}** by {actor}."
+        actor = f"**{entry.user.display_name}**" if entry else "Unknown Admin"
+        msg = f"🙉 **{member.display_name}** was **{status}** by {actor}."
 
     # 4. Stream/Video
     elif before.self_stream != after.self_stream:
         status = "started" if after.self_stream else "stopped"
-        msg = f"📺 {member.mention} **{status} streaming**."
+        msg = f"📺 **{member.display_name}** **{status} streaming**."
     elif before.self_video != after.self_video:
         status = "enabled" if after.self_video else "disabled"
-        msg = f"📷 {member.mention} **{status} camera**."
+        msg = f"📷 **{member.display_name}** **{status} camera**."
 
     if msg:
         try: await target.send(msg)
