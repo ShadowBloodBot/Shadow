@@ -1,19 +1,11 @@
-# bot.py — ShadowSyn (Lean Version: Casino Jackpot Announce)
+# bot.py — ShadowSyn (Final: Easy Custom Embeds + Casino Jackpot)
 #
 # === FEATURES ===
-# [x] Casino: 
-#     - Locked to channel 1468766727134249091.
-#     - 3x Wins are announced publicly in the thread (No Pings).
-#     - Regular play is Ephemeral (Hidden).
-# [x] Music: Dropdown Search (1-5), YouTube crash patched.
-# [x] VoiceMaster: Join-to-Create + Control Panel.
-# [x] Speak: TTS (Thai/Viet/Tagalog supported).
-# [x] Logs: No Pings, detailed voice events.
-# [x] Arrivals: Welcome Card + Minion Button.
-#
-# === REMOVED ===
-# [ ] Self Roles (Gone)
-# [ ] Clips/Recording (Gone)
+# [x] /send_custom: REVERTED to a simple Form (Title/Description/Footer).
+#     - No more JSON coding. Just type text, and it looks like your screenshot.
+# [x] Casino: Locked to channel 1468766727134249091.
+#     - 3x Wins trigger a public alert in the thread.
+# [x] Music, VoiceMaster, Logs, Speak: All preserved.
 #
 # LIBRARY: py-cord[voice]
 
@@ -901,26 +893,39 @@ async def give_scoins(ctx, user: discord.Member, amount: int):
     update_balance(str(user.id), amount)
     await safe_reply(ctx, f"✅ Done. New balance: {get_balance(str(user.id))}", ephemeral=True)
 
-# --- CUSTOM EMBEDS ---
-class EmbedBuilderModal(Modal):
+# --- CUSTOM EMBEDS (REVERTED TO SIMPLE FORM) ---
+class EasyEmbedModal(Modal):
     def __init__(self, channel):
-        super().__init__(title="Send Custom JSON Embed")
+        super().__init__(title="Create Custom Embed")
         self.channel = channel
-        self.add_item(TextInput(label="JSON Data", placeholder='{"title": "Hello", "description": "World", "color": 16711680}', style=discord.InputTextStyle.paragraph))
-    async def callback(self, interaction: Interaction):
-        try:
-            data = json.loads(self.children[0].value)
-            embed = discord.Embed.from_dict(data)
-            await self.channel.send(embed=embed)
-            await interaction.response.send_message("✅ Sent.", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+        self.add_item(TextInput(label="Title", placeholder="Embed Title...", required=True))
+        self.add_item(TextInput(label="Description", placeholder="Main content...", style=discord.InputTextStyle.paragraph, required=True))
+        self.add_item(TextInput(label="Footer (Optional)", placeholder="Small text at bottom...", required=False))
+        self.add_item(TextInput(label="Color (Hex)", placeholder="#2B0B35", required=False))
 
-@bot.slash_command(name="send_custom", description="Send embed via JSON")
+    async def callback(self, interaction: Interaction):
+        title = self.children[0].value
+        desc = self.children[1].value
+        footer = self.children[2].value
+        color_raw = self.children[3].value
+        
+        # Default Color if blank or invalid
+        try: 
+            if color_raw: color = int(color_raw.replace("#", ""), 16)
+            else: color = THEME_PRIMARY
+        except: color = THEME_PRIMARY
+
+        embed = discord.Embed(title=title, description=desc, color=color)
+        if footer: embed.set_footer(text=footer)
+        
+        await self.channel.send(embed=embed)
+        await interaction.response.send_message("✅ Embed Sent!", ephemeral=True)
+
+@bot.slash_command(name="send_custom", description="Send a clean embed message")
 @admin_only()
 async def send_custom(ctx, channel: Option(discord.TextChannel, required=False)):
     target = channel or ctx.channel
-    await ctx.send_modal(EmbedBuilderModal(target))
+    await ctx.send_modal(EasyEmbedModal(target))
 
 # --- MUSIC ---
 def check_queue(gid, vc):
