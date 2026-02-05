@@ -1,14 +1,16 @@
-# bot.py — ShadowSyn (Platinum Master: Cleaned, Optimized, & Locked)
+# bot.py — ShadowSyn (Lean Version: No Roles, No Clips)
 #
-# === AUDIT COMPLETE ===
-# [x] Code Hygiene: Unused imports removed, error handling optimized (try/finally).
-# [x] Stability: 'on_ready' patched to guarantee Role Button persistence.
-# [x] Security: Casino strictly locked to Channel ID 1468766727134249091.
-# [x] Functionality:
-#     - /clip: Mixes multi-user audio, targets specific thread, auto-cleans RAM/Disk.
-#     - /play: Dropdown menu restored, YouTube crash patched.
-#     - /gamble: Ephemeral (Private) responses to reduce spam.
-#     - Logs: No pings (Bold names).
+# === FEATURES ===
+# [x] Casino: Locked to channel 1468766727134249091, Ephemeral Replies.
+# [x] Music: Dropdown Search (1-5), YouTube crash patched.
+# [x] VoiceMaster: Join-to-Create + Control Panel.
+# [x] Speak: TTS (Thai/Viet/Tagalog supported).
+# [x] Logs: No Pings, detailed voice events.
+# [x] Arrivals: Welcome Card + Minion Button.
+#
+# === REMOVED ===
+# [ ] Self Roles (Gone)
+# [ ] Clips/Recording (Gone)
 #
 # LIBRARY: py-cord[voice]
 
@@ -19,8 +21,6 @@ import asyncio
 import tempfile
 import time
 import traceback
-import io
-import subprocess
 import random
 from pathlib import Path
 from typing import Optional, List, Set
@@ -31,15 +31,6 @@ import discord
 from discord import Option, ButtonStyle, SelectOption, Interaction, AuditLogAction
 from discord.ui import View, Button, Modal, TextInput, Select
 from discord.ext import commands
-
-# --- AUDIO SINK CHECK ---
-try:
-    from discord.sinks import Sink, Filters, default_filters
-    HAS_SINKS = True
-except ImportError:
-    HAS_SINKS = False
-    print("⚠️ WARNING: 'discord.sinks' not found. Ensure you are using py-cord.")
-    class Sink: pass
 
 from gtts import gTTS
 from shutil import which
@@ -62,7 +53,6 @@ SPEAK_LOG_THREAD_ID     = 1400048671973703690
 DEPARTURES_THREAD_ID    = 960088192177029140
 DEFAULT_TARGET_ID       = 1166874144395247757
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
-CLIPS_TARGET_ID         = 1467055136609271818
 CASINO_CHANNEL_ID       = 1468766727134249091
 
 # --- PERMISSIONS ---
@@ -115,7 +105,6 @@ PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve()
 try: PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
 except: PERSIST_ROOT = Path(".").resolve()
 
-ROLE_STORE = (PERSIST_ROOT / "role_picker.json")
 INVITE_ROLE_STORE = (PERSIST_ROOT / "invite_roles.json")
 ACTIVE_VCS_STORE = (PERSIST_ROOT / "active_vcs.json")
 HASTE_FACTS_STORE = (PERSIST_ROOT / "haste_facts.json")
@@ -225,41 +214,6 @@ async def resolve_target(client: discord.Client, target_id: int):
         return ch, parent
     return None, None
 
-# --- RING BUFFER SINK (CRITICAL FOR /CLIP) ---
-if HAS_SINKS:
-    class RingBufferSink(Sink):
-        def __init__(self, time_limit=30):
-            super().__init__()
-            self.time_limit = time_limit
-            # PCM: 48000Hz, 2ch, 2bytes = 192,000 bytes/sec.
-            self.max_bytes = 192000 * time_limit
-            self._buffers = {}
-
-        def write(self, user, data):
-            if user not in self._buffers:
-                self._buffers[user] = deque()
-            self._buffers[user].append(data)
-            current_size = len(self._buffers[user]) * 3840 
-            while current_size > self.max_bytes:
-                self._buffers[user].popleft()
-                current_size -= 3840
-
-        def format_audio(self, audio): return audio 
-
-        @property
-        def audio_data(self):
-            results = {}
-            for user, chunks in self._buffers.items():
-                b = io.BytesIO()
-                for chunk in chunks: b.write(chunk)
-                b.seek(0)
-                class AudioFile: 
-                    def __init__(self, fp): self.file = fp
-                results[user] = AudioFile(b)
-            return results
-
-def dummy_callback(sink, *args): pass
-
 async def ensure_voice_simple(ctx):
     user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
     if not user.voice:
@@ -276,10 +230,6 @@ async def ensure_voice_simple(ctx):
             if vc.channel.id != channel.id: await vc.move_to(channel)
         else: vc = await channel.connect(timeout=10, reconnect=True)
         
-        if HAS_SINKS and vc and vc.is_connected():
-            if not vc.recording:
-                try: vc.start_recording(RingBufferSink(time_limit=30), dummy_callback)
-                except Exception as e: print(f"⚠️ Auto-recording failed: {e}")
         return vc
     except Exception as e:
         await safe_reply(ctx, f"❌ Voice Error: {e}", ephemeral=True)
@@ -297,28 +247,6 @@ def utcnow(): return datetime.now(timezone.utc)
 def ffmpeg_available(): return which("ffmpeg") is not None
 
 # ==================== DATA LOADERS ====================
-
-def _load_role_store():
-    if ROLE_STORE.exists():
-        try: return json.loads(ROLE_STORE.read_text())
-        except: return {}
-    return {}
-
-def _save_role_store(data):
-    try: ROLE_STORE.write_text(json.dumps(data, indent=2))
-    except: pass
-
-def get_guild_role_cfg(gid):
-    store = _load_role_store()
-    cfg = store.get(str(gid), {"panel": None, "options": []})
-    cfg["options"] = sorted(cfg.get("options", []), key=lambda o: str(o.get("label", "")).casefold())
-    return cfg
-
-def set_guild_role_cfg(gid, cfg):
-    cfg["options"] = sorted(cfg.get("options", []), key=lambda o: str(o.get("label", "")).casefold())
-    store = _load_role_store()
-    store[str(gid)] = cfg
-    _save_role_store(store)
 
 def _load_invite_role_store():
     if INVITE_ROLE_STORE.exists():
@@ -746,17 +674,8 @@ bot = ShadowSynBot()
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     _load_persistence()
-    
-    # CRITICAL: Wait for connection before restoring views to prevent Interaction Failed
-    await bot.wait_until_ready()
-    
     for guild in bot.guilds:
         await _prime_invites_cache(guild)
-        try: 
-            await rehydrate_role_panel(bot, guild)
-            print(f"[inf] Restored Role View for {guild.name}")
-        except Exception as e:
-            print(f"[err] Failed to restore role view: {e}")
 
 @bot.event
 async def on_guild_join(guild):
@@ -803,7 +722,6 @@ async def _find_audit_action(guild, action, target_id):
     return None
 
 async def send_control_panel(vc, member):
-    """Restored Control Panel Logic"""
     try:
         await asyncio.sleep(1)
         embed = discord.Embed(title="🎛️ Voice Control", description=f"Manage **{vc.name}**", color=THEME_PRIMARY)
@@ -965,52 +883,6 @@ async def give_scoins(ctx, user: discord.Member, amount: int):
     update_balance(str(user.id), amount)
     await safe_reply(ctx, f"✅ Done. New balance: {get_balance(str(user.id))}", ephemeral=True)
 
-# --- ROLE PICKER ---
-class DualRolePickerView(View):
-    def __init__(self, guild, options):
-        super().__init__(timeout=None)
-        self.add_item(Select(placeholder="Select roles...", options=[SelectOption(label=o["label"], value=str(o["role_id"])) for o in options], min_values=0, max_values=len(options) if options else 1, custom_id=f"ss:roles:toggle:g{guild.id}"))
-    async def interaction_check(self, interaction):
-        sel = [c for c in self.children if isinstance(c, Select)][0]
-        selected = {int(v) for v in sel.values}
-        allowed = {int(o.value) for o in sel.options}
-        member = interaction.guild.get_member(interaction.user.id)
-        current = {r.id for r in member.roles}
-        to_add = (selected - current) & allowed
-        to_remove = (allowed - selected) & current
-        for rid in to_add: await member.add_roles(interaction.guild.get_role(rid))
-        for rid in to_remove: await member.remove_roles(interaction.guild.get_role(rid))
-        await interaction.response.send_message("✅ Updated.", ephemeral=True)
-        return False
-
-async def rehydrate_role_panel(client, guild):
-    cfg = get_guild_role_cfg(guild.id)
-    if cfg.get("panel"):
-        try:
-            ch = client.get_channel(cfg["panel"]["channel_id"]) or await client.fetch_channel(cfg["panel"]["channel_id"])
-            msg = await ch.fetch_message(cfg["panel"]["message_id"])
-            client.add_view(DualRolePickerView(guild, cfg.get("options", [])), message_id=msg.id)
-        except: pass
-
-@bot.slash_command(name="roles_post", description="Post panel")
-@admin_only()
-async def roles_post(ctx, target: Option(discord.TextChannel, required=False)):
-    dest = target or ctx.channel
-    cfg = get_guild_role_cfg(ctx.guild.id)
-    view = DualRolePickerView(ctx.guild, cfg.get("options", []))
-    msg = await dest.send(embed=discord.Embed(title="ROLES", color=THEME_PRIMARY), view=view)
-    cfg["panel"] = {"channel_id": dest.id, "message_id": msg.id}
-    set_guild_role_cfg(ctx.guild.id, cfg)
-    await safe_reply(ctx, "✅ Posted.", ephemeral=True)
-
-@bot.slash_command(name="roles_add")
-@admin_only()
-async def roles_add(ctx, role: discord.Role):
-    cfg = get_guild_role_cfg(ctx.guild.id)
-    cfg.setdefault("options", []).append({"role_id": role.id, "label": role.name})
-    set_guild_role_cfg(ctx.guild.id, cfg)
-    await safe_reply(ctx, "✅ Added.", ephemeral=True)
-
 # --- CUSTOM EMBEDS ---
 class EmbedBuilderModal(Modal):
     def __init__(self, channel):
@@ -1032,7 +904,7 @@ async def send_custom(ctx, channel: Option(discord.TextChannel, required=False))
     target = channel or ctx.channel
     await ctx.send_modal(EmbedBuilderModal(target))
 
-# --- MUSIC & CLIPS ---
+# --- MUSIC ---
 def check_queue(gid, vc):
     if gid in bot.audio_queues and bot.audio_queues[gid]:
         url, title = bot.audio_queues[gid].popleft()
@@ -1079,62 +951,6 @@ async def skip(ctx):
 async def stop(ctx):
     if ctx.guild.id in bot.audio_queues: bot.audio_queues[ctx.guild.id].clear()
     if ctx.guild.voice_client: ctx.guild.voice_client.stop(); await safe_reply(ctx, "⏹️ Stopped.")
-
-@bot.slash_command(name="clip", description="Clip 30s")
-@dj_or_admin()
-async def clip(ctx):
-    await safe_defer(ctx)
-    vc = ctx.guild.voice_client
-    
-    # Ensure buffer exists
-    if not vc or not hasattr(vc, "sink"): 
-        return await safe_reply(ctx, "❌ No recording stream. (Join/Rejoin VC to start)", ephemeral=True)
-    
-    sink = vc.sink
-    if not sink.audio_data: 
-        return await safe_reply(ctx, "❌ Buffer empty (wait a few seconds).", ephemeral=True)
-    
-    # --- AUDIO MIXING LOGIC (Single File) ---
-    user_files = []
-    try:
-        inputs = []
-        filter_parts = []
-        
-        # 1. Dump all individual PCMs
-        for i, (user_id, audio) in enumerate(sink.audio_data.items()):
-            fname = f"temp_{user_id}.pcm"
-            with open(fname, "wb") as f: f.write(audio.file.getbuffer())
-            user_files.append(fname)
-            inputs.extend(["-f", "s16le", "-ar", "48k", "-ac", "2", "-i", fname])
-            filter_parts.append(f"[{i}:a]")
-
-        # 2. Construct Filter Complex
-        if len(user_files) > 1:
-            filter_complex = f"{''.join(filter_parts)}amix=inputs={len(user_files)}:duration=longest[out]"
-            cmd = ["ffmpeg", "-y"] + inputs + ["-filter_complex", filter_complex, "-map", "[out]", "clip.mp3"]
-        else:
-            cmd = ["ffmpeg", "-y"] + inputs + ["clip.mp3"]
-        
-        # 3. Run FFmpeg
-        subprocess.run(cmd, check=True)
-        
-        # 4. Target Channel Logic
-        target_channel = bot.get_channel(CLIPS_TARGET_ID) or await bot.fetch_channel(CLIPS_TARGET_ID)
-        if not target_channel: target_channel = ctx.channel # Fallback
-        
-        await target_channel.send(f"🎬 **Clip** by {ctx.author.mention}", file=discord.File("clip.mp3"))
-        await safe_reply(ctx, "✅ Clip sent!", ephemeral=True)
-
-    except Exception as e:
-        await safe_reply(ctx, f"❌ Clip failed: {e}", ephemeral=True)
-    finally:
-        # 5. Cleanup
-        for f in user_files: 
-            try: os.remove(f)
-            except: pass
-        if os.path.exists("clip.mp3"): 
-            try: os.remove("clip.mp3")
-            except: pass
 
 @bot.slash_command(name="join")
 @dj_or_admin()
