@@ -1,4 +1,4 @@
-# bot.py — ShadowSyn (Final: Bitrate Fix)
+# bot.py — ShadowSyn (Final: 18% House Edge)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
@@ -6,12 +6,9 @@
 # 3. Clip System: Force Recording
 # 4. Haste Facts: /haste (Public) + /morehaste (Admin)
 # 5. Scoins Casino: LOCKED to Role ID 955600320287887400
+#    - MATH: 7 symbols, 13x Jackpot, 1.5x Minor = ~18.4% House Edge.
 # 6. Shop: Only "Ban Haste" exists (Cost: 10,000)
 # 7. Slots: "Spin Again" button included.
-#
-# === FIXES ===
-# - Default Bitrate lowered to 64kbps (Fixes "Mic not working" issues)
-# - Explicit Speak permissions granted on create.
 #
 # LIBRARY REQUIREMENT: py-cord[voice] (NOT discord.py)
 
@@ -77,8 +74,6 @@ GAMBLER_ROLE_ID         = 955600320287887400  # <--- LOCKED ROLE ID
 # --- VOICEMASTER ---
 JOIN_TO_CREATE_CHANNEL_ID = 1398618132788281364
 VC_CATEGORY_ID            = 908659586536468542
-# CHANGED: Lowered from 384000 to 64000 to fix audio/mic connection issues.
-# Users can increase this via the panel if their internet supports it.
 VC_DEFAULT_BITRATE        = 64000 
 VC_DEFAULT_USER_LIMIT     = 0
 ADMIN_ROLE_NAME           = "SHADOW"
@@ -406,12 +401,13 @@ def generate_slot_result(user, bet):
     user_id = str(user.id)
     update_balance(user_id, -bet)
     
-    emojis = ["🍒", "🍋", "🍇", "💎", "7️⃣"]
+    # 7 Symbols for 18% House Edge
+    emojis = ["🍒", "🍋", "🍇", "💎", "7️⃣", "🔔", "🍊"]
     a, b, c = random.choice(emojis), random.choice(emojis), random.choice(emojis)
     
     payout = 0
-    if a == b == c: payout = bet * 10
-    elif a == b or b == c or a == c: payout = int(bet * 1.5)
+    if a == b == c: payout = bet * 13 # Jackpot 13x
+    elif a == b or b == c or a == c: payout = int(bet * 1.5) # Minor 1.5x
     
     if payout > 0:
         update_balance(user_id, payout)
