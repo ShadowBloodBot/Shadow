@@ -1,16 +1,17 @@
-# bot.py — ShadowSyn (Final: 18% House Edge)
+# bot.py — ShadowSyn (Gold Master: Arrivals & Alerts Protected)
 #
-# === FEATURES ===
-# 1. VoiceMaster: Join-to-Create VCs + Control Panel
-# 2. Music: Crash-Proof Playback + Zombie Connection Fix
-# 3. Clip System: Force Recording
-# 4. Haste Facts: /haste (Public) + /morehaste (Admin)
-# 5. Scoins Casino: LOCKED to Role ID 955600320287887400
-#    - MATH: 7 symbols, 13x Jackpot, 1.5x Minor = ~18.4% House Edge.
-# 6. Shop: Only "Ban Haste" exists (Cost: 10,000)
-# 7. Slots: "Spin Again" button included.
+# === FEATURE MANIFEST ===
+# [x] Arrivals: "Welcome" card + Minion Button sent to ARRIVALS_THREAD_ID
+# [x] Alerts: Detailed Voice Logs (Mute/Stream/Cam/Move) sent to DEFAULT_AUDIT_THREAD_ID
+# [x] VoiceMaster: JTC + Control Panel (Lock, Unlock, Kick, Rename, Bitrate)
+# [x] Self Roles: Persistent Dropdown Menus
+# [x] Custom Embeds: /send_custom restored
+# [x] Music: /play, /skip, /stop, /queue, /leave
+# [x] Clips: /clip (30s buffer)
+# [x] Casino: Slots (House Edge), Duel, Wallet (Locked to Role)
+# [x] Shop: "Ban Haste" item only.
 #
-# LIBRARY REQUIREMENT: py-cord[voice] (NOT discord.py)
+# LIBRARY: py-cord[voice]
 
 import os
 import re
@@ -29,7 +30,7 @@ from datetime import datetime, timezone, timedelta
 from collections import deque
 
 import discord
-from discord import Option, ButtonStyle, SelectOption, Interaction
+from discord import Option, ButtonStyle, SelectOption, Interaction, AuditLogAction
 from discord.ui import View, Button, Modal, TextInput, Select
 from discord.ext import commands
 
@@ -57,19 +58,19 @@ THEME_LOSS     = 0xF04747
 THEME_GOLD     = 0xFFD700 
 
 # --- CONFIGURATION IDs ---
-ARRIVALS_THREAD_ID      = 959629903186259978
+ARRIVALS_THREAD_ID      = 959629903186259978  # <--- ARRIVALS CHANNEL
 ROLE_MINION_ID          = 955600021502431233
 SPEAK_LOG_THREAD_ID     = 1400048671973703690
 DEPARTURES_THREAD_ID    = 960088192177029140
 DEFAULT_TARGET_ID       = 1166874144395247757
-DEFAULT_AUDIT_THREAD_ID = 961726632249425930
+DEFAULT_AUDIT_THREAD_ID = 961726632249425930  # <--- ALERT CHANNEL
 CLIPS_TARGET_ID         = 1467055136609271818
 
 # --- PERMISSIONS ---
 ROLE_ADMIN_ID           = 1214794734770323466 
 ROLE_DJ_ID              = 955600320287887400
 OWNER_ID                = 482463400929263627
-GAMBLER_ROLE_ID         = 955600320287887400  # <--- LOCKED ROLE ID
+GAMBLER_ROLE_ID         = 955600320287887400  
 
 # --- VOICEMASTER ---
 JOIN_TO_CREATE_CHANNEL_ID = 1398618132788281364
@@ -82,27 +83,8 @@ ADMIN_ROLE_NAME           = "SHADOW"
 SCOIN_PULL_AMOUNT = 5
 SCOIN_COOLDOWN_HOURS = 3
 
-# --- DATA ---
-DEFAULT_HASTE_FACTS = [
-    "Haste is a man lover", "Haste feeds knights to spearmen", "Haste is the potato peeler",
-    "Haste hates women", "Haste loves fat chicks", "Haste would die for brightwood, bro",
-    "Haste is a fitzroy enjoyer", "Haste used to get feudal in 3mins... used to",
-    "Haste goes Pro scout", "Haste is in a good mood. Jks.", "Haste loves dating paki protestors",
-    "Haste is a lefty greeny", "Haste has no dps", "Haste has beef with a dev of a game with sub 1000 players",
-    "Haste cant afford ranger gear so he blames the dev", "Haste thinks Maya is fat",
-    "Haste was MIA in Shadow Until Jed showed up", "Everyone prefers Haste over Boet",
-    "Everyone likes it when Haste has a break down", "Everyone is scared Haste might get bashed at his restaurant",
-    "Haste earns 70k a year and that gives Blood anxiety", "Haste Likes using a bow",
-    "Haste doesn't have the muscle mass to carry a real life weapon.",
-    "Haste never let go of New world.", "Haste only played Vrising cause he thought the outfits were cute."
-]
-
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN: raise SystemExit("❌ DISCORD_TOKEN is not set.")
-
-translator = Translator()
-LANG_CHOICES = ["English", "Japanese", "German", "Spanish", "French", "Italian", "Portuguese", "Russian", "Korean", "Chinese", "Hindi", "Indonesian"]
-LANG_CODES = {"English": "en", "Japanese": "ja", "German": "de", "Spanish": "es", "French": "fr", "Italian": "it", "Portuguese": "pt", "Russian": "ru", "Korean": "ko", "Chinese": "zh-CN", "Hindi": "hi", "Indonesian": "id"}
 
 # ==================== PERSISTENCE ===================
 
@@ -113,27 +95,16 @@ except: PERSIST_ROOT = Path(".").resolve()
 ROLE_STORE = (PERSIST_ROOT / "role_picker.json")
 INVITE_ROLE_STORE = (PERSIST_ROOT / "invite_roles.json")
 ACTIVE_VCS_STORE = (PERSIST_ROOT / "active_vcs.json")
-HASTE_FACTS_STORE = (PERSIST_ROOT / "haste_facts.json")
 SCOINS_STORE = (PERSIST_ROOT / "scoins.json")
 
-active_haste_facts = []
 scoins_db = {} 
 
 def _load_persistence():
-    global active_haste_facts, scoins_db
-    if HASTE_FACTS_STORE.exists():
-        try: active_haste_facts = json.loads(HASTE_FACTS_STORE.read_text())
-        except: active_haste_facts = list(DEFAULT_HASTE_FACTS)
-    else: active_haste_facts = list(DEFAULT_HASTE_FACTS)
-    
+    global scoins_db
     if SCOINS_STORE.exists():
         try: scoins_db = json.loads(SCOINS_STORE.read_text())
         except: scoins_db = {}
     else: scoins_db = {}
-
-def _save_haste_facts():
-    try: HASTE_FACTS_STORE.write_text(json.dumps(active_haste_facts))
-    except: pass
 
 def _save_scoins():
     try: SCOINS_STORE.write_text(json.dumps(scoins_db))
@@ -169,7 +140,6 @@ def owner_only():
     return commands.check(predicate)
 
 def is_gambler(user):
-    """Checks if user has the specific Gambler Role"""
     if not isinstance(user, discord.Member): return False
     return any(r.id == GAMBLER_ROLE_ID for r in user.roles)
 
@@ -396,7 +366,6 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
 # ==================== CASINO & SHOP ====================
 
-# Helper function for slot calculation
 def generate_slot_result(user, bet):
     user_id = str(user.id)
     update_balance(user_id, -bet)
@@ -406,8 +375,8 @@ def generate_slot_result(user, bet):
     a, b, c = random.choice(emojis), random.choice(emojis), random.choice(emojis)
     
     payout = 0
-    if a == b == c: payout = bet * 13 # Jackpot 13x
-    elif a == b or b == c or a == c: payout = int(bet * 1.5) # Minor 1.5x
+    if a == b == c: payout = bet * 13 
+    elif a == b or b == c or a == c: payout = int(bet * 1.5) 
     
     if payout > 0:
         update_balance(user_id, payout)
@@ -670,6 +639,7 @@ async def on_ready():
 async def on_guild_join(guild):
     await _prime_invites_cache(guild)
 
+# ##### WELCOME / ARRIVALS SYSTEM #####
 def setup_welcome(client):
     class MinionView(View):
         def __init__(self, target_member_id):
@@ -690,6 +660,7 @@ def setup_welcome(client):
             code = await _detect_used_invite_code(member)
             if code: await _apply_invite_role(member, code)
         except: pass
+        # --- SEND TO ARRIVALS CHANNEL ---
         ch = client.get_channel(ARRIVALS_THREAD_ID)
         if ch:
             src = await _detect_join_source(member)
@@ -708,10 +679,21 @@ async def _find_audit_action(guild, action, target_id):
     except: pass
     return None
 
+async def send_control_panel(vc, member):
+    """Restored Control Panel Logic"""
+    try:
+        await asyncio.sleep(1)
+        embed = discord.Embed(title="🎛️ Voice Control", description=f"Manage **{vc.name}**", color=THEME_PRIMARY)
+        view = VCControlPanel(vc, member)
+        await vc.send(embed=embed, view=view)
+    except:
+        try: await member.send(f"🎛️ **{vc.name}** Control Panel:", view=VCControlPanel(vc, member))
+        except: pass
+
 @bot.event
 async def on_voice_state_update(member, before, after):
     guild = member.guild
-    # JTC
+    # --- JTC LOGIC ---
     if after.channel and after.channel.id == JOIN_TO_CREATE_CHANNEL_ID:
         try:
             cat = get(guild.categories, id=VC_CATEGORY_ID) or after.channel.category
@@ -726,22 +708,65 @@ async def on_voice_state_update(member, before, after):
             active_temp_vcs.add(new_vc.id)
             _save_active_vcs(active_temp_vcs)
             await member.move_to(new_vc)
+            # CALL RESTORED FUNCTION
             asyncio.create_task(send_control_panel(new_vc, member))
         except: traceback.print_exc()
-    # Cleanup
+    # --- CLEANUP LOGIC ---
     if before.channel and before.channel.id in active_temp_vcs and len(before.channel.members) == 0:
         try: await before.channel.delete(); active_temp_vcs.discard(before.channel.id); _save_active_vcs(active_temp_vcs)
         except: pass
-    # Audit
+    
+    # ##### ALERT / AUDIT SYSTEM #####
     if member.bot: return
+    # --- SEND TO ALERT CHANNEL ---
     target, _ = await resolve_target(bot, DEFAULT_AUDIT_THREAD_ID)
     if not target: return
+
+    msg = None
+    
+    # 1. Join/Leave/Move
     if before.channel != after.channel:
-        entry = await _find_audit_action(guild, discord.AuditLogAction.member_move, member.id)
-        if entry:
-            msg = f"🔀 {safe_display_name(entry.user)} moved {safe_display_name(member)} {before.channel.name if before.channel else 'None'} -> {after.channel.name if after.channel else 'None'}"
-        else:
-            msg = f"ℹ️ {safe_display_name(member)} moved/joined/left VC."
+        if before.channel is None and after.channel is not None:
+            msg = f"🟢 {member.mention} joined **{after.channel.name}**."
+        elif before.channel is not None and after.channel is None:
+            msg = f"🔴 {member.mention} left **{before.channel.name}**."
+        elif before.channel is not None and after.channel is not None:
+            entry = await _find_audit_action(guild, discord.AuditLogAction.member_move, member.id)
+            if entry:
+                actor = entry.user.mention
+                msg = f"🔀 {member.mention} moved **{before.channel.name}** ➜ **{after.channel.name}** by {actor}."
+            else:
+                msg = f"🔀 {member.mention} moved **{before.channel.name}** ➜ **{after.channel.name}**."
+
+    # 2. Self Mute/Deafen (Granular Check)
+    elif before.self_mute != after.self_mute:
+        status = "muted" if after.self_mute else "unmuted"
+        msg = f"🎤 {member.mention} **self-{status}**."
+    elif before.self_deaf != after.self_deaf:
+        status = "deafened" if after.self_deaf else "undeafened"
+        msg = f"🎧 {member.mention} **self-{status}**."
+
+    # 3. Server Mute/Deafen (Admin Abilities Check)
+    elif before.mute != after.mute:
+        status = "server-muted" if after.mute else "server-unmuted"
+        entry = await _find_audit_action(guild, discord.AuditLogAction.member_update, member.id)
+        actor = entry.user.mention if entry else "Unknown Admin"
+        msg = f"🙊 {member.mention} was **{status}** by {actor}."
+    elif before.deaf != after.deaf:
+        status = "server-deafened" if after.deaf else "server-undeafened"
+        entry = await _find_audit_action(guild, discord.AuditLogAction.member_update, member.id)
+        actor = entry.user.mention if entry else "Unknown Admin"
+        msg = f"🙉 {member.mention} was **{status}** by {actor}."
+
+    # 4. Stream/Video
+    elif before.self_stream != after.self_stream:
+        status = "started" if after.self_stream else "stopped"
+        msg = f"📺 {member.mention} **{status} streaming**."
+    elif before.self_video != after.self_video:
+        status = "enabled" if after.self_video else "disabled"
+        msg = f"📷 {member.mention} **{status} camera**."
+
+    if msg:
         try: await target.send(msg)
         except: pass
 
@@ -820,6 +845,27 @@ async def roles_add(ctx, role: discord.Role):
     set_guild_role_cfg(ctx.guild.id, cfg)
     await safe_reply(ctx, "✅ Added.", ephemeral=True)
 
+# --- CUSTOM EMBEDS ---
+class EmbedBuilderModal(Modal):
+    def __init__(self, channel):
+        super().__init__(title="Send Custom JSON Embed")
+        self.channel = channel
+        self.add_item(TextInput(label="JSON Data", placeholder='{"title": "Hello", "description": "World", "color": 16711680}', style=discord.InputTextStyle.paragraph))
+    async def callback(self, interaction: Interaction):
+        try:
+            data = json.loads(self.children[0].value)
+            embed = discord.Embed.from_dict(data)
+            await self.channel.send(embed=embed)
+            await interaction.response.send_message("✅ Sent.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+
+@bot.slash_command(name="send_custom", description="Send embed via JSON")
+@admin_only()
+async def send_custom(ctx, channel: Option(discord.TextChannel, required=False)):
+    target = channel or ctx.channel
+    await ctx.send_modal(EmbedBuilderModal(target))
+
 # --- MUSIC & CLIPS ---
 def check_queue(gid, vc):
     if gid in bot.audio_queues and bot.audio_queues[gid]:
@@ -849,10 +895,23 @@ async def play(ctx, search: str):
         await safe_reply(ctx, f"▶️ Playing: {title}")
         await play_track(vc, url, title, ctx.guild.id)
 
+@bot.slash_command(name="queue")
+async def queue(ctx):
+    if ctx.guild.id not in bot.audio_queues or not bot.audio_queues[ctx.guild.id]:
+        return await safe_reply(ctx, "Queue is empty.")
+    lines = [f"{i+1}. {title}" for i, (url, title) in enumerate(bot.audio_queues[ctx.guild.id])]
+    await safe_reply(ctx, "\n".join(lines[:10]))
+
 @bot.slash_command(name="skip")
 @dj_or_admin()
 async def skip(ctx):
     if ctx.guild.voice_client: ctx.guild.voice_client.stop(); await safe_reply(ctx, "⏭️ Skipped.")
+
+@bot.slash_command(name="stop")
+@dj_or_admin()
+async def stop(ctx):
+    if ctx.guild.id in bot.audio_queues: bot.audio_queues[ctx.guild.id].clear()
+    if ctx.guild.voice_client: ctx.guild.voice_client.stop(); await safe_reply(ctx, "⏹️ Stopped.")
 
 @bot.slash_command(name="clip", description="Clip 30s")
 @dj_or_admin()
