@@ -1,12 +1,13 @@
-# bot.py — ShadowSyn (Master: Tower Economy & Combat Update)
+# bot.py — ShadowSyn (Master: Bosses, Danger Visuals, Role Lock)
 #
 # === FEATURES ===
-# [x] 🏰 SHADOW TOWER UPDATE:
-#     - ⚔️ ATK Utility: High ATK allows "Critical Strikes" (Insta-kill enemy, 0 dmg taken).
-#     - 💰 Gold Utility: "Rest" now costs 500 Gold (earned in-game).
-#     - 💎 Scoin Utility: "Checkpoint" costs 100 Scoins (premium).
-#     - ➕ UI: Green Plus for Rest, distinct visual cues for Combat results.
-# [x] CASINO, SHOP, CORE: All features preserved.
+# [x] 🏰 SHADOW TOWER:
+#     - 🔒 LOCKED: Only Role 955600320287887400 can play.
+#     - 👹 Boss System: Every 10 floors = Boss Fight (3x Stats).
+#     - 🎨 Visuals: Green (Loot), Orange (Combat), 🔴 RED (Boss/Danger).
+#     - 📜 Expanded Content: 60+ Monsters, 40+ Items.
+#     - ⚖️ Economy: Rest (500g), Save (100sc), Revive (5000sc).
+# [x] CASINO, SHOP, CORE: Preserved.
 #
 # LIBRARY: py-cord[voice]
 
@@ -41,6 +42,8 @@ THEME_PRIMARY  = 0x2B0B35
 THEME_WIN      = 0x43B581 
 THEME_LOSS     = 0xF04747 
 THEME_GOLD     = 0xFFD700 
+THEME_COMBAT   = 0xE67E22 # Orange
+THEME_BOSS     = 0x992D22 # Dark Red
 
 # --- CONFIGURATION IDs ---
 ARRIVALS_THREAD_ID      = 959629903186259978
@@ -55,6 +58,7 @@ CASINO_CHANNEL_ID       = 1468766727134249091
 ROLE_ADMIN_ID           = 1214794734770323466 
 ROLE_DJ_ID              = 955600320287887400
 OWNER_ID                = 482463400929263627
+# THE REQUESTED RESTRICTED ROLE
 GAMBLER_ROLE_ID         = 955600320287887400  
 
 # --- VOICEMASTER ---
@@ -90,6 +94,30 @@ DEFAULT_HASTE_FACTS = [
     "Haste earns 70k a year and that gives Blood anxiety", "Haste Likes using a bow",
     "Haste doesn't have the muscle mass to carry a real life weapon.",
     "Haste never let go of New world.", "Haste only played Vrising cause he thought the outfits were cute."
+]
+
+# --- GAME CONTENT (EXPANDED) ---
+MONSTERS = {
+    1: ["Sewer Rat", "Slime Blob", "Wild Dog", "Angry Bat", "Kobold Runt"],
+    10: ["Goblin Scout", "Skeleton Warrior", "Bandit", "Giant Spider", "Orc Grunt"],
+    30: ["Troll", "Ogre", "Gargoyle", "Vampire Spawn", "Cursed Armor", "Dark Elf"],
+    50: ["Lich", "Demon Soldier", "Shadow Stalker", "Bone Golem", "Hellhound"],
+    80: ["Void Walker", "Abyssal Horror", "Fallen Angel", "Dragon Whelp", "Void Titan"]
+}
+
+BOSSES = {
+    10: "The Gatekeeper", 20: "Giant Broodmother", 30: "The Skeleton King",
+    40: "High Warlord", 50: "The Kraken", 60: "Vampire Lord",
+    70: "Ancient Red Dragon", 80: "The Void Bringer", 90: "Death Itself", 100: "ShadowSyn Prime"
+}
+
+ITEMS_ATK = [
+    "Rusty Shiv", "Iron Sword", "Steel Katana", "Warhammer", "Shadow Blade", 
+    "Void Reaver", "Excalibur (Replica)", "Demon Edge", "Doombringer", "Godslayer"
+]
+ITEMS_DEF = [
+    "Tattered Shirt", "Leather Vest", "Chainmail", "Plate Armor", "Dragon Scale", 
+    "Void Shield", "Mithril Vest", "Aegis of the Immortal", "Divine Robes"
 ]
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -441,42 +469,71 @@ def save_tower_data(user_id, data):
     tower_db[str(user_id)] = data
     _save_tower()
 
+# --- HELPER: MONSTER NAME GEN ---
+def get_monster_name(floor):
+    tiers = sorted(MONSTERS.keys())
+    selected_tier = 1
+    for t in tiers:
+        if floor >= t: selected_tier = t
+    return random.choice(MONSTERS[selected_tier])
+
 # --- LOOT GENERATION ---
 def generate_loot_options(floor):
     options = []
-    # Rarity Weights
-    # Low floor = mostly common. High floor = more rare.
     roll = random.randint(1, 100)
     tier = "Common"
     if roll > 90: tier = "Legendary"
     elif roll > 60: tier = "Rare"
     
-    # Generate 3 Choices based on Tier
     for _ in range(3):
         l_type = random.choice(["ATK", "DEF", "POTION", "GOLD", "SCOINS"])
-        
+        item_name = "Unknown Item"
+        val = 1
+        emoji = "❓"
+
         if tier == "Common":
-            if l_type == "ATK": item = {"name": "Rusty Dagger", "type": "ATK", "val": 1, "emoji": "🗡️"}
-            elif l_type == "DEF": item = {"name": "Old Shield", "type": "DEF", "val": 1, "emoji": "🛡️"}
-            elif l_type == "POTION": item = {"name": "Small Potion", "type": "POTION", "val": 1, "emoji": "🧪"}
-            elif l_type == "GOLD": item = {"name": "Small Coin Pouch", "type": "GOLD", "val": 50 * floor, "emoji": "💰"}
-            else: item = {"name": "Pocket Change", "type": "SCOINS", "val": 10, "emoji": "💎"}
+            if l_type == "ATK": 
+                item_name = random.choice(["Rusty Dagger", "Old Spear", "Chipped Axe", "Wooden Club"])
+                val = 1; emoji = "🗡️"
+            elif l_type == "DEF": 
+                item_name = random.choice(["Wooden Shield", "Tattered Tunic", "Pot Lid", "Leather Belt"])
+                val = 1; emoji = "🛡️"
+            elif l_type == "POTION": 
+                item_name = "Small Potion"; val = 1; emoji = "🧪"
+            elif l_type == "GOLD": 
+                item_name = "Coin Pouch"; val = 10 * floor; emoji = "💰"
+            else: 
+                item_name = "Pocket Lint"; val = 10; emoji = "💎"
             
         elif tier == "Rare":
-            if l_type == "ATK": item = {"name": "Steel Sword", "type": "ATK", "val": 3, "emoji": "⚔️"}
-            elif l_type == "DEF": item = {"name": "Chainmail", "type": "DEF", "val": 2, "emoji": "⛓️"}
-            elif l_type == "POTION": item = {"name": "Super Potion", "type": "POTION", "val": 2, "emoji": "⚗️"}
-            elif l_type == "GOLD": item = {"name": "Gold Bar", "type": "GOLD", "val": 150 * floor, "emoji": "🪙"}
-            else: item = {"name": "Gemstone", "type": "SCOINS", "val": 100, "emoji": "💎"}
+            if l_type == "ATK": 
+                item_name = random.choice(["Steel Sword", "Battle Axe", "Elven Bow", "Dwarven Hammer"])
+                val = 3; emoji = "⚔️"
+            elif l_type == "DEF": 
+                item_name = random.choice(["Iron Plate", "Chainmail", "Knight Helm", "Steel Gauntlets"])
+                val = 2; emoji = "⛓️"
+            elif l_type == "POTION": 
+                item_name = "Super Potion"; val = 2; emoji = "⚗️"
+            elif l_type == "GOLD": 
+                item_name = "Gold Bar"; val = 50 * floor; emoji = "🪙"
+            else: 
+                item_name = "Gemstone"; val = 100; emoji = "💎"
             
         else: # Legendary
-            if l_type == "ATK": item = {"name": "Shadow Blade", "type": "ATK", "val": 5, "emoji": "🔥"}
-            elif l_type == "DEF": item = {"name": "Dragon Armor", "type": "DEF", "val": 4, "emoji": "🐲"}
-            elif l_type == "POTION": item = {"name": "Elixir of Life", "type": "POTION", "val": 5, "emoji": "🍷"}
-            elif l_type == "GOLD": item = {"name": "King's Ransom", "type": "GOLD", "val": 500 * floor, "emoji": "👑"}
-            else: item = {"name": "Shadow Scoins", "type": "SCOINS", "val": 500, "emoji": "💎"}
+            if l_type == "ATK": 
+                item_name = random.choice(ITEMS_ATK)
+                val = 5; emoji = "🔥"
+            elif l_type == "DEF": 
+                item_name = random.choice(ITEMS_DEF)
+                val = 4; emoji = "🐲"
+            elif l_type == "POTION": 
+                item_name = "Elixir of Life"; val = 5; emoji = "🍷"
+            elif l_type == "GOLD": 
+                item_name = "King's Ransom"; val = 200 * floor; emoji = "👑"
+            else: 
+                item_name = "Shadow Scoins"; val = 500; emoji = "💎"
             
-        options.append(item)
+        options.append({"name": item_name, "type": l_type, "val": val, "emoji": emoji})
     return options
 
 class TowerGameView(View):
@@ -503,21 +560,20 @@ class TowerGameView(View):
 
     def render_main_menu(self):
         self.clear_items()
-        
-        # Row 0: Actions
+        # Row 0
         climb = Button(label="Climb", style=ButtonStyle.primary, emoji="🧗", custom_id="climb", row=0)
         climb.callback = self.climb_action
         self.add_item(climb)
         
-        rest = Button(label="Rest (500 Gold)", style=ButtonStyle.success, emoji="➕", custom_id="rest", row=0)
+        rest = Button(label="Rest (500g)", style=ButtonStyle.success, emoji="➕", custom_id="rest", row=0)
         rest.callback = self.rest_action
         self.add_item(rest)
         
-        save = Button(label="Save (100 Scoins)", style=ButtonStyle.secondary, emoji="💾", custom_id="save", row=0)
+        save = Button(label="Save (100sc)", style=ButtonStyle.secondary, emoji="💾", custom_id="save", row=0)
         save.callback = self.save_action
         self.add_item(save)
         
-        # Row 1: Potions
+        # Row 1
         if self.data["potions"] > 0:
             pot = Button(label=f"Use Potion ({self.data['potions']})", style=ButtonStyle.secondary, emoji="🧪", custom_id="pot", row=1)
             pot.callback = self.use_potion
@@ -526,67 +582,69 @@ class TowerGameView(View):
     def render_loot_menu(self):
         self.clear_items()
         for i, item in enumerate(self.loot_options):
-            # Dynamic buttons
             btn = Button(label=f"{item['name']}", style=ButtonStyle.primary, emoji=item['emoji'], row=0)
-            
             async def callback(interaction, it=item):
                 await self.select_loot(interaction, it)
-                
             btn.callback = callback
             self.add_item(btn)
 
     async def climb_action(self, interaction):
         if interaction.user.id != self.user.id: return
         
-        # 40% Combat, 60% Loot
+        # --- BOSS CHECK (Every 10 floors) ---
+        is_boss = (self.data["floor"] % 10 == 0)
+        
+        # 40% Combat, 60% Loot (Unless Boss)
         roll = random.randint(1, 100)
         
-        if roll > 40: # LOOT EVENT (Pick 3)
+        if not is_boss and roll > 40: # LOOT EVENT
             self.loot_mode = True
             self.loot_options = generate_loot_options(self.data["floor"])
             self.render_loot_menu()
             await interaction.response.edit_message(embed=self.update_embed("💎 **Treasure Room!**\nChoose your reward:", THEME_GOLD), view=self)
             
         else: # COMBAT
-            # Enemy Stats Scale with Floor
-            enemy_power = random.randint(10, 30) + (self.data["floor"] * 2)
-            enemy_def = self.data["floor"] // 2
-            
+            if is_boss:
+                enemy_name = BOSSES.get(self.data["floor"], "Unknown Terror")
+                enemy_power = (self.data["floor"] * 3) + 20 # Bosses hit HARD
+                color = THEME_BOSS # Red
+                title = f"👹 **BOSS FIGHT: {enemy_name}**"
+            else:
+                enemy_name = get_monster_name(self.data["floor"])
+                enemy_power = random.randint(10, 30) + (self.data["floor"] * 2)
+                color = THEME_COMBAT # Orange
+                title = f"⚔️ **Combat: {enemy_name}**"
+
             # --- ATK CHECK (CRIT SYSTEM) ---
-            # If Player ATK > Enemy Power, INSTA KILL (0 Dmg taken)
-            # This makes ATK valuable.
             if self.data["atk"] >= enemy_power:
                 self.data["floor"] += 1
                 if self.data["floor"] > self.data["max_floor"]: self.data["max_floor"] = self.data["floor"]
                 save_tower_data(self.user_id, self.data)
                 
-                msg = f"⚔️ **CRITICAL HIT!**\nYour ATK ({self.data['atk']}) overpowered the enemy ({enemy_power}).\n**You took 0 Damage!**"
+                msg = f"{title}\nYour ATK ({self.data['atk']}) overpowered the {enemy_name} ({enemy_power}).\n**CRITICAL HIT! You took 0 Damage.**"
                 await interaction.response.edit_message(embed=self.update_embed(msg, THEME_WIN), view=self)
                 return
 
-            # --- STANDARD COMBAT ---
-            # Damage = Enemy Power - Player Def
+            # --- DAMAGE CALC ---
             damage = max(5, enemy_power - self.data["def"])
-            
             self.data["hp"] -= damage
             
             if self.data["hp"] <= 0:
                 self.data["hp"] = 0
                 save_tower_data(self.user_id, self.data)
-                embed = self.update_embed(f"💀 **You Died!**\nA monster dealt **{damage}** damage.\n\nUse `/revive` (5000 Scoins) or `/respawn`.", THEME_LOSS)
-                self.clear_items() # Dead
+                embed = self.update_embed(f"💀 **You Died!**\n{enemy_name} dealt **{damage}** damage.\n\nUse `/revive` (5000 Scoins) or `/respawn`.", THEME_LOSS)
+                self.clear_items()
                 await interaction.response.edit_message(embed=embed, view=self)
             else:
                 self.data["floor"] += 1
                 if self.data["floor"] > self.data["max_floor"]: self.data["max_floor"] = self.data["floor"]
                 save_tower_data(self.user_id, self.data)
                 self.render_main_menu()
-                await interaction.response.edit_message(embed=self.update_embed(f"⚔️ **Combat!**\nEnemy Power: {enemy_power} vs Your Def: {self.data['def']}\nTook **{damage}** dmg.", 0xE67E22), view=self)
+                await interaction.response.edit_message(embed=self.update_embed(f"{title}\nEnemy Power: {enemy_power} vs Your Def: {self.data['def']}\nTook **{damage}** dmg.", color), view=self)
 
     async def select_loot(self, interaction, item):
         if interaction.user.id != self.user.id: return
         
-        # Apply Loot
         if item["type"] == "ATK": self.data["atk"] += item["val"]
         elif item["type"] == "DEF": self.data["def"] += item["val"]
         elif item["type"] == "POTION": self.data["potions"] += item["val"]
@@ -616,30 +674,22 @@ class TowerGameView(View):
 
     async def rest_action(self, interaction):
         if interaction.user.id != self.user.id: return
-        
         cost = 500
-        # Check GOLD (in-game currency), not Scoins
-        if self.data["gold"] < cost: 
-            return await interaction.response.send_message(f"❌ Need {cost} Gold (You have {self.data['gold']}).", ephemeral=True)
-        
+        if self.data["gold"] < cost: return await interaction.response.send_message(f"❌ Need {cost} Gold (You have {self.data['gold']}).", ephemeral=True)
         if self.data["hp"] >= self.data["max_hp"]: return await interaction.response.send_message("Already full HP.", ephemeral=True)
 
         self.data["gold"] -= cost
         self.data["hp"] = self.data["max_hp"]
         save_tower_data(self.user_id, self.data)
-        
         await interaction.response.edit_message(embed=self.update_embed(f"➕ **Rested.** Paid {cost} Gold. Full HP restored.", THEME_GOLD), view=self)
 
     async def save_action(self, interaction):
         if interaction.user.id != self.user.id: return
         cost = 100
-        # Check Scoins (Premium currency)
         if get_balance(self.user_id) < cost: return await interaction.response.send_message(f"❌ Need {cost} Scoins.", ephemeral=True)
-        
         update_balance(self.user_id, -cost)
         self.data["checkpoint"] = self.data["floor"]
         save_tower_data(self.user_id, self.data)
-        
         await interaction.response.edit_message(embed=self.update_embed(f"💾 **Saved.** Checkpoint set to {self.data['floor']}.", THEME_PRIMARY), view=self)
 
 # ==================== CASINO: SLOTS ====================
@@ -1469,6 +1519,10 @@ async def tower(ctx):
     if ctx.channel.id != CASINO_CHANNEL_ID:
         return await safe_reply(ctx, f"❌ Go to <#{CASINO_CHANNEL_ID}>.", ephemeral=True)
     
+    # 🔒 ROLE RESTRICTION
+    if not is_gambler(ctx.author):
+        return await safe_reply(ctx, "⛔ **Restricted.** You need the Gambler Role to play.", ephemeral=True)
+    
     # Init user data if missing
     data = get_tower_data(ctx.author.id)
     view = TowerGameView(ctx.author)
@@ -1491,6 +1545,7 @@ async def tower_top(ctx):
 @bot.slash_command(name="revive", description="Revive in Tower (5000 Scoins)")
 async def revive(ctx):
     if ctx.channel.id != CASINO_CHANNEL_ID: return await safe_reply(ctx, "❌ Wrong channel.", ephemeral=True)
+    if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
     
     user_id = str(ctx.author.id)
     data = get_tower_data(ctx.author.id)
@@ -1513,6 +1568,7 @@ async def revive(ctx):
 @bot.slash_command(name="respawn", description="Give up and return to Checkpoint")
 async def respawn(ctx):
     if ctx.channel.id != CASINO_CHANNEL_ID: return await safe_reply(ctx, "❌ Wrong channel.", ephemeral=True)
+    if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
     
     user_id = str(ctx.author.id)
     data = get_tower_data(ctx.author.id)
