@@ -1,11 +1,11 @@
-# bot.py — ShadowSyn (Final: Visual Polish for Slots)
+# bot.py — ShadowSyn (Final: Crash Fix + Gambler Lock)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
 # 2. Music: Crash-Proof Playback + Zombie Connection Fix
 # 3. Clip System: Force Recording (Records "Unknown" users too)
 # 4. Haste Facts: /haste (Public) + /morehaste (Admin)
-# 5. Scoins Casino: /gamble (Dashboard), /duel (Command Only)
+# 5. Scoins Casino: Restricted to ID 955600320287887400
 #
 # LIBRARY REQUIREMENT: py-cord[voice] (NOT discord.py)
 
@@ -67,7 +67,8 @@ CLIPS_TARGET_ID         = 1467055136609271818
 # --- PERMISSION ROLES & USERS ---
 ROLE_ADMIN_ID           = 1214794734770323466 
 ROLE_DJ_ID              = 955600320287887400
-OWNER_ID                = 482463400929263627 
+OWNER_ID                = 482463400929263627
+GAMBLER_ONLY_ID         = 955600320287887400  # <--- ONLY THIS USER CAN GAMBLE
 
 # VoiceMaster Config
 JOIN_TO_CREATE_CHANNEL_ID = 1398618132788281364
@@ -78,7 +79,7 @@ ADMIN_ROLE_NAME           = "SHADOW"
 
 # Economy Config
 SCOIN_PULL_AMOUNT = 5
-SCOIN_COOLDOWN_HOURS = 24
+SCOIN_COOLDOWN_HOURS = 3
 
 # Default Haste Facts
 DEFAULT_HASTE_FACTS = [
@@ -194,6 +195,169 @@ def owner_only():
         return ctx.author.id == OWNER_ID
     return commands.check(predicate)
 
+# ==================== GENERAL LOADERS (RESTORED) ====================
+
+def _load_role_store() -> Dict[str, dict]:
+    if ROLE_STORE.exists():
+        try: return json.loads(ROLE_STORE.read_text())
+        except: return {}
+    return {}
+
+def _save_role_store(data: Dict[str, dict]) -> None:
+    try: ROLE_STORE.write_text(json.dumps(data, indent=2))
+    except: pass
+
+def get_guild_role_cfg(gid: int) -> dict:
+    store = _load_role_store()
+    cfg = store.get(str(gid), {"panel": None, "options": []})
+    cfg["options"] = sorted(cfg.get("options", []), key=lambda o: str(o.get("label", "")).casefold())
+    return cfg
+
+def set_guild_role_cfg(gid: int, cfg: dict) -> None:
+    cfg["options"] = sorted(cfg.get("options", []), key=lambda o: str(o.get("label", "")).casefold())
+    store = _load_role_store()
+    store[str(gid)] = cfg
+    _save_role_store(store)
+
+def _load_invite_role_store() -> Dict[str, dict]:
+    if INVITE_ROLE_STORE.exists():
+        try: return json.loads(INVITE_ROLE_STORE.read_text())
+        except: return {}
+    return {}
+
+def _save_invite_role_store(data: Dict[str, dict]) -> None:
+    try: INVITE_ROLE_STORE.write_text(json.dumps(data, indent=2))
+    except: pass
+
+def get_invite_role_map(guild_id: int) -> Dict[str, int]:
+    store = _load_invite_role_store()
+    raw = store.get(str(guild_id), {})
+    return {str(k).lower(): int(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+
+def set_invite_role_map(guild_id: int, mapping: Dict[str, int]) -> None:
+    store = _load_invite_role_store()
+    store[str(guild_id)] = {str(k).lower(): int(v) for k, v in (mapping or {}).items()}
+    _save_invite_role_store(store)
+
+_INVITE_CODE_RX = re.compile(r"(?:discord\.gg/|discord\.com/invite/)(?P<code>[A-Za-z0-9-]+)", re.I)
+def normalize_invite_code(text: str) -> Optional[str]:
+    s = (text or "").strip()
+    if not s: return None
+    low = s.lower()
+    if low in {"vanity", "vanity_url", "vanityurl"}: return "vanity"
+    m = _INVITE_CODE_RX.search(s)
+    if m: return m.group("code").lower()
+    if re.fullmatch(r"[A-Za-z0-9-]{2,}", s): return s.lower()
+    return None
+
+def safe_avatar_url(member: Union[discord.Member, discord.User]) -> Optional[str]:
+    try: return member.display_avatar.url
+    except: return None
+
+def utcnow(): return datetime.now(timezone.utc)
+def ffmpeg_available() -> bool: return which("ffmpeg") is not None
+
+async def resolve_target(client: discord.Client, target_id: int):
+    ch = client.get_channel(target_id)
+    if ch is None:
+        try: ch = await client.fetch_channel(target_id)
+        except: return None, None
+    if isinstance(ch, discord.TextChannel): return ch, ch
+    if isinstance(ch, discord.Thread):
+        try:
+            if ch.archived or ch.locked: await ch.edit(archived=False, locked=False)
+            await ch.join()
+        except: pass
+        parent = ch.parent if isinstance(ch.parent, discord.TextChannel) else None
+        return ch, parent
+    return None, None
+
+def human_ago(dt: Optional[datetime]) -> str:
+    if not isinstance(dt, datetime): return "Unknown"
+    if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
+    delta = utcnow() - dt
+    s = int(max(delta.total_seconds(), 0))
+    if s < 60: return "just now"
+    units = [("year", 31536000), ("month", 2629800), ("day", 86400), ("hour", 3600), ("minute", 60)]
+    for name, secs in units:
+        if s >= secs:
+            v = s // secs
+            return f"{v} {name}{'' if v == 1 else 's'} ago"
+    return "just now"
+
+def safe_display_name(obj):
+    try: return obj.display_name if isinstance(obj, discord.Member) else (obj.global_name or obj.name)
+    except: return str(obj)
+
+# ======================= INVITE ATTRIBUTION ======================
+
+_INVITES_CACHE: Dict[int, Dict[str, int]] = {}
+
+def _can_track_invites(guild: discord.Guild) -> bool:
+    return bool(guild.me and guild.me.guild_permissions.manage_guild)
+
+async def _prime_invites_cache(guild: discord.Guild):
+    if not _can_track_invites(guild):
+        _INVITES_CACHE[guild.id] = {}
+        return
+    try:
+        invites = await guild.invites()
+        _INVITES_CACHE[guild.id] = {inv.code: (inv.uses or 0) for inv in invites}
+    except: _INVITES_CACHE[guild.id] = {}
+
+async def _detect_join_source(member: discord.Member) -> Optional[str]:
+    guild = member.guild
+    if not guild: return None
+    if not _can_track_invites(guild):
+        try: return f"Joined via Vanity: `{guild.vanity_url_code}`" if guild.vanity_url_code else None
+        except: return None
+    try:
+        before = _INVITES_CACHE.get(guild.id, {})
+        current = await guild.invites()
+        increased = None
+        for inv in current:
+            if (inv.uses or 0) > before.get(inv.code, 0):
+                increased = inv
+                break
+        _INVITES_CACHE[guild.id] = {inv.code: (inv.uses or 0) for inv in current}
+        if increased:
+            return f"Joined via `{increased.code}`, invited by **{increased.inviter or 'Unknown'}**"
+        try: return f"Joined via Vanity: `{guild.vanity_url_code}`" if guild.vanity_url_code else None
+        except: return None
+    except: return None
+
+async def _detect_used_invite_code(member: discord.Member) -> Optional[str]:
+    guild = member.guild
+    if not guild: return None
+    if not _can_track_invites(guild):
+        try: return "vanity" if guild.vanity_url_code else None
+        except: return None
+    try:
+        before = _INVITES_CACHE.get(guild.id, {})
+        current = await guild.invites()
+        increased = None
+        for inv in current:
+            if (inv.uses or 0) > before.get(inv.code, 0):
+                increased = inv
+                break
+        _INVITES_CACHE[guild.id] = {inv.code: (inv.uses or 0) for inv in current}
+        if increased: return increased.code.lower()
+        try: return "vanity" if guild.vanity_url_code else None
+        except: return None
+    except: return None
+
+async def _apply_invite_role(member: discord.Member, used_code: Optional[str]) -> Tuple[bool, str]:
+    if not member.guild or not used_code: return False, "Unknown"
+    mapping = get_invite_role_map(member.guild.id)
+    role_id = mapping.get(used_code.lower())
+    if not role_id: return False, "No mapping"
+    role = member.guild.get_role(role_id)
+    if not role: return False, "Role missing"
+    try:
+        await member.add_roles(role, reason=f"Auto role via {used_code}")
+        return True, role.name
+    except Exception as e: return False, str(e)
+
 # ==================== MUSIC ENGINE ====================
 
 YTDL_PLAY_OPTIONS = {'format': 'bestaudio/best', 'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s', 'restrictfilenames': True, 'noplaylist': True, 'nocheckcertificate': True, 'ignoreerrors': False, 'logtostderr': False, 'quiet': True, 'no_warnings': True, 'default_search': 'auto', 'source_address': '0.0.0.0', 'socket_timeout': 10, 'retries': 5}
@@ -267,12 +431,94 @@ class DuelAcceptView(View):
         self.clear_items()
         await interaction.response.edit_message(view=self, embed=embed)
 
+# --- SHOP LOGIC ---
+
+class SilencerUserSelect(discord.ui.UserSelect):
+    def __init__(self):
+        super().__init__(placeholder="Select user to disconnect...", min_values=1, max_values=1)
+
+    async def callback(self, interaction: Interaction):
+        target = self.values[0]
+        user_id = str(interaction.user.id)
+        cost = 25
+        
+        if not isinstance(target, discord.Member):
+            return await interaction.response.send_message("❌ User not found.", ephemeral=True)
+        
+        if target.id == OWNER_ID or target.id == interaction.guild.owner_id:
+             return await interaction.response.send_message("❌ Cannot silence the King.", ephemeral=True)
+
+        if not target.voice:
+            return await interaction.response.send_message("❌ They are not in a VC.", ephemeral=True)
+
+        if get_balance(user_id) < cost:
+            return await interaction.response.send_message("❌ You need 25 Scoins.", ephemeral=True)
+
+        # Execute
+        try:
+            update_balance(user_id, -cost)
+            await target.move_to(None) # Disconnect
+            await interaction.response.send_message(f"🔇 **The Silencer:** Disconnected {target.mention}!", ephemeral=False)
+        except Exception as e:
+            update_balance(user_id, cost) # Refund
+            await interaction.response.send_message("❌ Failed (Refunded). Bot lacks permission.", ephemeral=True)
+
+class ShopSelect(Select):
+    def __init__(self):
+        options = [
+            SelectOption(label="Time Warp", description="15 Scoins: Reset /pull timer", value="reset", emoji="🔄"),
+            SelectOption(label="Shadow Brand", description="50 Scoins: Add [Shadow] tag", value="brand", emoji="🏷️"),
+            SelectOption(label="The Silencer", description="25 Scoins: Kick someone from VC", value="silence", emoji="🔇")
+        ]
+        super().__init__(placeholder="Select item to buy...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: Interaction):
+        if interaction.user.id != GAMBLER_ONLY_ID:
+            return await interaction.response.send_message("⛔ Restricted to specific user.", ephemeral=True)
+
+        user_id = str(interaction.user.id)
+        bal = get_balance(user_id)
+        val = self.values[0]
+        
+        if val == "reset":
+            cost = 15
+            if bal < cost: return await interaction.response.send_message("❌ Too poor.", ephemeral=True)
+            if user_id in scoins_db:
+                scoins_db[user_id]["last_pull"] = 0
+                update_balance(user_id, -cost)
+                await interaction.response.send_message("✅ **Purchased:** Time Warp! You can /pull again.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Error data.", ephemeral=True)
+
+        elif val == "brand":
+            cost = 50
+            if bal < cost: return await interaction.response.send_message("❌ Too poor.", ephemeral=True)
+            try:
+                update_balance(user_id, -cost)
+                new_nick = f"[Shadow] {interaction.user.display_name}"[:32]
+                await interaction.user.edit(nick=new_nick)
+                await interaction.response.send_message(f"✅ **Purchased:** Shadow Brand applied.", ephemeral=True)
+            except:
+                update_balance(user_id, cost) # Refund
+                await interaction.response.send_message(f"❌ Failed (Refunded): Bot cannot edit your nickname.", ephemeral=True)
+
+        elif val == "silence":
+            cost = 25
+            if bal < cost: return await interaction.response.send_message("❌ Too poor.", ephemeral=True)
+            # Open User Select
+            view = View()
+            view.add_item(SilencerUserSelect())
+            await interaction.response.send_message("🔇 **The Silencer**\nSelect your victim:", view=view, ephemeral=True)
+
 class CasinoDashboard(View):
     def __init__(self):
         super().__init__(timeout=None)
 
     @discord.ui.button(label="Collect", style=ButtonStyle.success, emoji="💰", row=0)
     async def collect(self, button, interaction: Interaction):
+        if interaction.user.id != GAMBLER_ONLY_ID:
+            return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
+
         user_id = str(interaction.user.id)
         user_data = scoins_db.get(user_id, {"balance": 0, "last_pull": 0})
         last = user_data["last_pull"]
@@ -291,6 +537,9 @@ class CasinoDashboard(View):
 
     @discord.ui.button(label="Slots", style=ButtonStyle.primary, emoji="🎰", row=0)
     async def slots(self, button, interaction: Interaction):
+        if interaction.user.id != GAMBLER_ONLY_ID:
+            return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
+
         bal = get_balance(str(interaction.user.id))
         async def run_slots(inter, amount):
             update_balance(str(inter.user.id), -amount)
@@ -324,91 +573,176 @@ class CasinoDashboard(View):
 
     @discord.ui.button(label="Duel", style=ButtonStyle.danger, emoji="⚔️", row=0)
     async def duel(self, button, interaction: Interaction):
+        if interaction.user.id != GAMBLER_ONLY_ID:
+            return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
         await interaction.response.send_message("⚔️ To duel someone, use the command:\n`/duel @user [amount]`", ephemeral=True)
 
     @discord.ui.button(label="Shop", style=ButtonStyle.secondary, emoji="🛒", row=1)
     async def shop(self, button, interaction: Interaction):
-        # TBA - Shop disabled for now
-        await interaction.response.send_message("🚧 **Shop is under construction.** Check back later! (TBA)", ephemeral=True)
+        if interaction.user.id != GAMBLER_ONLY_ID:
+            return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
+        view = View()
+        view.add_item(ShopSelect())
+        await interaction.response.send_message("🛒 **Scoin Shop**", view=view, ephemeral=True)
 
     @discord.ui.button(label="Wallet", style=ButtonStyle.secondary, emoji="💳", row=1)
     async def wallet_btn(self, button, interaction: Interaction):
+        if interaction.user.id != GAMBLER_ONLY_ID:
+            return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
         bal = get_balance(str(interaction.user.id))
         await interaction.response.send_message(f"💳 Balance: **{bal}** Scoins.", ephemeral=True)
 
-# ==================== UTILS ====================
+# ==================== VOICEMASTER COMPONENTS =================
 
-def _load_active_vcs() -> Set[int]:
-    if ACTIVE_VCS_STORE.exists():
-        try: return set(json.loads(ACTIVE_VCS_STORE.read_text()))
-        except: return set()
-    return set()
+class VCNameModal(Modal):
+    def __init__(self, vc):
+        super().__init__(title="Rename Voice Channel")
+        self.vc = vc
+        self.add_item(TextInput(label="New VC Name", placeholder="Enter name...", required=True, max_length=50))
 
-def _save_active_vcs(vcs: Set[int]) -> None:
-    try: ACTIVE_VCS_STORE.write_text(json.dumps(list(vcs)))
-    except: pass
-
-active_temp_vcs: Set[int] = _load_active_vcs()
-
-def _to_sans_bold_italic(text: str) -> str:
-    _map = {"A": "𝘼", "B": "𝘽", "C": "𝘾", "D": "𝘿", "E": "𝙀", "F": "𝙁", "G": "𝙂", "H": "𝙃", "I": "𝙄", "J": "𝙅", "K": "𝙆", "L": "𝙇", "M": "𝙈", "N": "𝙉", "O": "𝙊", "P": "𝙋", "Q": "𝙌", "R": "𝙍", "S": "𝙎", "T": "𝙏", "U": "𝙐", "V": "𝙑", "W": "𝙒", "X": "𝙓", "Y": "𝙔", "Z": "𝙕", "a": "𝙖", "b": "𝙗", "c": "𝙘", "d": "𝙙", "e": "𝙚", "f": "𝙛", "g": "𝙜", "h": "𝙝", "i": "𝙞", "j": "𝙟", "k": "𝙠", "l": "𝙡", "m": "𝙢", "n": "𝙣", "o": "𝙤", "p": "𝙥", "q": "𝙦", "r": "𝙧", "s": "𝙨", "t": "𝙩", "u": "𝙪", "v": "𝙫", "w": "𝙬", "x": "𝙭", "y": "𝙮", "z": "𝙯"}
-    return "".join(_map.get(ch, ch) for ch in text)
-
-def _limit_channel_name(name: str, limit: int = 100) -> str:
-    return name[:limit] if len(name) > limit else name
-
-async def safe_reply(ctx_or_inter, *args, **kwargs):
-    try:
-        if hasattr(ctx_or_inter, 'respond'): return await ctx_or_inter.respond(*args, **kwargs)
-        elif hasattr(ctx_or_inter, 'response'):
-            if not ctx_or_inter.response.is_done(): return await ctx_or_inter.response.send_message(*args, **kwargs)
-            else: return await ctx_or_inter.followup.send(*args, **kwargs)
-    except: return None
-
-async def safe_defer(ctx, ephemeral=False):
-    try: await ctx.defer(ephemeral=ephemeral)
-    except: pass
-
-async def resolve_target(client: discord.Client, target_id: int):
-    ch = client.get_channel(target_id)
-    if ch is None:
-        try: ch = await client.fetch_channel(target_id)
-        except: return None, None
-    if isinstance(ch, discord.TextChannel): return ch, ch
-    if isinstance(ch, discord.Thread):
+    async def callback(self, interaction: Interaction):
+        new_name = self.children[0].value
         try:
-            if ch.archived or ch.locked: await ch.edit(archived=False, locked=False)
-            await ch.join()
-        except: pass
-        parent = ch.parent if isinstance(ch.parent, discord.TextChannel) else None
-        return ch, parent
-    return None, None
+            await self.vc.edit(name=new_name)
+            await interaction.response.send_message(f"✅ Renamed to **{new_name}**", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
 
-async def ensure_voice_simple(ctx):
-    user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
-    if not user.voice:
-        await safe_reply(ctx, "❌ Join a VC first!", ephemeral=True)
-        return None
-    channel = user.voice.channel
-    vc = ctx.guild.voice_client
+class KickMemberDropdown(Select):
+    def __init__(self, vc, members):
+        options = [SelectOption(label=m.display_name, value=str(m.id)) for m in members]
+        super().__init__(placeholder="Select member to kick...", options=options, min_values=1, max_values=1)
+        self.vc = vc
+
+    async def callback(self, interaction: Interaction):
+        try:
+            member_id = int(self.values[0])
+            member = self.vc.guild.get_member(member_id)
+            if member and member in self.vc.members:
+                await member.move_to(None)
+                await interaction.response.send_message(f"👢 Kicked {member.display_name}.", ephemeral=True)
+            else:
+                await interaction.response.send_message("⚠️ Member no longer in VC.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+class KickMemberView(View):
+    def __init__(self, vc: discord.VoiceChannel, members):
+        super().__init__(timeout=30)
+        self.add_item(KickMemberDropdown(vc, members))
+
+class RoleRestrictSelect(Select):
+    def __init__(self, vc: discord.VoiceChannel, creator: discord.Member):
+        self.vc = vc
+        self.creator = creator
+        options = [SelectOption(label="Everyone (default)", value="everyone", description="Allow all members")]
+        roles = [r for r in vc.guild.roles if r != vc.guild.default_role and not r.managed]
+        roles_sorted = sorted(roles, key=lambda r: r.position, reverse=True)[:24]
+        for r in roles_sorted:
+            label = (r.name or f"Role {r.id}")[:100]
+            options.append(SelectOption(label=label, value=str(r.id)))
+        super().__init__(placeholder="Restrict VC to a role…", options=options, min_values=1, max_values=1, custom_id="restrict_role_select")
+
+    async def callback(self, interaction: Interaction):
+        if interaction.user.id != self.creator.id:
+            return await interaction.response.send_message("🚫 Only the VC creator can use this.", ephemeral=True)
+        guild = interaction.guild
+        admin_role = discord.utils.get(guild.roles, name=ADMIN_ROLE_NAME)
+        try:
+            sel = self.values[0]
+            if sel == "everyone":
+                await self.vc.set_permissions(guild.default_role, connect=True)
+                await self.vc.set_permissions(self.creator, connect=True)
+                if admin_role: await self.vc.set_permissions(admin_role, connect=True)
+                await interaction.response.send_message("✅ Restriction cleared.", ephemeral=True)
+                return
+            role_id = int(sel)
+            selected_role = guild.get_role(role_id)
+            if not selected_role:
+                return await interaction.response.send_message("⚠️ Role not found.", ephemeral=True)
+            await self.vc.set_permissions(guild.default_role, connect=False)
+            await self.vc.set_permissions(selected_role, connect=True)
+            await self.vc.set_permissions(self.creator, connect=True)
+            if admin_role: await self.vc.set_permissions(admin_role, connect=True)
+            await interaction.response.send_message(f"🔐 Restricted to: **{selected_role.name}**.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+class VCControlPanel(View):
+    def __init__(self, vc: discord.VoiceChannel, creator: discord.Member):
+        super().__init__(timeout=None)
+        self.vc = vc
+        self.creator = creator
+        try: self.add_item(RoleRestrictSelect(vc, creator))
+        except: pass
+
+    async def _check_perm(self, interaction: Interaction) -> bool:
+        if interaction.user.id == self.creator.id: return True
+        if interaction.data.get("custom_id") == "delete_vc":
+            if any(r.name == ADMIN_ROLE_NAME or r.id == ROLE_ADMIN_ID for r in interaction.user.roles): return True
+        await interaction.response.send_message("🚫 Only the VC creator can use this.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="🔒 Lock", style=ButtonStyle.danger, custom_id="lock_vc")
+    async def lock(self, button: Button, interaction: Interaction):
+        if not await self._check_perm(interaction): return
+        try:
+            overwrites = {interaction.guild.default_role: discord.PermissionOverwrite(connect=False), self.creator: discord.PermissionOverwrite(connect=True)}
+            ar = discord.utils.get(interaction.guild.roles, name=ADMIN_ROLE_NAME)
+            if ar: overwrites[ar] = discord.PermissionOverwrite(connect=True)
+            await self.vc.edit(overwrites=overwrites)
+            await interaction.response.send_message("🔒 VC locked.", ephemeral=True)
+        except Exception as e: await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+    @discord.ui.button(label="🔓 Unlock", style=ButtonStyle.success, custom_id="unlock_vc")
+    async def unlock(self, button: Button, interaction: Interaction):
+        if not await self._check_perm(interaction): return
+        try:
+            await self.vc.set_permissions(interaction.guild.default_role, connect=True)
+            await interaction.response.send_message("🔓 VC unlocked.", ephemeral=True)
+        except: pass
+
+    @discord.ui.button(label="❌ Delete", style=ButtonStyle.red, custom_id="delete_vc")
+    async def delete(self, button: Button, interaction: Interaction):
+        if not await self._check_perm(interaction): return
+        try:
+            await self.vc.delete()
+            await interaction.response.send_message("🗑️ Deleted.", ephemeral=True)
+        except: pass
+
+    @discord.ui.button(label="✏️ Rename", style=ButtonStyle.blurple, custom_id="rename_vc")
+    async def rename(self, button: Button, interaction: Interaction):
+        if not await self._check_perm(interaction): return
+        await interaction.response.send_modal(VCNameModal(self.vc))
+
+    @discord.ui.button(label="👢 Kick", style=ButtonStyle.gray, custom_id="kick_members")
+    async def kick(self, button: Button, interaction: Interaction):
+        if not await self._check_perm(interaction): return
+        members = [m for m in self.vc.members if m != interaction.guild.me]
+        if not members: return await interaction.response.send_message("⚠️ No members to kick.", ephemeral=True)
+        await interaction.response.send_message("Select member:", view=KickMemberView(self.vc, members), ephemeral=True)
+
+    @discord.ui.select(placeholder="Bitrate", options=[SelectOption(label="64 kbps", value="64000"), SelectOption(label="96 kbps", value="96000"), SelectOption(label="128 kbps", value="128000"), SelectOption(label="256 kbps", value="256000"), SelectOption(label="384 kbps", value="384000")], custom_id="bitrate_select")
+    async def bitrate(self, select: Select, interaction: Interaction):
+        if not await self._check_perm(interaction): return
+        try:
+            await self.vc.edit(bitrate=int(select.values[0]))
+            await interaction.response.send_message(f"📶 Bitrate: {int(select.values[0])//1000} kbps.", ephemeral=True)
+        except Exception as e: await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+    @discord.ui.select(placeholder="User Limit", options=[SelectOption(label="Unlimited", value="0"), SelectOption(label="2", value="2"), SelectOption(label="5", value="5"), SelectOption(label="10", value="10"), SelectOption(label="25", value="25")], custom_id="limit_select")
+    async def limit(self, select: Select, interaction: Interaction):
+        if not await self._check_perm(interaction): return
+        try:
+            await self.vc.edit(user_limit=int(select.values[0]))
+            await interaction.response.send_message(f"👥 Limit: {select.values[0]}.", ephemeral=True)
+        except Exception as e: await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+async def send_control_panel(vc: discord.VoiceChannel, creator: discord.Member):
     try:
-        if vc and not vc.is_connected():
-            try: await vc.disconnect(force=True)
-            except: pass
-            vc = None
-        if vc:
-            if vc.channel.id != channel.id: await vc.move_to(channel)
-        else: vc = await channel.connect(timeout=10, reconnect=True)
-        if HAS_SINKS and vc and vc.is_connected():
-            if not vc.recording:
-                try:
-                    vc.start_recording(RingBufferSink(time_limit=30), dummy_callback)
-                    print(f"🎙️ Auto-recording started in {channel.name}")
-                except Exception as e: print(f"⚠️ Auto-recording failed: {e}")
-        return vc
-    except Exception as e:
-        await safe_reply(ctx, f"❌ Voice Error: {e}", ephemeral=True)
-        return None
+        await asyncio.sleep(2.0)
+        await vc.send(content=f"{creator.mention}, here is your **VoiceMaster** controls:", view=VCControlPanel(vc, creator))
+    except: pass
 
 # ==================== COMMANDS ====================
 
@@ -751,6 +1085,9 @@ async def roles_sync(ctx: discord.ApplicationContext):
 
 @bot.slash_command(name="gamble", description="Open the Scoin Casino")
 async def gamble(ctx: discord.ApplicationContext):
+    if ctx.author.id != GAMBLER_ONLY_ID:
+        return await safe_reply(ctx, "⛔ Restricted to a specific user.", ephemeral=True)
+    
     embed = discord.Embed(title="🎰 ShadowSyn Casino", description="Welcome to the underworld economy.\nSelect a game below.", color=THEME_PRIMARY)
     user_id = str(ctx.author.id)
     bal = get_balance(user_id)
@@ -759,6 +1096,9 @@ async def gamble(ctx: discord.ApplicationContext):
 
 @bot.slash_command(name="duel", description="Challenge a user to a wager")
 async def duel_cmd(ctx: discord.ApplicationContext, opponent: discord.Member, amount: str):
+    if ctx.author.id != GAMBLER_ONLY_ID:
+        return await safe_reply(ctx, "⛔ Restricted to a specific user.", ephemeral=True)
+
     if opponent.id == ctx.author.id: return await safe_reply(ctx, "❌ Cannot duel yourself.", ephemeral=True)
     if opponent.bot: return await safe_reply(ctx, "❌ Cannot duel bots.", ephemeral=True)
     
@@ -781,6 +1121,8 @@ async def duel_cmd(ctx: discord.ApplicationContext, opponent: discord.Member, am
 
 @bot.slash_command(name="wallet", description="Check your balance")
 async def wallet(ctx: discord.ApplicationContext, user: Option(discord.User, required=False)):
+    if ctx.author.id != GAMBLER_ONLY_ID:
+        return await safe_reply(ctx, "⛔ Restricted to a specific user.", ephemeral=True)
     target = user or ctx.author
     bal = get_balance(str(target.id))
     embed = discord.Embed(description=f"💳 **{target.display_name}** has `{bal}` Scoins.", color=THEME_PRIMARY)
