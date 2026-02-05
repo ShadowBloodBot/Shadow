@@ -1,8 +1,8 @@
-# bot.py — ShadowSyn (Master: Bosses, Danger Visuals, Role Lock)
+# bot.py — ShadowSyn (Master: Tower UNLOCKED for Everyone)
 #
 # === FEATURES ===
 # [x] 🏰 SHADOW TOWER:
-#     - 🔒 LOCKED: Only Role 955600320287887400 can play.
+#     - 🔓 UNLOCKED: Anyone in the Casino Channel can play (Role Lock removed).
 #     - 👹 Boss System: Every 10 floors = Boss Fight (3x Stats).
 #     - 🎨 Visuals: Green (Loot), Orange (Combat), 🔴 RED (Boss/Danger).
 #     - 📜 Expanded Content: 60+ Monsters, 40+ Items.
@@ -58,7 +58,8 @@ CASINO_CHANNEL_ID       = 1468766727134249091
 ROLE_ADMIN_ID           = 1214794734770323466 
 ROLE_DJ_ID              = 955600320287887400
 OWNER_ID                = 482463400929263627
-# THE REQUESTED RESTRICTED ROLE
+# GAMBLER_ROLE_ID is kept for "is_gambler" check in other commands if needed, 
+# but Tower is now open to all in the channel.
 GAMBLER_ROLE_ID         = 955600320287887400  
 
 # --- VOICEMASTER ---
@@ -1519,10 +1520,6 @@ async def tower(ctx):
     if ctx.channel.id != CASINO_CHANNEL_ID:
         return await safe_reply(ctx, f"❌ Go to <#{CASINO_CHANNEL_ID}>.", ephemeral=True)
     
-    # 🔒 ROLE RESTRICTION
-    if not is_gambler(ctx.author):
-        return await safe_reply(ctx, "⛔ **Restricted.** You need the Gambler Role to play.", ephemeral=True)
-    
     # Init user data if missing
     data = get_tower_data(ctx.author.id)
     view = TowerGameView(ctx.author)
@@ -1545,7 +1542,6 @@ async def tower_top(ctx):
 @bot.slash_command(name="revive", description="Revive in Tower (5000 Scoins)")
 async def revive(ctx):
     if ctx.channel.id != CASINO_CHANNEL_ID: return await safe_reply(ctx, "❌ Wrong channel.", ephemeral=True)
-    if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
     
     user_id = str(ctx.author.id)
     data = get_tower_data(ctx.author.id)
@@ -1568,7 +1564,6 @@ async def revive(ctx):
 @bot.slash_command(name="respawn", description="Give up and return to Checkpoint")
 async def respawn(ctx):
     if ctx.channel.id != CASINO_CHANNEL_ID: return await safe_reply(ctx, "❌ Wrong channel.", ephemeral=True)
-    if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
     
     user_id = str(ctx.author.id)
     data = get_tower_data(ctx.author.id)
