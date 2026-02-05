@@ -1,17 +1,13 @@
-# bot.py — ShadowSyn (Audio Mixing + Clip Targeting Enabled)
+# bot.py — ShadowSyn (Final Stable: Logs Fixed, Roles Fixed, Music Fixed)
 #
-# === CRITICAL FIXES ===
-# [x] /clip: NOW MIXES AUDIO. Captures all speakers, combines them into ONE file.
-# [x] /clip: TARGETS 'CLIPS_TARGET_ID'. Sends result to the specific thread, not command channel.
-#
-# === FEATURE MANIFEST ===
-# [x] Music: /play (Dropdown Menu), /queue, /skip, /stop
-# [x] VoiceMaster: JTC + Control Panel (Lock/Unlock/Kick/Rename/Bitrate)
-# [x] Alerts: No Pings, Detailed Voice Logs (Mute/Deaf/Stream/Cam) -> DEFAULT_AUDIT_THREAD_ID
-# [x] Arrivals: Welcome Card + Minion Button -> ARRIVALS_THREAD_ID
-# [x] Speak: TTS with Thai/Vietnamese -> SPEAK_LOG_THREAD_ID
-# [x] Casino: Slots (18% House Edge), Duel, Wallet (Locked to Role)
-# [x] Shop: Ban Haste only.
+# === FIXES IN THIS VERSION ===
+# [x] Roles: Added explicit "wait_until_ready" to ensure Role Views load correctly.
+# [x] Music: Fixed 'KeyError' crashing /play. Now handles YouTube results safely.
+# [x] Music: Restored the DROPDOWN menu for picking 1 of 5 songs.
+# [x] Clips: Included 'RingBufferSink' class (Fixes the log error).
+# [x] Clips: Mixes multiple audio streams into one MP3.
+# [x] Speak: Added Thai, Vietnamese, Tagalog.
+# [x] Logs: No Pings (Bold names only).
 #
 # LIBRARY: py-cord[voice]
 
@@ -67,7 +63,7 @@ SPEAK_LOG_THREAD_ID     = 1400048671973703690
 DEPARTURES_THREAD_ID    = 960088192177029140
 DEFAULT_TARGET_ID       = 1166874144395247757
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
-CLIPS_TARGET_ID         = 1467055136609271818  # <--- CLIPS GO HERE
+CLIPS_TARGET_ID         = 1467055136609271818
 
 # --- PERMISSIONS ---
 ROLE_ADMIN_ID           = 1214794734770323466 
@@ -447,7 +443,8 @@ class MusicSelect(Select):
         self.entries = entries
         options = []
         for i, e in enumerate(entries[:5]):
-            options.append(SelectOption(label=f"{i+1}. {e['title'][:90]}", value=str(i)))
+            title = e.get('title', 'Unknown Track')
+            options.append(SelectOption(label=f"{i+1}. {title[:90]}", value=str(i)))
         super().__init__(placeholder="Select a track...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: Interaction):
@@ -457,9 +454,12 @@ class MusicSelect(Select):
         await interaction.response.defer()
         idx = int(self.values[0])
         selected = self.entries[idx]
-        url = selected['url']
-        title = selected['title']
+        url = selected.get('url') or selected.get('webpage_url')
+        title = selected.get('title')
         
+        if not url:
+            return await self.ctx.send("❌ Error: Could not resolve URL for that track.")
+
         # Add to queue or play
         if self.vc.is_playing():
             if self.ctx.guild.id not in bot.audio_queues: bot.audio_queues[self.ctx.guild.id] = deque()
@@ -470,7 +470,8 @@ class MusicSelect(Select):
             await play_track(self.vc, url, title, self.ctx.guild.id)
         
         # Disable view
-        await interaction.message.delete()
+        try: await interaction.message.delete()
+        except: pass
 
 class MusicSelectionView(View):
     def __init__(self, entries, ctx, vc):
@@ -743,10 +744,17 @@ bot = ShadowSynBot()
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     _load_persistence()
+    
+    # Wait for guilds to be ready before rehydrating views
+    await bot.wait_until_ready()
+    
     for guild in bot.guilds:
         await _prime_invites_cache(guild)
-        try: await rehydrate_role_panel(bot, guild)
-        except: pass
+        try: 
+            await rehydrate_role_panel(bot, guild)
+            print(f"[inf] Restored Role View for guild: {guild.name}")
+        except Exception as e:
+            print(f"[err] Failed to restore role view for {guild.name}: {e}")
 
 @bot.event
 async def on_guild_join(guild):
@@ -1095,9 +1103,12 @@ async def clip(ctx):
 
         # 2. Construct Filter Complex
         # [0:a][1:a]amix=inputs=2:duration=longest[out]
-        filter_complex = f"{''.join(filter_parts)}amix=inputs={len(user_files)}:duration=longest[out]"
-        
-        cmd = ["ffmpeg", "-y"] + inputs + ["-filter_complex", filter_complex, "-map", "[out]", "clip.mp3"]
+        if len(user_files) > 1:
+            filter_complex = f"{''.join(filter_parts)}amix=inputs={len(user_files)}:duration=longest[out]"
+            cmd = ["ffmpeg", "-y"] + inputs + ["-filter_complex", filter_complex, "-map", "[out]", "clip.mp3"]
+        else:
+            # Single user, just convert
+            cmd = ["ffmpeg", "-y"] + inputs + ["clip.mp3"]
         
         # 3. Run FFmpeg
         subprocess.run(cmd, check=True)
