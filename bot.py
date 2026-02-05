@@ -1,4 +1,4 @@
-# bot.py — ShadowSyn (Final: No Stats, Just Casino & Tools)
+# bot.py — ShadowSyn (Final: Bitrate Fix)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
@@ -8,6 +8,10 @@
 # 5. Scoins Casino: LOCKED to Role ID 955600320287887400
 # 6. Shop: Only "Ban Haste" exists (Cost: 10,000)
 # 7. Slots: "Spin Again" button included.
+#
+# === FIXES ===
+# - Default Bitrate lowered to 64kbps (Fixes "Mic not working" issues)
+# - Explicit Speak permissions granted on create.
 #
 # LIBRARY REQUIREMENT: py-cord[voice] (NOT discord.py)
 
@@ -73,7 +77,9 @@ GAMBLER_ROLE_ID         = 955600320287887400  # <--- LOCKED ROLE ID
 # --- VOICEMASTER ---
 JOIN_TO_CREATE_CHANNEL_ID = 1398618132788281364
 VC_CATEGORY_ID            = 908659586536468542
-VC_DEFAULT_BITRATE        = 384000
+# CHANGED: Lowered from 384000 to 64000 to fix audio/mic connection issues.
+# Users can increase this via the panel if their internet supports it.
+VC_DEFAULT_BITRATE        = 64000 
 VC_DEFAULT_USER_LIMIT     = 0
 ADMIN_ROLE_NAME           = "SHADOW"
 
@@ -713,7 +719,14 @@ async def on_voice_state_update(member, before, after):
     if after.channel and after.channel.id == JOIN_TO_CREATE_CHANNEL_ID:
         try:
             cat = get(guild.categories, id=VC_CATEGORY_ID) or after.channel.category
-            new_vc = await guild.create_voice_channel(name=_limit_channel_name(_to_sans_bold_italic(f"{member.display_name}'s Room")), category=cat, bitrate=VC_DEFAULT_BITRATE)
+            new_vc = await guild.create_voice_channel(
+                name=_limit_channel_name(_to_sans_bold_italic(f"{member.display_name}'s Room")), 
+                category=cat, 
+                bitrate=VC_DEFAULT_BITRATE
+            )
+            # EXPLICITLY GRANT SPEAK PERMS
+            await new_vc.set_permissions(member, connect=True, speak=True)
+            
             active_temp_vcs.add(new_vc.id)
             _save_active_vcs(active_temp_vcs)
             await member.move_to(new_vc)
