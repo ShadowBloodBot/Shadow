@@ -1,13 +1,14 @@
-# bot.py — ShadowSyn (Final Stable: Logs Fixed, Roles Fixed, Music Fixed)
+# bot.py — ShadowSyn (Casino Channel Locked)
 #
-# === FIXES IN THIS VERSION ===
-# [x] Roles: Added explicit "wait_until_ready" to ensure Role Views load correctly.
-# [x] Music: Fixed 'KeyError' crashing /play. Now handles YouTube results safely.
-# [x] Music: Restored the DROPDOWN menu for picking 1 of 5 songs.
-# [x] Clips: Included 'RingBufferSink' class (Fixes the log error).
-# [x] Clips: Mixes multiple audio streams into one MP3.
-# [x] Speak: Added Thai, Vietnamese, Tagalog.
-# [x] Logs: No Pings (Bold names only).
+# === LATEST UPDATE ===
+# [x] /gamble: LOCKED to channel ID 1468766727134249091.
+#     - If used elsewhere, replies: "❌ Go to #thread-name to gamble."
+#
+# === PREVIOUS FIXES RETAINED ===
+# [x] Roles: Auto-reconnects on startup.
+# [x] Music: Dropdown menu + Safety check for YouTube errors.
+# [x] Clips: RingBufferSink included + Audio Mixing enabled.
+# [x] Logs: No Pings.
 #
 # LIBRARY: py-cord[voice]
 
@@ -64,6 +65,7 @@ DEPARTURES_THREAD_ID    = 960088192177029140
 DEFAULT_TARGET_ID       = 1166874144395247757
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
 CLIPS_TARGET_ID         = 1467055136609271818
+CASINO_CHANNEL_ID       = 1468766727134249091  # <--- CASINO LOCK ID
 
 # --- PERMISSIONS ---
 ROLE_ADMIN_ID           = 1214794734770323466 
@@ -605,6 +607,10 @@ class CasinoDashboard(View):
         await interaction.response.send_message(f"💰 **Payday!** +{SCOIN_PULL_AMOUNT} Scoins.", ephemeral=True)
     @discord.ui.button(label="Slots", style=ButtonStyle.primary, emoji="🎰", row=0)
     async def slots(self, button, interaction: Interaction):
+        # 1. CHANNEL LOCK
+        if interaction.channel.id != CASINO_CHANNEL_ID:
+            return await interaction.response.send_message(f"❌ Go to <#{CASINO_CHANNEL_ID}> to gamble.", ephemeral=True)
+
         if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
         bal = get_balance(str(interaction.user.id))
         
@@ -933,6 +939,10 @@ async def morehaste(ctx, fact: str):
 
 @bot.slash_command(name="gamble", description="Open Casino")
 async def gamble(ctx):
+    # 1. CHANNEL LOCK
+    if ctx.channel.id != CASINO_CHANNEL_ID:
+        return await safe_reply(ctx, f"❌ Go to <#{CASINO_CHANNEL_ID}> to gamble.", ephemeral=True)
+
     if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
     embed = discord.Embed(title="🎰 ShadowSyn Casino", description="Welcome.", color=THEME_PRIMARY)
     embed.set_footer(text=f"Balance: {get_balance(str(ctx.author.id))}")
