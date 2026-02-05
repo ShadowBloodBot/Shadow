@@ -1,7 +1,10 @@
-# bot.py — ShadowSyn (Lean Version: No Roles, No Clips)
+# bot.py — ShadowSyn (Lean Version: Casino Jackpot Announce)
 #
 # === FEATURES ===
-# [x] Casino: Locked to channel 1468766727134249091, Ephemeral Replies.
+# [x] Casino: 
+#     - Locked to channel 1468766727134249091.
+#     - 3x Wins are announced publicly in the thread (No Pings).
+#     - Regular play is Ephemeral (Hidden).
 # [x] Music: Dropdown Search (1-5), YouTube crash patched.
 # [x] VoiceMaster: Join-to-Create + Control Panel.
 # [x] Speak: TTS (Thai/Viet/Tagalog supported).
@@ -416,8 +419,13 @@ def generate_slot_result(user, bet):
     a, b, c = random.choice(emojis), random.choice(emojis), random.choice(emojis)
     
     payout = 0
-    if a == b == c: payout = bet * 13 
-    elif a == b or b == c or a == c: payout = int(bet * 1.5) 
+    is_jackpot = False
+    
+    if a == b == c: 
+        payout = bet * 13 
+        is_jackpot = True
+    elif a == b or b == c or a == c: 
+        payout = int(bet * 1.5) 
     
     if payout > 0:
         update_balance(user_id, payout)
@@ -433,7 +441,7 @@ def generate_slot_result(user, bet):
     else:
         embed.set_author(name=f"{user.display_name}'s Spin")
     embed.set_footer(text=f"Bet: {bet} Scoins")
-    return embed
+    return embed, is_jackpot, payout
 
 class RepeatSpinView(View):
     def __init__(self, user_id, bet):
@@ -450,8 +458,13 @@ class RepeatSpinView(View):
         if bal < self.bet:
             return await interaction.response.send_message(f"❌ Insufficient funds ({bal} < {self.bet}).", ephemeral=True)
         
-        embed = generate_slot_result(interaction.user, self.bet)
+        embed, is_jackpot, win_amount = generate_slot_result(interaction.user, self.bet)
         await interaction.response.send_message(embed=embed, view=RepeatSpinView(self.user_id, self.bet), ephemeral=True)
+
+        if is_jackpot:
+            target_thread = interaction.guild.get_channel(CASINO_CHANNEL_ID) or await interaction.guild.fetch_channel(CASINO_CHANNEL_ID)
+            if target_thread:
+                await target_thread.send(f"🚨 **JACKPOT!** 🎰\n**{interaction.user.display_name}** just hit a **3x Match** and won **{win_amount}** Scoins!")
 
 class BetAmountModal(Modal):
     def __init__(self, title, balance, callback_func):
@@ -539,8 +552,13 @@ class CasinoDashboard(View):
         bal = get_balance(str(interaction.user.id))
         
         async def modal_callback(inter, amount):
-            embed = generate_slot_result(inter.user, amount)
+            embed, is_jackpot, win_amount = generate_slot_result(inter.user, amount)
             await inter.response.send_message(embed=embed, view=RepeatSpinView(inter.user.id, amount), ephemeral=True)
+            
+            if is_jackpot:
+                target_thread = inter.guild.get_channel(CASINO_CHANNEL_ID) or await inter.guild.fetch_channel(CASINO_CHANNEL_ID)
+                if target_thread:
+                    await target_thread.send(f"🚨 **JACKPOT!** 🎰\n**{inter.user.display_name}** just hit a **3x Match** and won **{win_amount}** Scoins!")
 
         await interaction.response.send_modal(BetAmountModal("Slots Bet", bal, modal_callback))
     @discord.ui.button(label="Duel", style=ButtonStyle.danger, emoji="⚔️", row=0)
