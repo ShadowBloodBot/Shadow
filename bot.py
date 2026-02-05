@@ -1,13 +1,12 @@
-# bot.py — ShadowSyn (Master: Tower "Pick 3" Update)
+# bot.py — ShadowSyn (Master: Tower Economy & Combat Update)
 #
 # === FEATURES ===
-# [x] 🏰 SHADOW TOWER:
-#     - 🆕 "Pick 3" Loot System: On treasure floors, choose between 3 generated rewards.
-#     - 🆕 "Rest" Button: Replaces Camp. Uses Green ➕ icon.
-#     - 🎒 Inventory & Gear: Permanent upgrades for the run.
-#     - ⚔️ Combat: Monsters scale with Floor level.
-# [x] SHOP & CASINO: All previous features preserved.
-# [x] CORE: All previous features preserved.
+# [x] 🏰 SHADOW TOWER UPDATE:
+#     - ⚔️ ATK Utility: High ATK allows "Critical Strikes" (Insta-kill enemy, 0 dmg taken).
+#     - 💰 Gold Utility: "Rest" now costs 500 Gold (earned in-game).
+#     - 💎 Scoin Utility: "Checkpoint" costs 100 Scoins (premium).
+#     - ➕ UI: Green Plus for Rest, distinct visual cues for Combat results.
+# [x] CASINO, SHOP, CORE: All features preserved.
 #
 # LIBRARY: py-cord[voice]
 
@@ -460,21 +459,21 @@ def generate_loot_options(floor):
             if l_type == "ATK": item = {"name": "Rusty Dagger", "type": "ATK", "val": 1, "emoji": "🗡️"}
             elif l_type == "DEF": item = {"name": "Old Shield", "type": "DEF", "val": 1, "emoji": "🛡️"}
             elif l_type == "POTION": item = {"name": "Small Potion", "type": "POTION", "val": 1, "emoji": "🧪"}
-            elif l_type == "GOLD": item = {"name": "Small Coin Pouch", "type": "GOLD", "val": 10 * floor, "emoji": "💰"}
+            elif l_type == "GOLD": item = {"name": "Small Coin Pouch", "type": "GOLD", "val": 50 * floor, "emoji": "💰"}
             else: item = {"name": "Pocket Change", "type": "SCOINS", "val": 10, "emoji": "💎"}
             
         elif tier == "Rare":
             if l_type == "ATK": item = {"name": "Steel Sword", "type": "ATK", "val": 3, "emoji": "⚔️"}
             elif l_type == "DEF": item = {"name": "Chainmail", "type": "DEF", "val": 2, "emoji": "⛓️"}
             elif l_type == "POTION": item = {"name": "Super Potion", "type": "POTION", "val": 2, "emoji": "⚗️"}
-            elif l_type == "GOLD": item = {"name": "Gold Bar", "type": "GOLD", "val": 50 * floor, "emoji": "🪙"}
+            elif l_type == "GOLD": item = {"name": "Gold Bar", "type": "GOLD", "val": 150 * floor, "emoji": "🪙"}
             else: item = {"name": "Gemstone", "type": "SCOINS", "val": 100, "emoji": "💎"}
             
         else: # Legendary
             if l_type == "ATK": item = {"name": "Shadow Blade", "type": "ATK", "val": 5, "emoji": "🔥"}
             elif l_type == "DEF": item = {"name": "Dragon Armor", "type": "DEF", "val": 4, "emoji": "🐲"}
             elif l_type == "POTION": item = {"name": "Elixir of Life", "type": "POTION", "val": 5, "emoji": "🍷"}
-            elif l_type == "GOLD": item = {"name": "King's Ransom", "type": "GOLD", "val": 200 * floor, "emoji": "👑"}
+            elif l_type == "GOLD": item = {"name": "King's Ransom", "type": "GOLD", "val": 500 * floor, "emoji": "👑"}
             else: item = {"name": "Shadow Scoins", "type": "SCOINS", "val": 500, "emoji": "💎"}
             
         options.append(item)
@@ -510,11 +509,11 @@ class TowerGameView(View):
         climb.callback = self.climb_action
         self.add_item(climb)
         
-        rest = Button(label="Rest (500)", style=ButtonStyle.success, emoji="➕", custom_id="rest", row=0)
+        rest = Button(label="Rest (500 Gold)", style=ButtonStyle.success, emoji="➕", custom_id="rest", row=0)
         rest.callback = self.rest_action
         self.add_item(rest)
         
-        save = Button(label="Save (Checkpt)", style=ButtonStyle.secondary, emoji="💾", custom_id="save", row=0)
+        save = Button(label="Save (100 Scoins)", style=ButtonStyle.secondary, emoji="💾", custom_id="save", row=0)
         save.callback = self.save_action
         self.add_item(save)
         
@@ -530,8 +529,6 @@ class TowerGameView(View):
             # Dynamic buttons
             btn = Button(label=f"{item['name']}", style=ButtonStyle.primary, emoji=item['emoji'], row=0)
             
-            # We need to capture the item in the closure, loop variable issues in Python
-            # Use default arg trick
             async def callback(interaction, it=item):
                 await self.select_loot(interaction, it)
                 
@@ -551,10 +548,25 @@ class TowerGameView(View):
             await interaction.response.edit_message(embed=self.update_embed("💎 **Treasure Room!**\nChoose your reward:", THEME_GOLD), view=self)
             
         else: # COMBAT
-            enemy_atk = random.randint(10, 30) + (self.data["floor"] // 2)
-            damage = max(0, enemy_atk - self.data["def"])
-            # ATK mitigation (killing faster takes less dmg)
-            damage = max(0, int(damage - (self.data["atk"] / 2)))
+            # Enemy Stats Scale with Floor
+            enemy_power = random.randint(10, 30) + (self.data["floor"] * 2)
+            enemy_def = self.data["floor"] // 2
+            
+            # --- ATK CHECK (CRIT SYSTEM) ---
+            # If Player ATK > Enemy Power, INSTA KILL (0 Dmg taken)
+            # This makes ATK valuable.
+            if self.data["atk"] >= enemy_power:
+                self.data["floor"] += 1
+                if self.data["floor"] > self.data["max_floor"]: self.data["max_floor"] = self.data["floor"]
+                save_tower_data(self.user_id, self.data)
+                
+                msg = f"⚔️ **CRITICAL HIT!**\nYour ATK ({self.data['atk']}) overpowered the enemy ({enemy_power}).\n**You took 0 Damage!**"
+                await interaction.response.edit_message(embed=self.update_embed(msg, THEME_WIN), view=self)
+                return
+
+            # --- STANDARD COMBAT ---
+            # Damage = Enemy Power - Player Def
+            damage = max(5, enemy_power - self.data["def"])
             
             self.data["hp"] -= damage
             
@@ -569,7 +581,7 @@ class TowerGameView(View):
                 if self.data["floor"] > self.data["max_floor"]: self.data["max_floor"] = self.data["floor"]
                 save_tower_data(self.user_id, self.data)
                 self.render_main_menu()
-                await interaction.response.edit_message(embed=self.update_embed(f"⚔️ **Combat!**\nTook **{damage}** dmg (Blocked {self.data['def'] + int(self.data['atk']/2)}).", 0xE67E22), view=self)
+                await interaction.response.edit_message(embed=self.update_embed(f"⚔️ **Combat!**\nEnemy Power: {enemy_power} vs Your Def: {self.data['def']}\nTook **{damage}** dmg.", 0xE67E22), view=self)
 
     async def select_loot(self, interaction, item):
         if interaction.user.id != self.user.id: return
@@ -604,23 +616,30 @@ class TowerGameView(View):
 
     async def rest_action(self, interaction):
         if interaction.user.id != self.user.id: return
+        
         cost = 500
-        if get_balance(self.user_id) < cost: return await interaction.response.send_message("❌ Need 500 Scoins.", ephemeral=True)
+        # Check GOLD (in-game currency), not Scoins
+        if self.data["gold"] < cost: 
+            return await interaction.response.send_message(f"❌ Need {cost} Gold (You have {self.data['gold']}).", ephemeral=True)
         
         if self.data["hp"] >= self.data["max_hp"]: return await interaction.response.send_message("Already full HP.", ephemeral=True)
 
-        update_balance(self.user_id, -cost)
+        self.data["gold"] -= cost
         self.data["hp"] = self.data["max_hp"]
         save_tower_data(self.user_id, self.data)
-        await interaction.response.edit_message(embed=self.update_embed(f"➕ **Rested.** Full HP restored.", THEME_GOLD), view=self)
+        
+        await interaction.response.edit_message(embed=self.update_embed(f"➕ **Rested.** Paid {cost} Gold. Full HP restored.", THEME_GOLD), view=self)
 
     async def save_action(self, interaction):
         if interaction.user.id != self.user.id: return
-        cost = self.data["floor"] * 100
+        cost = 100
+        # Check Scoins (Premium currency)
         if get_balance(self.user_id) < cost: return await interaction.response.send_message(f"❌ Need {cost} Scoins.", ephemeral=True)
+        
         update_balance(self.user_id, -cost)
         self.data["checkpoint"] = self.data["floor"]
         save_tower_data(self.user_id, self.data)
+        
         await interaction.response.edit_message(embed=self.update_embed(f"💾 **Saved.** Checkpoint set to {self.data['floor']}.", THEME_PRIMARY), view=self)
 
 # ==================== CASINO: SLOTS ====================
