@@ -1,8 +1,9 @@
-# bot.py — ShadowSyn (Final: Easy Custom Embeds + Casino Jackpot)
+# bot.py — ShadowSyn (Final: Edit Custom Embeds + Casino Jackpot)
 #
 # === FEATURES ===
-# [x] /send_custom: REVERTED to a simple Form (Title/Description/Footer).
-#     - No more JSON coding. Just type text, and it looks like your screenshot.
+# [x] /edit_custom: NEW! Paste a Message ID to edit an existing bot embed.
+#     - Pre-fills the form with the current text so you can just update it.
+# [x] /send_custom: Simple Form (Title/Description/Footer). No JSON.
 # [x] Casino: Locked to channel 1468766727134249091.
 #     - 3x Wins trigger a public alert in the thread.
 # [x] Music, VoiceMaster, Logs, Speak: All preserved.
@@ -893,15 +894,23 @@ async def give_scoins(ctx, user: discord.Member, amount: int):
     update_balance(str(user.id), amount)
     await safe_reply(ctx, f"✅ Done. New balance: {get_balance(str(user.id))}", ephemeral=True)
 
-# --- CUSTOM EMBEDS (REVERTED TO SIMPLE FORM) ---
+# --- CUSTOM EMBEDS (SIMPLE FORM) ---
 class EasyEmbedModal(Modal):
-    def __init__(self, channel):
-        super().__init__(title="Create Custom Embed")
+    def __init__(self, channel, edit_msg=None):
+        super().__init__(title="Edit Embed" if edit_msg else "Create Custom Embed")
         self.channel = channel
-        self.add_item(TextInput(label="Title", placeholder="Embed Title...", required=True))
-        self.add_item(TextInput(label="Description", placeholder="Main content...", style=discord.InputTextStyle.paragraph, required=True))
-        self.add_item(TextInput(label="Footer (Optional)", placeholder="Small text at bottom...", required=False))
-        self.add_item(TextInput(label="Color (Hex)", placeholder="#2B0B35", required=False))
+        self.edit_msg = edit_msg
+
+        # Pre-fill data if editing
+        pre_title = edit_msg.embeds[0].title if edit_msg and edit_msg.embeds else ""
+        pre_desc = edit_msg.embeds[0].description if edit_msg and edit_msg.embeds else ""
+        pre_foot = edit_msg.embeds[0].footer.text if edit_msg and edit_msg.embeds and edit_msg.embeds[0].footer else ""
+        pre_col = str(hex(edit_msg.embeds[0].color.value)).replace("0x", "#") if edit_msg and edit_msg.embeds and edit_msg.embeds[0].color else ""
+
+        self.add_item(TextInput(label="Title", placeholder="Embed Title...", value=pre_title, required=True))
+        self.add_item(TextInput(label="Description", placeholder="Main content...", value=pre_desc, style=discord.InputTextStyle.paragraph, required=True))
+        self.add_item(TextInput(label="Footer (Optional)", placeholder="Small text at bottom...", value=pre_foot, required=False))
+        self.add_item(TextInput(label="Color (Hex)", placeholder="#2B0B35", value=pre_col, required=False))
 
     async def callback(self, interaction: Interaction):
         title = self.children[0].value
@@ -918,14 +927,30 @@ class EasyEmbedModal(Modal):
         embed = discord.Embed(title=title, description=desc, color=color)
         if footer: embed.set_footer(text=footer)
         
-        await self.channel.send(embed=embed)
-        await interaction.response.send_message("✅ Embed Sent!", ephemeral=True)
+        if self.edit_msg:
+            await self.edit_msg.edit(embed=embed)
+            await interaction.response.send_message("✅ Embed Updated!", ephemeral=True)
+        else:
+            await self.channel.send(embed=embed)
+            await interaction.response.send_message("✅ Embed Sent!", ephemeral=True)
 
 @bot.slash_command(name="send_custom", description="Send a clean embed message")
 @admin_only()
 async def send_custom(ctx, channel: Option(discord.TextChannel, required=False)):
     target = channel or ctx.channel
     await ctx.send_modal(EasyEmbedModal(target))
+
+@bot.slash_command(name="edit_custom", description="Edit an existing bot embed")
+@admin_only()
+async def edit_custom(ctx, message_id: str, channel: Option(discord.TextChannel, required=False)):
+    target_channel = channel or ctx.channel
+    try:
+        msg = await target_channel.fetch_message(int(message_id))
+        if msg.author != ctx.bot.user:
+            return await ctx.respond("❌ I can only edit my own messages.", ephemeral=True)
+        await ctx.send_modal(EasyEmbedModal(target_channel, edit_msg=msg))
+    except Exception as e:
+        await ctx.respond(f"❌ Error finding message: {e}", ephemeral=True)
 
 # --- MUSIC ---
 def check_queue(gid, vc):
