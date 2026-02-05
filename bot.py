@@ -1,13 +1,13 @@
-# bot.py — ShadowSyn (Master: Intuitive Combat & "Strike" System)
+# bot.py — ShadowSyn (Master: Elite RPG Update - Classes & XP)
 #
 # === FEATURES ===
-# [x] 🏰 SHADOW TOWER:
-#     - ⚔️ Intuitive Combat: You now "Encounter" enemies. "Climb" button changes to "⚔️ STRIKE".
-#     - 💥 Impact: Battle logs describe your weapon hitting the enemy.
-#     - 📝 Loot: Buttons show exact stats (e.g., "+1 ATK").
-#     - 👹 Bosses: Prefixed with "BOSS" every 10 floors.
-#     - 🎨 Visuals: Green (Win/Loot), Orange (Encounter), Red (Boss/Damage).
-# [x] CASINO, SHOP, CORE: Preserved.
+# [x] 🏰 SHADOW TOWER ELITE:
+#     - 🛡️ Classes: Warrior, Rogue, Mage (Unique stats & Skills).
+#     - ✨ Leveling: XP system. Level up for stats & full heal.
+#     - ⚔️ Dynamic Combat: HP Bars for Player/Enemy. "Skill" button added.
+#     - 🔓 Access: Open to everyone in Casino Channel.
+#     - 👹 Bosses & Visuals: Preserved.
+# [x] CORE FEATURES: VoiceMaster, TTS, Casino, Admin Tools (ALL PRESERVED).
 #
 # LIBRARY: py-cord[voice]
 
@@ -110,14 +110,8 @@ BOSSES = {
     70: "Ancient Red Dragon", 80: "The Void Bringer", 90: "Death Itself", 100: "ShadowSyn Prime"
 }
 
-ITEMS_ATK = [
-    "Rusty Shiv", "Iron Sword", "Steel Katana", "Warhammer", "Shadow Blade", 
-    "Void Reaver", "Excalibur (Replica)", "Demon Edge", "Doombringer", "Godslayer"
-]
-ITEMS_DEF = [
-    "Tattered Shirt", "Leather Vest", "Chainmail", "Plate Armor", "Dragon Scale", 
-    "Void Shield", "Mithril Vest", "Aegis of the Immortal", "Divine Robes"
-]
+ITEMS_ATK = ["Rusty Shiv", "Iron Sword", "Steel Katana", "Warhammer", "Shadow Blade", "Void Reaver", "Excalibur (Replica)", "Doombringer"]
+ITEMS_DEF = ["Tattered Shirt", "Leather Vest", "Chainmail", "Plate Armor", "Dragon Scale", "Void Shield", "Mithril Vest", "Aegis"]
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN: raise SystemExit("❌ DISCORD_TOKEN is not set.")
@@ -450,17 +444,21 @@ class MusicSelectionView(View):
 
 def get_tower_data(user_id):
     uid = str(user_id)
-    # Reset or Init if dead/empty
+    # Reset or Init
     if uid not in tower_db:
         tower_db[uid] = {
-            "floor": 1, "max_floor": 1, "hp": 100, "max_hp": 100, 
+            "floor": 1, "max_floor": 1, 
+            "hp": 100, "max_hp": 100, 
             "gold": 0, "checkpoint": 1, 
-            "potions": 0, "atk": 0, "def": 0
+            "potions": 0, "atk": 0, "def": 0,
+            "class": None, "xp": 0, "level": 1, "skill_cd": 0
         }
-    # Ensure keys exist for old saves
-    if "potions" not in tower_db[uid]: tower_db[uid]["potions"] = 0
-    if "atk" not in tower_db[uid]: tower_db[uid]["atk"] = 0
-    if "def" not in tower_db[uid]: tower_db[uid]["def"] = 0
+    
+    # Backwards compatibility
+    if "class" not in tower_db[uid]: tower_db[uid]["class"] = None
+    if "xp" not in tower_db[uid]: tower_db[uid]["xp"] = 0
+    if "level" not in tower_db[uid]: tower_db[uid]["level"] = 1
+    if "skill_cd" not in tower_db[uid]: tower_db[uid]["skill_cd"] = 0
     
     return tower_db[uid]
 
@@ -475,6 +473,28 @@ def get_monster_name(floor):
     for t in tiers:
         if floor >= t: selected_tier = t
     return random.choice(MONSTERS[selected_tier])
+
+# --- HELPER: PROGRESSION ---
+def get_xp_needed(level):
+    return level * 100
+
+def check_levelup(data):
+    needed = get_xp_needed(data["level"])
+    if data["xp"] >= needed:
+        data["xp"] -= needed
+        data["level"] += 1
+        data["max_hp"] += 10
+        data["atk"] += 1
+        data["def"] += 1
+        data["hp"] = data["max_hp"] # Full Heal on Level Up!
+        return True
+    return False
+
+# --- HELPER: BARS ---
+def draw_bar(curr, max_val, color="🟩", length=10):
+    pct = curr / max_val
+    fill = int(pct * length)
+    return color * fill + "⬛" * (length - fill)
 
 # --- LOOT GENERATION ---
 def generate_loot_options(floor):
@@ -551,6 +571,37 @@ def generate_loot_options(floor):
         options.append({"name": item_name, "label": label, "type": l_type, "val": val, "emoji": emoji})
     return options
 
+# --- CLASS SELECTION VIEW ---
+class ClassSelectView(View):
+    def __init__(self, user_id):
+        super().__init__(timeout=60)
+        self.user_id = str(user_id)
+
+    async def _set_class(self, interaction, cls, hp, atk, def_):
+        if str(interaction.user.id) != self.user_id: return
+        data = get_tower_data(interaction.user.id)
+        data["class"] = cls
+        data["max_hp"] = hp
+        data["hp"] = hp
+        data["atk"] = atk
+        data["def"] = def_
+        save_tower_data(interaction.user.id, data)
+        
+        await interaction.response.send_message(f"✅ **You are now a {cls}!**\nType `/tower` to begin.", ephemeral=True)
+        self.stop()
+
+    @discord.ui.button(label="Warrior (High HP)", style=ButtonStyle.danger, emoji="🛡️")
+    async def warrior(self, button, interaction):
+        await self._set_class(interaction, "Warrior", 120, 2, 2)
+
+    @discord.ui.button(label="Rogue (High Crit)", style=ButtonStyle.success, emoji="🗡️")
+    async def rogue(self, button, interaction):
+        await self._set_class(interaction, "Rogue", 80, 5, 0)
+
+    @discord.ui.button(label="Mage (Balanced)", style=ButtonStyle.primary, emoji="🔮")
+    async def mage(self, button, interaction):
+        await self._set_class(interaction, "Mage", 100, 3, 1)
+
 class TowerGameView(View):
     def __init__(self, user):
         super().__init__(timeout=300)
@@ -563,39 +614,51 @@ class TowerGameView(View):
         self.render_main_menu()
 
     def update_embed(self, event_text, color=THEME_PRIMARY):
-        hp_percent = self.data["hp"] / self.data["max_hp"]
-        blocks = int(hp_percent * 10)
-        bar = "🟩" * blocks + "⬛" * (10 - blocks)
+        player_bar = draw_bar(self.data["hp"], self.data["max_hp"], "🟩")
         
         embed = discord.Embed(title=f"🏰 Shadow Tower | Floor {self.data['floor']}", description=event_text, color=color)
         
         # Enemy Status in Combat
         if self.mode == "COMBAT" and self.enemy_stats:
-            embed.add_field(name="👺 Enemy", value=f"**{self.enemy_stats['name']}**\nPower: {self.enemy_stats['power']}", inline=False)
+            e_bar = draw_bar(self.enemy_stats["hp"], self.enemy_stats["max_hp"], "🟥")
+            embed.add_field(name=f"👺 {self.enemy_stats['name']} (Lvl {self.data['floor']})", value=f"{self.enemy_stats['hp']}/{self.enemy_stats['max_hp']} HP\n{e_bar}", inline=False)
 
-        embed.add_field(name="❤️ Health", value=f"{self.data['hp']}/{self.data['max_hp']}\n{bar}", inline=True)
-        embed.add_field(name="⚔️ Gear", value=f"🗡️ ATK: +{self.data['atk']}\n🛡️ DEF: +{self.data['def']}", inline=True)
-        embed.add_field(name="🎒 Inventory", value=f"🧪 Potions: {self.data['potions']}\n💰 Gold: {self.data['gold']}", inline=True)
-        embed.set_footer(text=f"High Score: Floor {self.data['max_floor']} | Checkpoint: {self.data['checkpoint']}")
+        # Player Status
+        embed.add_field(name=f"👤 {self.user.display_name} (Lvl {self.data['level']} {self.data['class']})", value=f"{self.data['hp']}/{self.data['max_hp']} HP\n{player_bar}", inline=False)
+        
+        # Stats & XP
+        xp_need = get_xp_needed(self.data['level'])
+        embed.add_field(name="📊 Stats", value=f"⚔️ ATK: {self.data['atk']}\n🛡️ DEF: {self.data['def']}\n✨ XP: {self.data['xp']}/{xp_need}", inline=True)
+        embed.add_field(name="🎒 Bag", value=f"🧪 Potions: {self.data['potions']}\n💰 Gold: {self.data['gold']}", inline=True)
+        
         return embed
 
     def render_main_menu(self):
         self.clear_items()
         
         if self.mode == "COMBAT":
-            # COMBAT MODE: Only "Strike" button
-            btn = Button(label="STRIKE", style=ButtonStyle.danger, emoji="⚔️", row=0)
-            btn.callback = self.combat_strike
-            self.add_item(btn)
+            # COMBAT MODE
+            strike = Button(label="Strike", style=ButtonStyle.danger, emoji="⚔️", row=0)
+            strike.callback = self.combat_strike
+            self.add_item(strike)
             
-            # Potion allowed in combat
+            # Skill Button (Check Class)
+            skill_name = "Skill"
+            if self.data["class"] == "Warrior": skill_name = "Power Smash"
+            elif self.data["class"] == "Rogue": skill_name = "Vampiric Stab"
+            elif self.data["class"] == "Mage": skill_name = "Fireball"
+            
+            skill = Button(label=f"{skill_name} (CD: {self.data.get('skill_cd', 0)})", style=ButtonStyle.primary, emoji="✨", row=0, disabled=(self.data.get('skill_cd', 0) > 0))
+            skill.callback = self.combat_skill
+            self.add_item(skill)
+            
             if self.data["potions"] > 0:
-                pot = Button(label=f"Use Potion ({self.data['potions']})", style=ButtonStyle.secondary, emoji="🧪", row=1)
+                pot = Button(label=f"Potion ({self.data['potions']})", style=ButtonStyle.secondary, emoji="🧪", row=1)
                 pot.callback = self.use_potion
                 self.add_item(pot)
                 
         elif self.mode == "LOOT":
-            # LOOT MODE: 3 Options
+            # LOOT MODE
             for i, item in enumerate(self.loot_options):
                 btn = Button(label=item['label'], style=ButtonStyle.primary, emoji=item['emoji'], row=0)
                 async def callback(interaction, it=item):
@@ -625,10 +688,11 @@ class TowerGameView(View):
     async def climb_action(self, interaction):
         if interaction.user.id != self.user.id: return
         
-        # --- BOSS CHECK (Every 10 floors) ---
-        is_boss = (self.data["floor"] % 10 == 0)
+        # Cooldown Decay
+        if self.data.get("skill_cd", 0) > 0: self.data["skill_cd"] -= 1
         
-        # 40% Combat, 60% Loot (Unless Boss)
+        # --- BOSS CHECK ---
+        is_boss = (self.data["floor"] % 10 == 0)
         roll = random.randint(1, 100)
         
         if not is_boss and roll > 40: # LOOT EVENT
@@ -643,62 +707,99 @@ class TowerGameView(View):
                 raw_name = BOSSES.get(self.data["floor"], "Unknown Terror")
                 name = f"BOSS {raw_name}"
                 power = (self.data["floor"] * 3) + 20
+                max_hp = (self.data["floor"] * 10) + 100
                 color = THEME_BOSS
                 title = f"👹 **BOSS ENCOUNTER!**"
             else:
                 name = get_monster_name(self.data["floor"])
-                power = random.randint(10, 30) + (self.data["floor"] * 2)
+                power = random.randint(5, 15) + (self.data["floor"] * 2)
+                max_hp = random.randint(20, 50) + (self.data["floor"] * 5)
                 color = THEME_COMBAT
                 title = f"⚔️ **Enemy Spotted!**"
             
-            self.enemy_stats = {"name": name, "power": power, "is_boss": is_boss, "color": color, "title": title}
+            self.enemy_stats = {"name": name, "power": power, "hp": max_hp, "max_hp": max_hp, "color": color, "title": title}
             
             self.render_main_menu()
-            await interaction.response.edit_message(embed=self.update_embed(f"{title}\nA **{name}** blocks your path!\n\n**Power:** {power}\n**Your ATK:** {self.data['atk']}\n\nPrepare to Strike!", color), view=self)
+            await interaction.response.edit_message(embed=self.update_embed(f"{title}\nA **{name}** blocks your path!", color), view=self)
 
     async def combat_strike(self, interaction):
         if interaction.user.id != self.user.id: return
+        # Standard Attack
+        dmg = self.data["atk"] + random.randint(1, 5)
+        await self.process_combat_turn(interaction, dmg, "Strike")
+
+    async def combat_skill(self, interaction):
+        if interaction.user.id != self.user.id: return
         
+        cls = self.data["class"]
+        dmg = 0
+        desc = ""
+        
+        if cls == "Warrior": # Power Smash
+            dmg = int(self.data["atk"] * 2.5)
+            desc = "💥 **Power Smash!**"
+            self.data["skill_cd"] = 3
+            
+        elif cls == "Rogue": # Vampiric Stab
+            dmg = self.data["atk"] + random.randint(5, 10)
+            heal = int(dmg / 2)
+            self.data["hp"] = min(self.data["hp"] + heal, self.data["max_hp"])
+            desc = f"🩸 **Vampiric Stab!** (Healed {heal})"
+            self.data["skill_cd"] = 3
+            
+        elif cls == "Mage": # Fireball
+            dmg = self.data["atk"] * 2 + 10
+            desc = "🔥 **Fireball!**"
+            self.data["skill_cd"] = 3
+            
+        await self.process_combat_turn(interaction, dmg, desc)
+
+    async def process_combat_turn(self, interaction, player_dmg, action_desc):
         enemy = self.enemy_stats
         
-        # Calculate Combat
-        player_atk = self.data["atk"]
-        player_def = self.data["def"]
-        enemy_power = enemy["power"]
+        # 1. Player Hits Enemy
+        enemy["hp"] -= player_dmg
         
-        # 1. CRIT CHECK (Insta-Kill)
-        if player_atk >= enemy_power:
+        # 2. Check Enemy Death
+        if enemy["hp"] <= 0:
+            enemy["hp"] = 0
             self.mode = "EXPLORE"
             self.data["floor"] += 1
             if self.data["floor"] > self.data["max_floor"]: self.data["max_floor"] = self.data["floor"]
+            
+            # XP Gain
+            xp_gain = 20 if "BOSS" in enemy["name"] else 10
+            self.data["xp"] += xp_gain
+            
+            # Level Up Check
+            leveled = check_levelup(self.data)
+            lvl_msg = "\n🎉 **LEVEL UP!** Stats increased, HP Restored." if leveled else ""
+            
             save_tower_data(self.user_id, self.data)
             self.render_main_menu()
             
-            msg = f"⚔️ **CRITICAL STRIKE!**\nYou obliterated the **{enemy['name']}**.\nTook **0 Damage**."
+            msg = f"💀 **Victory!**\nYou defeated **{enemy['name']}**!\nEarned {xp_gain} XP.{lvl_msg}"
             await interaction.response.edit_message(embed=self.update_embed(msg, THEME_WIN), view=self)
             return
 
-        # 2. NORMAL COMBAT
-        damage = max(5, enemy_power - player_def)
-        self.data["hp"] -= damage
+        # 3. Enemy Hits Back
+        enemy_dmg = max(1, enemy["power"] - self.data["def"])
+        self.data["hp"] -= enemy_dmg
         
-        # DEATH
+        # 4. Check Player Death
         if self.data["hp"] <= 0:
             self.data["hp"] = 0
             save_tower_data(self.user_id, self.data)
-            embed = self.update_embed(f"💀 **You Died!**\nThe **{enemy['name']}** dealt **{damage}** damage.\n\nUse `/revive` (5000 Scoins) or `/respawn`.", THEME_LOSS)
+            embed = self.update_embed(f"💀 **You Died!**\n**{enemy['name']}** dealt **{enemy_dmg}** damage.\n\nUse `/revive` (5000 Scoins) or `/respawn`.", THEME_LOSS)
             self.clear_items()
             await interaction.response.edit_message(embed=embed, view=self)
             return
 
-        # SURVIVED
-        self.mode = "EXPLORE"
-        self.data["floor"] += 1
-        if self.data["floor"] > self.data["max_floor"]: self.data["max_floor"] = self.data["floor"]
+        # 5. Continue Combat
         save_tower_data(self.user_id, self.data)
         self.render_main_menu()
         
-        msg = f"⚔️ **Victory!**\nYou defeated the **{enemy['name']}**.\nIt hit you for **{damage}** damage (Blocked {player_def})."
+        msg = f"{action_desc} Dealt **{player_dmg}** dmg.\n**{enemy['name']}** hit back for **{enemy_dmg}**."
         await interaction.response.edit_message(embed=self.update_embed(msg, enemy["color"]), view=self)
 
     async def select_loot(self, interaction, item):
@@ -726,16 +827,8 @@ class TowerGameView(View):
             heal = 30
             self.data["hp"] = min(self.data["hp"] + heal, self.data["max_hp"])
             save_tower_data(self.user_id, self.data)
-            
-            # Refresh View (Keep Combat state if in combat)
-            if self.mode == "COMBAT":
-                enemy = self.enemy_stats
-                embed = self.update_embed(f"🧪 **Glug glug...** Healed {heal} HP.\nThe **{enemy['name']}** is still waiting!", enemy["color"])
-            else:
-                embed = self.update_embed(f"🧪 **Glug glug...** Healed {heal} HP.", THEME_WIN)
-            
             self.render_main_menu()
-            await interaction.response.edit_message(embed=embed, view=self)
+            await interaction.response.edit_message(embed=self.update_embed(f"🧪 **Glug glug...** Healed {heal} HP.", THEME_WIN), view=self)
         else:
             await interaction.response.defer()
 
@@ -990,7 +1083,7 @@ class DiceGameView(View):
         await self.process_roll(interaction, "high")
 
     async def process_roll(self, interaction: Interaction, choice):
-        if interaction.user.id != self.user.id:
+        if interaction.user.id != self.user_id:
             return await interaction.response.send_message("🚫 Not your game.", ephemeral=True)
         if self.game_over: return
         
@@ -1588,6 +1681,11 @@ async def tower(ctx):
     
     # Init user data if missing
     data = get_tower_data(ctx.author.id)
+    
+    # New Player? Class Select
+    if not data["class"]:
+        return await safe_reply(ctx, "🛡️ **Choose your Class:**", view=ClassSelectView(ctx.author.id), ephemeral=True)
+
     view = TowerGameView(ctx.author)
     embed = view.update_embed("Welcome to the **Shadow Tower**.\nHow high can you climb?", THEME_PRIMARY)
     await safe_reply(ctx, embed=embed, view=view, ephemeral=True)
@@ -1601,7 +1699,9 @@ async def tower_top(ctx):
     for i, (uid, data) in enumerate(sorted_users[:10]):
         try: user = await bot.fetch_user(int(uid)); name = user.display_name
         except: name = "Unknown Warrior"
-        msg += f"{i+1}. **{name}** — Floor {data.get('max_floor', 1)}\n"
+        cls = data.get("class", "Novice")
+        lvl = data.get("level", 1)
+        msg += f"{i+1}. **{name}** ({cls} Lvl {lvl}) — Floor {data.get('max_floor', 1)}\n"
     
     await safe_reply(ctx, msg)
 
@@ -1622,10 +1722,10 @@ async def revive(ctx):
         return await safe_reply(ctx, f"❌ You need {cost} Scoins to cheat death.", ephemeral=True)
         
     update_balance(user_id, -cost)
-    data["hp"] = 50 # Revive with half HP
+    data["hp"] = int(data["max_hp"] / 2) # Revive with half HP
     save_tower_data(user_id, data)
     
-    await safe_reply(ctx, "💎 **HEROES NEVER DIE!**\nYou have been revived with 50 HP. Use `/tower` to continue.", ephemeral=True)
+    await safe_reply(ctx, "💎 **HEROES NEVER DIE!**\nYou have been revived. Use `/tower` to continue.", ephemeral=True)
 
 @bot.slash_command(name="respawn", description="Give up and return to Checkpoint")
 async def respawn(ctx):
