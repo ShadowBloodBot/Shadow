@@ -1,12 +1,14 @@
-# bot.py — ShadowSyn (Final: Role Lock + Clean Shop)
+# bot.py — ShadowSyn (Final: Leaderboards + Stats + Casino)
 #
 # === FEATURES ===
 # 1. VoiceMaster: Join-to-Create VCs + Control Panel
 # 2. Music: Crash-Proof Playback + Zombie Connection Fix
-# 3. Clip System: Force Recording (Records "Unknown" users too)
+# 3. Clip System: Force Recording
 # 4. Haste Facts: /haste (Public) + /morehaste (Admin)
 # 5. Scoins Casino: LOCKED to Role ID 955600320287887400
-# 6. Shop: Only "Ban Haste" exists.
+# 6. Shop: Only "Ban Haste" exists (Cost: 10,000)
+# 7. Slots: "Spin Again" button included.
+# 8. Stats: Individual Profiles (/stats) + Interactive Leaderboard (/leaderboard)
 #
 # LIBRARY REQUIREMENT: py-cord[voice] (NOT discord.py)
 
@@ -113,20 +115,28 @@ INVITE_ROLE_STORE = (PERSIST_ROOT / "invite_roles.json")
 ACTIVE_VCS_STORE = (PERSIST_ROOT / "active_vcs.json")
 HASTE_FACTS_STORE = (PERSIST_ROOT / "haste_facts.json")
 SCOINS_STORE = (PERSIST_ROOT / "scoins.json")
+STATS_STORE = (PERSIST_ROOT / "user_stats.json")
 
 active_haste_facts = []
 scoins_db = {} 
+user_stats = {} # {uid: {'voice': 0, 'msgs': 0, 'gifs': 0, 'reacts': 0, 'last_join': float}}
 
 def _load_persistence():
-    global active_haste_facts, scoins_db
+    global active_haste_facts, scoins_db, user_stats
     if HASTE_FACTS_STORE.exists():
         try: active_haste_facts = json.loads(HASTE_FACTS_STORE.read_text())
         except: active_haste_facts = list(DEFAULT_HASTE_FACTS)
     else: active_haste_facts = list(DEFAULT_HASTE_FACTS)
+    
     if SCOINS_STORE.exists():
         try: scoins_db = json.loads(SCOINS_STORE.read_text())
         except: scoins_db = {}
     else: scoins_db = {}
+
+    if STATS_STORE.exists():
+        try: user_stats = json.loads(STATS_STORE.read_text())
+        except: user_stats = {}
+    else: user_stats = {}
 
 def _save_haste_facts():
     try: HASTE_FACTS_STORE.write_text(json.dumps(active_haste_facts))
@@ -135,6 +145,21 @@ def _save_haste_facts():
 def _save_scoins():
     try: SCOINS_STORE.write_text(json.dumps(scoins_db))
     except: pass
+
+def _save_stats():
+    try: STATS_STORE.write_text(json.dumps(user_stats))
+    except: pass
+
+# --- STATS HELPERS ---
+def get_stat_profile(user_id: str):
+    if user_id not in user_stats:
+        user_stats[user_id] = {"voice": 0, "msgs": 0, "gifs": 0, "reacts": 0, "last_join": 0}
+    return user_stats[user_id]
+
+def update_stat(user_id: str, key: str, value: int = 1):
+    p = get_stat_profile(user_id)
+    if key in p: p[key] += value
+    _save_stats()
 
 def get_balance(user_id: str) -> int:
     return scoins_db.get(user_id, {}).get("balance", 0)
@@ -393,6 +418,52 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
 # ==================== CASINO & SHOP ====================
 
+# Helper function for slot calculation
+def generate_slot_result(user, bet):
+    user_id = str(user.id)
+    update_balance(user_id, -bet)
+    
+    emojis = ["🍒", "🍋", "🍇", "💎", "7️⃣"]
+    a, b, c = random.choice(emojis), random.choice(emojis), random.choice(emojis)
+    
+    payout = 0
+    if a == b == c: payout = bet * 10
+    elif a == b or b == c or a == c: payout = int(bet * 1.5)
+    
+    if payout > 0:
+        update_balance(user_id, payout)
+        col = THEME_GOLD if payout > bet * 2 else THEME_WIN
+        msg = f"🎰 **{a} | {b} | {c}**\n✅ **WIN!** +{payout}"
+    else:
+        col = THEME_LOSS
+        msg = f"🎰 **{a} | {b} | {c}**\n❌ **Lost** {bet}"
+        
+    embed = discord.Embed(description=msg, color=col)
+    if user.display_avatar:
+        embed.set_author(name=f"{user.display_name}'s Spin", icon_url=user.display_avatar.url)
+    else:
+        embed.set_author(name=f"{user.display_name}'s Spin")
+    embed.set_footer(text=f"Bet: {bet} Scoins")
+    return embed
+
+class RepeatSpinView(View):
+    def __init__(self, user_id, bet):
+        super().__init__(timeout=120)
+        self.user_id = user_id
+        self.bet = bet
+
+    @discord.ui.button(label="Spin Again", style=ButtonStyle.primary, emoji="🔄")
+    async def spin_btn(self, button, interaction: Interaction):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("🚫 Not your game.", ephemeral=True)
+        
+        bal = get_balance(str(self.user_id))
+        if bal < self.bet:
+            return await interaction.response.send_message(f"❌ Insufficient funds ({bal} < {self.bet}).", ephemeral=True)
+        
+        embed = generate_slot_result(interaction.user, self.bet)
+        await interaction.response.send_message(embed=embed, view=RepeatSpinView(self.user_id, self.bet))
+
 class BetAmountModal(Modal):
     def __init__(self, title, balance, callback_func):
         super().__init__(title=title)
@@ -446,10 +517,10 @@ class ShopSelect(Select):
         val = self.values[0]
         
         if val == "ban_haste":
-            cost = 1000
-            if bal < cost: return await interaction.response.send_message("❌ You need 1000 Scoins.", ephemeral=True)
+            cost = 10000
+            if bal < cost: return await interaction.response.send_message("❌ You need 10,000 Scoins.", ephemeral=True)
             update_balance(user_id, -cost)
-            await interaction.response.send_message("🔨 **Haste has been BANNED!** (Not really, but you paid 1000 Scoins for the flex).", ephemeral=False)
+            await interaction.response.send_message("🔨 **Haste has been BANNED!** (Not really, but you paid 10,000 Scoins for the flex).", ephemeral=False)
 
 class CasinoDashboard(View):
     def __init__(self):
@@ -474,26 +545,12 @@ class CasinoDashboard(View):
     async def slots(self, button, interaction: Interaction):
         if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
         bal = get_balance(str(interaction.user.id))
-        async def run_slots(inter, amount):
-            update_balance(str(inter.user.id), -amount)
-            emojis = ["🍒", "🍋", "🍇", "💎", "7️⃣"]
-            a, b, c = random.choice(emojis), random.choice(emojis), random.choice(emojis)
-            payout = 0
-            if a == b == c: payout = amount * 10
-            elif a == b or b == c or a == c: payout = int(amount * 1.5)
-            if payout > 0:
-                update_balance(str(inter.user.id), payout)
-                col = THEME_GOLD if payout > amount * 2 else THEME_WIN
-                msg = f"🎰 **{a} | {b} | {c}**\n✅ **WIN!** +{payout}"
-            else:
-                col = THEME_LOSS
-                msg = f"🎰 **{a} | {b} | {c}**\n❌ **Lost** {amount}"
-            embed = discord.Embed(description=msg, color=col)
-            if inter.user.display_avatar: embed.set_author(name=f"{inter.user.display_name}'s Spin", icon_url=inter.user.display_avatar.url)
-            else: embed.set_author(name=f"{inter.user.display_name}'s Spin")
-            embed.set_footer(text=f"Bet: {amount} Scoins")
-            await inter.response.send_message(embed=embed)
-        await interaction.response.send_modal(BetAmountModal("Slots Bet", bal, run_slots))
+        
+        async def modal_callback(inter, amount):
+            embed = generate_slot_result(inter.user, amount)
+            await inter.response.send_message(embed=embed, view=RepeatSpinView(inter.user.id, amount))
+
+        await interaction.response.send_modal(BetAmountModal("Slots Bet", bal, modal_callback))
     @discord.ui.button(label="Duel", style=ButtonStyle.danger, emoji="⚔️", row=0)
     async def duel(self, button, interaction: Interaction):
         if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
@@ -625,10 +682,21 @@ bot = ShadowSynBot()
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     _load_persistence()
+    
+    # Initialize voice stats for current users
     for guild in bot.guilds:
         await _prime_invites_cache(guild)
         try: await rehydrate_role_panel(bot, guild)
         except: pass
+        
+        for vc in guild.voice_channels:
+            for member in vc.members:
+                if not member.bot:
+                    user_id = str(member.id)
+                    p = get_stat_profile(user_id)
+                    p["last_join"] = time.time()
+                    user_stats[user_id] = p
+    _save_stats()
 
 @bot.event
 async def on_guild_join(guild):
@@ -672,10 +740,46 @@ async def _find_audit_action(guild, action, target_id):
     except: pass
     return None
 
+# --- STATS EVENTS ---
+
+@bot.event
+async def on_message(message):
+    if message.author.bot: return
+    update_stat(str(message.author.id), "msgs", 1)
+    
+    is_gif = False
+    if "tenor.com" in message.content or "giphy.com" in message.content: is_gif = True
+    if message.attachments:
+        if any(a.content_type == 'image/gif' for a in message.attachments): is_gif = True
+    
+    if is_gif: update_stat(str(message.author.id), "gifs", 1)
+
+@bot.event
+async def on_reaction_add(reaction, user):
+    if user.bot: return
+    update_stat(str(user.id), "reacts", 1)
+
 @bot.event
 async def on_voice_state_update(member, before, after):
+    # STATS TRACKING
+    if not member.bot:
+        user_id = str(member.id)
+        if before.channel is None and after.channel is not None:
+            p = get_stat_profile(user_id)
+            p["last_join"] = time.time()
+            user_stats[user_id] = p
+            _save_stats()
+        elif before.channel is not None and after.channel is None:
+            p = get_stat_profile(user_id)
+            if p.get("last_join", 0) > 0:
+                duration = time.time() - p["last_join"]
+                p["voice"] += duration
+                p["last_join"] = 0
+                user_stats[user_id] = p
+                _save_stats()
+
+    # EXISTING VOICEMASTER/AUDIT
     guild = member.guild
-    # JTC
     if after.channel and after.channel.id == JOIN_TO_CREATE_CHANNEL_ID:
         try:
             cat = get(guild.categories, id=VC_CATEGORY_ID) or after.channel.category
@@ -685,11 +789,11 @@ async def on_voice_state_update(member, before, after):
             await member.move_to(new_vc)
             asyncio.create_task(send_control_panel(new_vc, member))
         except: traceback.print_exc()
-    # Cleanup
+    
     if before.channel and before.channel.id in active_temp_vcs and len(before.channel.members) == 0:
         try: await before.channel.delete(); active_temp_vcs.discard(before.channel.id); _save_active_vcs(active_temp_vcs)
         except: pass
-    # Audit
+    
     if member.bot: return
     target, _ = await resolve_target(bot, DEFAULT_AUDIT_THREAD_ID)
     if not target: return
@@ -701,6 +805,71 @@ async def on_voice_state_update(member, before, after):
             msg = f"ℹ️ {safe_display_name(member)} moved/joined/left VC."
         try: await target.send(msg)
         except: pass
+
+# ==================== LEADERBOARD SYSTEM ====================
+
+class LeaderboardSelect(Select):
+    def __init__(self):
+        options = [
+            SelectOption(label="Richest (Scoins)", value="balance", emoji="💰"),
+            SelectOption(label="Most Talkative (Voice)", value="voice", emoji="🎙️"),
+            SelectOption(label="Chatterbox (Messages)", value="msgs", emoji="💬"),
+            SelectOption(label="Meme Lord (GIFs)", value="gifs", emoji="🖼️"),
+            SelectOption(label="React King (Reactions)", value="reacts", emoji="😃")
+        ]
+        super().__init__(placeholder="Select Leaderboard Category...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: Interaction):
+        cat = self.values[0]
+        
+        # Determine source
+        if cat == "balance":
+            data_source = scoins_db.items()
+            key_func = lambda x: x[1].get("balance", 0)
+        else:
+            data_source = user_stats.items()
+            key_func = lambda x: x[1].get(cat, 0)
+
+        # Sort
+        sorted_users = sorted(data_source, key=key_func, reverse=True)[:10]
+        
+        # Build String
+        lines = []
+        for i, (uid, data) in enumerate(sorted_users):
+            val = data.get(cat, 0)
+            
+            # Formatting
+            if cat == "voice":
+                td = timedelta(seconds=int(val))
+                val_str = f"{td.days}d {td.seconds//3600}h {(td.seconds//60)%60}m"
+            else:
+                val_str = f"{val}"
+
+            try: 
+                member = interaction.guild.get_member(int(uid)) or await interaction.guild.fetch_member(int(uid))
+                name = member.display_name
+            except: 
+                name = "Unknown User"
+            
+            lines.append(f"`{i+1}.` **{name}** — {val_str}")
+
+        if not lines: lines = ["No data recorded yet."]
+        
+        embed = discord.Embed(title=f"🏆 Top 10: {cat.title()}", description="\n".join(lines), color=THEME_GOLD)
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+class LeaderboardView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(LeaderboardSelect())
+
+class ProfileStatsView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    
+    @discord.ui.button(label="🏆 Leaderboards", style=ButtonStyle.secondary)
+    async def lb_btn(self, button, interaction):
+        await interaction.response.send_message("Select a category:", view=LeaderboardView(), ephemeral=True)
 
 # ==================== COMMANDS ====================
 
@@ -730,6 +899,37 @@ async def wallet(ctx, user: Option(discord.User, required=False)):
 async def give_scoins(ctx, user: discord.Member, amount: int):
     update_balance(str(user.id), amount)
     await safe_reply(ctx, f"✅ Done. New balance: {get_balance(str(user.id))}", ephemeral=True)
+
+@bot.slash_command(name="stats", description="View user statistics")
+async def stats(ctx, user: Option(discord.User, required=False)):
+    target = user or ctx.author
+    uid = str(target.id)
+    
+    p = get_stat_profile(uid).copy()
+    total_voice = p.get("voice", 0)
+    if p.get("last_join", 0) > 0:
+        total_voice += (time.time() - p["last_join"])
+
+    td = timedelta(seconds=int(total_voice))
+    time_str = f"{td.days}d {td.seconds//3600}h {(td.seconds//60)%60}m"
+    scoins = get_balance(uid)
+
+    embed = discord.Embed(title=f"📊 Stats: {target.display_name}", color=THEME_PRIMARY)
+    if target.display_avatar: embed.set_thumbnail(url=target.display_avatar.url)
+    
+    embed.add_field(name="🎙️ Voice Time", value=f"`{time_str}`", inline=True)
+    embed.add_field(name="💰 Scoins", value=f"`{scoins}`", inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(name="💬 Messages", value=f"`{p.get('msgs', 0)}`", inline=True)
+    embed.add_field(name="🖼️ GIFs", value=f"`{p.get('gifs', 0)}`", inline=True)
+    embed.add_field(name="😃 Reacts", value=f"`{p.get('reacts', 0)}`", inline=True)
+
+    await safe_reply(ctx, embed=embed, view=ProfileStatsView())
+
+@bot.slash_command(name="leaderboard", description="View Top 10 Lists")
+async def leaderboard(ctx):
+    embed = discord.Embed(title="🏆 Server Leaderboards", description="Select a category below to see the Top 10.", color=THEME_GOLD)
+    await safe_reply(ctx, embed=embed, view=LeaderboardView())
 
 # --- ROLE PICKER ---
 class DualRolePickerView(View):
