@@ -433,7 +433,7 @@ class DuelAcceptView(View):
 class ShopSelect(Select):
     def __init__(self):
         options = [
-            SelectOption(label="Ban Haste", description="1000 Scoins: Publicly banish Haste", value="ban_haste", emoji="🔨")
+            SelectOption(label="Ban Haste", description="10,000 Scoins: Publicly banish Haste", value="ban_haste", emoji="🔨")
         ]
         super().__init__(placeholder="Select item to buy...", min_values=1, max_values=1, options=options)
 
