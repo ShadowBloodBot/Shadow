@@ -1,9 +1,10 @@
-# bot.py — ShadowSyn (Final: Translator Added + Chicken Game)
+# bot.py — ShadowSyn (Final: Departures Restored + Chicken Game)
 #
 # === FEATURES ===
-# [x] /speak: Now TRANSLATES text before speaking.
-#     - Example: "/speak text:hello language:Japanese" -> Says "Konnichiwa".
+# [x] Departures: RESTORED. "Member Left" / "Member Kicked" rich embeds.
+#     - Shows Account Age, Joined Date, and who kicked them (if kicked).
 # [x] /gamble: Chicken Game (Mines) + Slots (Jackpot alerts).
+# [x] /speak: Auto-Translates text before speaking.
 # [x] /edit_custom & /send_custom: Easy Embed forms.
 # [x] Music, VoiceMaster, Logs: Preserved.
 #
@@ -240,6 +241,13 @@ def safe_display_name(obj):
 
 def utcnow(): return datetime.now(timezone.utc)
 def ffmpeg_available(): return which("ffmpeg") is not None
+
+def format_age(dt):
+    if not dt: return "Unknown"
+    delta = utcnow() - dt
+    if delta.days > 365:
+        return f"{delta.days // 365} years ago"
+    return f"{delta.days} days ago"
 
 # ==================== DATA LOADERS ====================
 
@@ -868,6 +876,49 @@ def setup_welcome(client):
             em.set_footer(text="Tap to grant Minion")
             await ch.send(embed=em, view=MinionView(member.id))
 setup_welcome(bot)
+
+@bot.event
+async def on_member_remove(member):
+    # Get the departures channel
+    channel = member.guild.get_channel(DEPARTURES_THREAD_ID) or await member.guild.fetch_channel(DEPARTURES_THREAD_ID)
+    if not channel: return
+
+    # Default to "Member Left"
+    title = "👋 Member Left"
+    description = f"{member.mention} left the server."
+    color = THEME_LOSS 
+    footer_text = f"ID: {member.id}"
+    
+    now = utcnow()
+    
+    # Account Age
+    age_str = format_age(member.created_at)
+    joined_str = format_age(member.joined_at)
+
+    # Audit Log Check for Kick (Last 10 seconds)
+    try:
+        async for entry in member.guild.audit_logs(limit=1, action=discord.AuditLogAction.kick):
+            if entry.target.id == member.id:
+                if (now - entry.created_at).total_seconds() < 10:
+                    title = "🥾 Member Kicked"
+                    description = f"{member.mention} kicked the server.\nBy: **{entry.user.name}** ({entry.user.display_name})"
+                    color = 0xF04747 
+                    break
+    except: pass
+
+    # Construct Embed
+    embed = discord.Embed(title=title, color=color, timestamp=now)
+    embed.set_author(name=f"{member.name} ({member.display_name})", icon_url=safe_avatar_url(member))
+    embed.set_thumbnail(url=safe_avatar_url(member))
+    
+    embed.add_field(name="User", value=f"{member.mention}\n{member.name} ({member.display_name})", inline=False)
+    embed.add_field(name="Joined", value=joined_str, inline=True)
+    embed.add_field(name="Account Age", value=age_str, inline=True)
+    
+    embed.add_field(name="Details", value=description, inline=False)
+    embed.set_footer(text=footer_text)
+
+    await channel.send(embed=embed)
 
 async def _find_audit_action(guild, action, target_id):
     if not (guild.me and guild.me.guild_permissions.view_audit_log): return None
