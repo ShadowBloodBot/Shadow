@@ -1,16 +1,17 @@
-# bot.py — ShadowSyn (Final: No Pings in Audit)
+# bot.py — ShadowSyn (Audio Mixing + Clip Targeting Enabled)
+#
+# === CRITICAL FIXES ===
+# [x] /clip: NOW MIXES AUDIO. Captures all speakers, combines them into ONE file.
+# [x] /clip: TARGETS 'CLIPS_TARGET_ID'. Sends result to the specific thread, not command channel.
 #
 # === FEATURE MANIFEST ===
-# [x] Arrivals: "Welcome" card + Minion Button sent to ARRIVALS_THREAD_ID
-# [x] Alerts: Detailed Voice Logs (Mute/Stream/Cam/Move) sent to DEFAULT_AUDIT_THREAD_ID
-#     *** FIX: Uses Display Names instead of Mentions (No Pings) ***
-# [x] VoiceMaster: JTC + Control Panel (Lock, Unlock, Kick, Rename, Bitrate)
-# [x] Self Roles: Persistent Dropdown Menus
-# [x] Custom Embeds: /send_custom restored
-# [x] Music: /play, /skip, /stop, /queue, /leave
-# [x] Clips: /clip (30s buffer)
-# [x] Casino: Slots (House Edge), Duel, Wallet (Locked to Role)
-# [x] Shop: "Ban Haste" item only.
+# [x] Music: /play (Dropdown Menu), /queue, /skip, /stop
+# [x] VoiceMaster: JTC + Control Panel (Lock/Unlock/Kick/Rename/Bitrate)
+# [x] Alerts: No Pings, Detailed Voice Logs (Mute/Deaf/Stream/Cam) -> DEFAULT_AUDIT_THREAD_ID
+# [x] Arrivals: Welcome Card + Minion Button -> ARRIVALS_THREAD_ID
+# [x] Speak: TTS with Thai/Vietnamese -> SPEAK_LOG_THREAD_ID
+# [x] Casino: Slots (18% House Edge), Duel, Wallet (Locked to Role)
+# [x] Shop: Ban Haste only.
 #
 # LIBRARY: py-cord[voice]
 
@@ -25,6 +26,7 @@ import wave
 import io
 import subprocess
 import random
+import collections
 from pathlib import Path
 from typing import Optional, Tuple, Union, Dict, List, Set
 from datetime import datetime, timezone, timedelta
@@ -65,7 +67,7 @@ SPEAK_LOG_THREAD_ID     = 1400048671973703690
 DEPARTURES_THREAD_ID    = 960088192177029140
 DEFAULT_TARGET_ID       = 1166874144395247757
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
-CLIPS_TARGET_ID         = 1467055136609271818
+CLIPS_TARGET_ID         = 1467055136609271818  # <--- CLIPS GO HERE
 
 # --- PERMISSIONS ---
 ROLE_ADMIN_ID           = 1214794734770323466 
@@ -84,6 +86,30 @@ ADMIN_ROLE_NAME           = "SHADOW"
 SCOIN_PULL_AMOUNT = 5
 SCOIN_COOLDOWN_HOURS = 3
 
+# --- TTS CONFIG ---
+translator = Translator()
+LANG_CHOICES = ["English", "Japanese", "German", "Spanish", "French", "Italian", "Portuguese", "Russian", "Korean", "Chinese", "Hindi", "Indonesian", "Thai", "Vietnamese", "Tagalog"]
+LANG_CODES = {
+    "English": "en", "Japanese": "ja", "German": "de", "Spanish": "es", "French": "fr", 
+    "Italian": "it", "Portuguese": "pt", "Russian": "ru", "Korean": "ko", "Chinese": "zh-CN", 
+    "Hindi": "hi", "Indonesian": "id", "Thai": "th", "Vietnamese": "vi", "Tagalog": "tl"
+}
+
+# --- DATA ---
+DEFAULT_HASTE_FACTS = [
+    "Haste is a man lover", "Haste feeds knights to spearmen", "Haste is the potato peeler",
+    "Haste hates women", "Haste loves fat chicks", "Haste would die for brightwood, bro",
+    "Haste is a fitzroy enjoyer", "Haste used to get feudal in 3mins... used to",
+    "Haste goes Pro scout", "Haste is in a good mood. Jks.", "Haste loves dating paki protestors",
+    "Haste is a lefty greeny", "Haste has no dps", "Haste has beef with a dev of a game with sub 1000 players",
+    "Haste cant afford ranger gear so he blames the dev", "Haste thinks Maya is fat",
+    "Haste was MIA in Shadow Until Jed showed up", "Everyone prefers Haste over Boet",
+    "Everyone likes it when Haste has a break down", "Everyone is scared Haste might get bashed at his restaurant",
+    "Haste earns 70k a year and that gives Blood anxiety", "Haste Likes using a bow",
+    "Haste doesn't have the muscle mass to carry a real life weapon.",
+    "Haste never let go of New world.", "Haste only played Vrising cause he thought the outfits were cute."
+]
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN: raise SystemExit("❌ DISCORD_TOKEN is not set.")
 
@@ -96,16 +122,27 @@ except: PERSIST_ROOT = Path(".").resolve()
 ROLE_STORE = (PERSIST_ROOT / "role_picker.json")
 INVITE_ROLE_STORE = (PERSIST_ROOT / "invite_roles.json")
 ACTIVE_VCS_STORE = (PERSIST_ROOT / "active_vcs.json")
+HASTE_FACTS_STORE = (PERSIST_ROOT / "haste_facts.json")
 SCOINS_STORE = (PERSIST_ROOT / "scoins.json")
 
+active_haste_facts = []
 scoins_db = {} 
 
 def _load_persistence():
-    global scoins_db
+    global active_haste_facts, scoins_db
+    if HASTE_FACTS_STORE.exists():
+        try: active_haste_facts = json.loads(HASTE_FACTS_STORE.read_text())
+        except: active_haste_facts = list(DEFAULT_HASTE_FACTS)
+    else: active_haste_facts = list(DEFAULT_HASTE_FACTS)
+
     if SCOINS_STORE.exists():
         try: scoins_db = json.loads(SCOINS_STORE.read_text())
         except: scoins_db = {}
     else: scoins_db = {}
+
+def _save_haste_facts():
+    try: HASTE_FACTS_STORE.write_text(json.dumps(active_haste_facts))
+    except: pass
 
 def _save_scoins():
     try: SCOINS_STORE.write_text(json.dumps(scoins_db))
@@ -192,6 +229,41 @@ async def resolve_target(client: discord.Client, target_id: int):
         return ch, parent
     return None, None
 
+# --- RING BUFFER SINK (CRITICAL FOR /CLIP) ---
+if HAS_SINKS:
+    class RingBufferSink(Sink):
+        def __init__(self, time_limit=30):
+            super().__init__()
+            self.time_limit = time_limit
+            # PCM: 48000Hz, 2ch, 2bytes = 192,000 bytes/sec.
+            self.max_bytes = 192000 * time_limit
+            self._buffers = {}
+
+        def write(self, user, data):
+            if user not in self._buffers:
+                self._buffers[user] = deque()
+            self._buffers[user].append(data)
+            current_size = len(self._buffers[user]) * 3840 
+            while current_size > self.max_bytes:
+                self._buffers[user].popleft()
+                current_size -= 3840
+
+        def format_audio(self, audio): return audio 
+
+        @property
+        def audio_data(self):
+            results = {}
+            for user, chunks in self._buffers.items():
+                b = io.BytesIO()
+                for chunk in chunks: b.write(chunk)
+                b.seek(0)
+                class AudioFile: 
+                    def __init__(self, fp): self.file = fp
+                results[user] = AudioFile(b)
+            return results
+
+def dummy_callback(sink, *args): pass
+
 async def ensure_voice_simple(ctx):
     user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
     if not user.voice:
@@ -207,8 +279,10 @@ async def ensure_voice_simple(ctx):
         if vc:
             if vc.channel.id != channel.id: await vc.move_to(channel)
         else: vc = await channel.connect(timeout=10, reconnect=True)
+        
         if HAS_SINKS and vc and vc.is_connected():
             if not vc.recording:
+                # Start Recording for Clips
                 try: vc.start_recording(RingBufferSink(time_limit=30), dummy_callback)
                 except Exception as e: print(f"⚠️ Auto-recording failed: {e}")
         return vc
@@ -364,6 +438,44 @@ class YTDLSource(discord.PCMVolumeTransformer):
         if 'entries' in data: data = data['entries'][0]
         filename = data['url'] if stream else ytdl_play.prepare_filename(data)
         return cls(discord.FFmpegPCMAudio(filename, **FFMPEG_OPTIONS), data=data)
+
+# === MUSIC DROPDOWN MENU ===
+class MusicSelect(Select):
+    def __init__(self, entries, ctx, vc):
+        self.ctx = ctx
+        self.vc = vc
+        self.entries = entries
+        options = []
+        for i, e in enumerate(entries[:5]):
+            options.append(SelectOption(label=f"{i+1}. {e['title'][:90]}", value=str(i)))
+        super().__init__(placeholder="Select a track...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("❌ Not your request.", ephemeral=True)
+        
+        await interaction.response.defer()
+        idx = int(self.values[0])
+        selected = self.entries[idx]
+        url = selected['url']
+        title = selected['title']
+        
+        # Add to queue or play
+        if self.vc.is_playing():
+            if self.ctx.guild.id not in bot.audio_queues: bot.audio_queues[self.ctx.guild.id] = deque()
+            bot.audio_queues[self.ctx.guild.id].append((url, title))
+            await self.ctx.send(f"📝 **Queued:** {title}")
+        else:
+            await self.ctx.send(f"▶️ **Playing:** {title}")
+            await play_track(self.vc, url, title, self.ctx.guild.id)
+        
+        # Disable view
+        await interaction.message.delete()
+
+class MusicSelectionView(View):
+    def __init__(self, entries, ctx, vc):
+        super().__init__(timeout=60)
+        self.add_item(MusicSelect(entries, ctx, vc))
 
 # ==================== CASINO & SHOP ====================
 
@@ -640,6 +752,7 @@ async def on_ready():
 async def on_guild_join(guild):
     await _prime_invites_cache(guild)
 
+# ##### WELCOME / ARRIVALS SYSTEM #####
 def setup_welcome(client):
     class MinionView(View):
         def __init__(self, target_member_id):
@@ -660,6 +773,7 @@ def setup_welcome(client):
             code = await _detect_used_invite_code(member)
             if code: await _apply_invite_role(member, code)
         except: pass
+        # --- SEND TO ARRIVALS CHANNEL ---
         ch = client.get_channel(ARRIVALS_THREAD_ID)
         if ch:
             src = await _detect_join_source(member)
@@ -770,6 +884,44 @@ async def on_voice_state_update(member, before, after):
         except: pass
 
 # ==================== COMMANDS ====================
+
+@bot.slash_command(name="speak", description="Text to Speech")
+@dj_or_admin()
+async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, default="English")):
+    vc = await ensure_voice_simple(ctx)
+    if not vc: return
+
+    # LOGGING
+    log_ch = bot.get_channel(SPEAK_LOG_THREAD_ID)
+    if log_ch:
+        try: await log_ch.send(f"🗣️ **{ctx.author.display_name}**: {text}")
+        except: pass
+
+    try:
+        await safe_reply(ctx, f"🗣️ **Saying:** {text}", ephemeral=True)
+        lang_code = LANG_CODES.get(language, 'en')
+        tts = gTTS(text=text, lang=lang_code)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
+            tts.save(fp.name)
+            temp_path = fp.name
+        
+        vc.play(discord.FFmpegPCMAudio(temp_path), after=lambda e: os.remove(temp_path))
+    except Exception as e:
+        await safe_reply(ctx, f"❌ Error: {e}", ephemeral=True)
+
+@bot.slash_command(name="haste", description="Random Haste Fact")
+async def haste(ctx):
+    if not active_haste_facts:
+        return await safe_reply(ctx, "No facts yet.")
+    fact = random.choice(active_haste_facts)
+    await safe_reply(ctx, f"🍌 **Fact:** {fact}")
+
+@bot.slash_command(name="morehaste", description="Add Haste Fact")
+@admin_only()
+async def morehaste(ctx, fact: str):
+    active_haste_facts.append(fact)
+    _save_haste_facts()
+    await safe_reply(ctx, "✅ Added.")
 
 @bot.slash_command(name="gamble", description="Open Casino")
 async def gamble(ctx):
@@ -883,16 +1035,17 @@ async def play(ctx, search: str):
     await safe_defer(ctx)
     vc = await ensure_voice_simple(ctx)
     if not vc: return
-    info = await bot.loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(YTDL_SEARCH_OPTIONS).extract_info(f"ytsearch:{search}", download=False))
-    if 'entries' in info: info = info['entries'][0]
-    url, title = info['webpage_url'], info['title']
-    if vc.is_playing():
-        if ctx.guild.id not in bot.audio_queues: bot.audio_queues[ctx.guild.id] = deque()
-        bot.audio_queues[ctx.guild.id].append((url, title))
-        await safe_reply(ctx, f"📝 Queued: {title}")
-    else:
-        await safe_reply(ctx, f"▶️ Playing: {title}")
-        await play_track(vc, url, title, ctx.guild.id)
+    
+    # 1. Search for 5 results
+    info = await bot.loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(YTDL_SEARCH_OPTIONS).extract_info(f"ytsearch5:{search}", download=False))
+    if 'entries' not in info or not info['entries']:
+        return await safe_reply(ctx, "❌ No results found.", ephemeral=True)
+    
+    entries = info['entries']
+    
+    # 2. Present Dropdown
+    view = MusicSelectionView(entries, ctx, vc)
+    await safe_reply(ctx, "🔎 **Select a track:**", view=view)
 
 @bot.slash_command(name="queue")
 async def queue(ctx):
@@ -917,15 +1070,53 @@ async def stop(ctx):
 async def clip(ctx):
     await safe_defer(ctx)
     vc = ctx.guild.voice_client
-    if not vc or not hasattr(vc, "sink"): return await safe_reply(ctx, "❌ No recording stream.", ephemeral=True)
+    
+    # Ensure buffer exists
+    if not vc or not hasattr(vc, "sink"): 
+        return await safe_reply(ctx, "❌ No recording stream. (Join/Rejoin VC to start)", ephemeral=True)
+    
     sink = vc.sink
-    if not sink.audio_data: return await safe_reply(ctx, "❌ Buffer empty.", ephemeral=True)
-    for user_id, audio in sink.audio_data.items():
-        with open(f"{user_id}.pcm", "wb") as f: f.write(audio.file.getbuffer())
-        subprocess.run(["ffmpeg", "-f", "s16le", "-ar", "48k", "-ac", "2", "-i", f"{user_id}.pcm", "clip.mp3", "-y"])
-        await ctx.channel.send(file=discord.File("clip.mp3"))
-        break
-    await safe_reply(ctx, "✅ Clip processed.")
+    if not sink.audio_data: 
+        return await safe_reply(ctx, "❌ Buffer empty (wait a few seconds).", ephemeral=True)
+    
+    # --- AUDIO MIXING LOGIC (Single File) ---
+    try:
+        user_files = []
+        inputs = []
+        filter_parts = []
+        
+        # 1. Dump all individual PCMs
+        for i, (user_id, audio) in enumerate(sink.audio_data.items()):
+            fname = f"temp_{user_id}.pcm"
+            with open(fname, "wb") as f: f.write(audio.file.getbuffer())
+            user_files.append(fname)
+            inputs.extend(["-f", "s16le", "-ar", "48k", "-ac", "2", "-i", fname])
+            filter_parts.append(f"[{i}:a]")
+
+        # 2. Construct Filter Complex
+        # [0:a][1:a]amix=inputs=2:duration=longest[out]
+        filter_complex = f"{''.join(filter_parts)}amix=inputs={len(user_files)}:duration=longest[out]"
+        
+        cmd = ["ffmpeg", "-y"] + inputs + ["-filter_complex", filter_complex, "-map", "[out]", "clip.mp3"]
+        
+        # 3. Run FFmpeg
+        subprocess.run(cmd, check=True)
+        
+        # 4. Target Channel Logic
+        target_channel = bot.get_channel(CLIPS_TARGET_ID) or await bot.fetch_channel(CLIPS_TARGET_ID)
+        if not target_channel: target_channel = ctx.channel # Fallback
+        
+        await target_channel.send(f"🎬 **Clip** by {ctx.author.mention}", file=discord.File("clip.mp3"))
+        await safe_reply(ctx, "✅ Clip sent!", ephemeral=True)
+
+        # 5. Cleanup
+        for f in user_files: 
+            try: os.remove(f)
+            except: pass
+        if os.path.exists("clip.mp3"): os.remove("clip.mp3")
+
+    except Exception as e:
+        await safe_reply(ctx, f"❌ Clip failed: {e}", ephemeral=True)
 
 @bot.slash_command(name="join")
 @dj_or_admin()
