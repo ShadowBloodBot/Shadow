@@ -1,14 +1,14 @@
-# bot.py — ShadowSyn (Casino Locked & Hidden, Clips Fixed)
+# bot.py — ShadowSyn (Platinum Master: Cleaned, Optimized, & Locked)
 #
-# === CRITICAL FIXES BASED ON LOGS ===
-# [x] /clip Crash: Added missing 'RingBufferSink' class definition.
-# [x] /play Crash: Fixed 'KeyError: webpage_url' by using .get() with fallbacks.
-# [x] Roles: Added 'await bot.wait_until_ready()' to ensure buttons reconnect.
-#
-# === REQUESTED UPDATES ===
-# [x] Casino Lock: /gamble ONLY works in channel 1468766727134249091.
-# [x] Privacy: Casino results and Redirect warnings are now Ephemeral (Hidden).
-# [x] Logs: No Pings (Bold names only).
+# === AUDIT COMPLETE ===
+# [x] Code Hygiene: Unused imports removed, error handling optimized (try/finally).
+# [x] Stability: 'on_ready' patched to guarantee Role Button persistence.
+# [x] Security: Casino strictly locked to Channel ID 1468766727134249091.
+# [x] Functionality:
+#     - /clip: Mixes multi-user audio, targets specific thread, auto-cleans RAM/Disk.
+#     - /play: Dropdown menu restored, YouTube crash patched.
+#     - /gamble: Ephemeral (Private) responses to reduce spam.
+#     - Logs: No pings (Bold names).
 #
 # LIBRARY: py-cord[voice]
 
@@ -19,14 +19,12 @@ import asyncio
 import tempfile
 import time
 import traceback
-import wave
 import io
 import subprocess
 import random
-import collections
 from pathlib import Path
-from typing import Optional, Tuple, Union, Dict, List, Set
-from datetime import datetime, timezone, timedelta
+from typing import Optional, List, Set
+from datetime import datetime, timezone
 from collections import deque
 
 import discord
@@ -65,7 +63,7 @@ DEPARTURES_THREAD_ID    = 960088192177029140
 DEFAULT_TARGET_ID       = 1166874144395247757
 DEFAULT_AUDIT_THREAD_ID = 961726632249425930
 CLIPS_TARGET_ID         = 1467055136609271818
-CASINO_CHANNEL_ID       = 1468766727134249091  # <--- CASINO LOCK ID
+CASINO_CHANNEL_ID       = 1468766727134249091
 
 # --- PERMISSIONS ---
 ROLE_ADMIN_ID           = 1214794734770323466 
@@ -228,7 +226,6 @@ async def resolve_target(client: discord.Client, target_id: int):
     return None, None
 
 # --- RING BUFFER SINK (CRITICAL FOR /CLIP) ---
-# This class was missing in previous versions, breaking /clip
 if HAS_SINKS:
     class RingBufferSink(Sink):
         def __init__(self, time_limit=30):
@@ -281,7 +278,6 @@ async def ensure_voice_simple(ctx):
         
         if HAS_SINKS and vc and vc.is_connected():
             if not vc.recording:
-                # Start Recording for Clips
                 try: vc.start_recording(RingBufferSink(time_limit=30), dummy_callback)
                 except Exception as e: print(f"⚠️ Auto-recording failed: {e}")
         return vc
@@ -527,7 +523,6 @@ class RepeatSpinView(View):
             return await interaction.response.send_message(f"❌ Insufficient funds ({bal} < {self.bet}).", ephemeral=True)
         
         embed = generate_slot_result(interaction.user, self.bet)
-        # EPHEMERAL RESULT (PRIVACY)
         await interaction.response.send_message(embed=embed, view=RepeatSpinView(self.user_id, self.bet), ephemeral=True)
 
 class BetAmountModal(Modal):
@@ -609,7 +604,6 @@ class CasinoDashboard(View):
         await interaction.response.send_message(f"💰 **Payday!** +{SCOIN_PULL_AMOUNT} Scoins.", ephemeral=True)
     @discord.ui.button(label="Slots", style=ButtonStyle.primary, emoji="🎰", row=0)
     async def slots(self, button, interaction: Interaction):
-        # 1. CHANNEL LOCK
         if interaction.channel.id != CASINO_CHANNEL_ID:
             return await interaction.response.send_message(f"❌ Go to <#{CASINO_CHANNEL_ID}> to gamble.", ephemeral=True)
 
@@ -618,7 +612,6 @@ class CasinoDashboard(View):
         
         async def modal_callback(inter, amount):
             embed = generate_slot_result(inter.user, amount)
-            # EPHEMERAL RESULT (PRIVACY)
             await inter.response.send_message(embed=embed, view=RepeatSpinView(inter.user.id, amount), ephemeral=True)
 
         await interaction.response.send_modal(BetAmountModal("Slots Bet", bal, modal_callback))
@@ -754,16 +747,16 @@ async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     _load_persistence()
     
-    # Wait for guilds to be ready before rehydrating views
+    # CRITICAL: Wait for connection before restoring views to prevent Interaction Failed
     await bot.wait_until_ready()
     
     for guild in bot.guilds:
         await _prime_invites_cache(guild)
         try: 
             await rehydrate_role_panel(bot, guild)
-            print(f"[inf] Restored Role View for guild: {guild.name}")
+            print(f"[inf] Restored Role View for {guild.name}")
         except Exception as e:
-            print(f"[err] Failed to restore role view for {guild.name}: {e}")
+            print(f"[err] Failed to restore role view: {e}")
 
 @bot.event
 async def on_guild_join(guild):
@@ -944,7 +937,6 @@ async def morehaste(ctx, fact: str):
 async def gamble(ctx):
     # 1. CHANNEL LOCK & PRIVACY
     if ctx.channel.id != CASINO_CHANNEL_ID:
-        # Ephemeral Redirect
         return await safe_reply(ctx, f"❌ Go to <#{CASINO_CHANNEL_ID}> to gamble.", ephemeral=True)
 
     if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
@@ -1061,7 +1053,7 @@ async def play(ctx, search: str):
     
     # 1. Search for 5 results
     info = await bot.loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(YTDL_SEARCH_OPTIONS).extract_info(f"ytsearch5:{search}", download=False))
-    if 'entries' not in info or not info['entries']:
+    if not info or 'entries' not in info or not info['entries']:
         return await safe_reply(ctx, "❌ No results found.", ephemeral=True)
     
     entries = info['entries']
@@ -1103,8 +1095,8 @@ async def clip(ctx):
         return await safe_reply(ctx, "❌ Buffer empty (wait a few seconds).", ephemeral=True)
     
     # --- AUDIO MIXING LOGIC (Single File) ---
+    user_files = []
     try:
-        user_files = []
         inputs = []
         filter_parts = []
         
@@ -1117,12 +1109,10 @@ async def clip(ctx):
             filter_parts.append(f"[{i}:a]")
 
         # 2. Construct Filter Complex
-        # [0:a][1:a]amix=inputs=2:duration=longest[out]
         if len(user_files) > 1:
             filter_complex = f"{''.join(filter_parts)}amix=inputs={len(user_files)}:duration=longest[out]"
             cmd = ["ffmpeg", "-y"] + inputs + ["-filter_complex", filter_complex, "-map", "[out]", "clip.mp3"]
         else:
-            # Single user, just convert
             cmd = ["ffmpeg", "-y"] + inputs + ["clip.mp3"]
         
         # 3. Run FFmpeg
@@ -1135,14 +1125,16 @@ async def clip(ctx):
         await target_channel.send(f"🎬 **Clip** by {ctx.author.mention}", file=discord.File("clip.mp3"))
         await safe_reply(ctx, "✅ Clip sent!", ephemeral=True)
 
+    except Exception as e:
+        await safe_reply(ctx, f"❌ Clip failed: {e}", ephemeral=True)
+    finally:
         # 5. Cleanup
         for f in user_files: 
             try: os.remove(f)
             except: pass
-        if os.path.exists("clip.mp3"): os.remove("clip.mp3")
-
-    except Exception as e:
-        await safe_reply(ctx, f"❌ Clip failed: {e}", ephemeral=True)
+        if os.path.exists("clip.mp3"): 
+            try: os.remove("clip.mp3")
+            except: pass
 
 @bot.slash_command(name="join")
 @dj_or_admin()
