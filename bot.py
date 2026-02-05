@@ -1,12 +1,12 @@
-# bot.py — ShadowSyn (Master: Tower UNLOCKED for Everyone)
+# bot.py — ShadowSyn (Master: Item Descriptions & Boss Prefixes)
 #
 # === FEATURES ===
 # [x] 🏰 SHADOW TOWER:
-#     - 🔓 UNLOCKED: Anyone in the Casino Channel can play (Role Lock removed).
-#     - 👹 Boss System: Every 10 floors = Boss Fight (3x Stats).
+#     - 📝 Item Descriptions: Loot buttons now show stats (e.g., "+1 ATK").
+#     - 👹 BOSS Prefix: Bosses on floor 10, 20 etc are named "BOSS [Name]".
+#     - 🔓 Access: Unlocked for everyone in the Casino Channel.
 #     - 🎨 Visuals: Green (Loot), Orange (Combat), 🔴 RED (Boss/Danger).
-#     - 📜 Expanded Content: 60+ Monsters, 40+ Items.
-#     - ⚖️ Economy: Rest (500g), Save (100sc), Revive (5000sc).
+#     - ⚖️ Economy: Rest (500g), Save (100sc).
 # [x] CASINO, SHOP, CORE: Preserved.
 #
 # LIBRARY: py-cord[voice]
@@ -58,8 +58,6 @@ CASINO_CHANNEL_ID       = 1468766727134249091
 ROLE_ADMIN_ID           = 1214794734770323466 
 ROLE_DJ_ID              = 955600320287887400
 OWNER_ID                = 482463400929263627
-# GAMBLER_ROLE_ID is kept for "is_gambler" check in other commands if needed, 
-# but Tower is now open to all in the channel.
 GAMBLER_ROLE_ID         = 955600320287887400  
 
 # --- VOICEMASTER ---
@@ -491,50 +489,66 @@ def generate_loot_options(floor):
         item_name = "Unknown Item"
         val = 1
         emoji = "❓"
+        label = ""
 
         if tier == "Common":
             if l_type == "ATK": 
                 item_name = random.choice(["Rusty Dagger", "Old Spear", "Chipped Axe", "Wooden Club"])
                 val = 1; emoji = "🗡️"
+                label = f"{item_name} (+{val} ATK)"
             elif l_type == "DEF": 
                 item_name = random.choice(["Wooden Shield", "Tattered Tunic", "Pot Lid", "Leather Belt"])
                 val = 1; emoji = "🛡️"
+                label = f"{item_name} (+{val} DEF)"
             elif l_type == "POTION": 
                 item_name = "Small Potion"; val = 1; emoji = "🧪"
+                label = f"{item_name} (+{val})"
             elif l_type == "GOLD": 
                 item_name = "Coin Pouch"; val = 10 * floor; emoji = "💰"
+                label = f"{item_name} (+{val})"
             else: 
                 item_name = "Pocket Lint"; val = 10; emoji = "💎"
+                label = f"{item_name} (+{val})"
             
         elif tier == "Rare":
             if l_type == "ATK": 
                 item_name = random.choice(["Steel Sword", "Battle Axe", "Elven Bow", "Dwarven Hammer"])
                 val = 3; emoji = "⚔️"
+                label = f"{item_name} (+{val} ATK)"
             elif l_type == "DEF": 
                 item_name = random.choice(["Iron Plate", "Chainmail", "Knight Helm", "Steel Gauntlets"])
                 val = 2; emoji = "⛓️"
+                label = f"{item_name} (+{val} DEF)"
             elif l_type == "POTION": 
                 item_name = "Super Potion"; val = 2; emoji = "⚗️"
+                label = f"{item_name} (+{val})"
             elif l_type == "GOLD": 
                 item_name = "Gold Bar"; val = 50 * floor; emoji = "🪙"
+                label = f"{item_name} (+{val})"
             else: 
                 item_name = "Gemstone"; val = 100; emoji = "💎"
+                label = f"{item_name} (+{val})"
             
         else: # Legendary
             if l_type == "ATK": 
                 item_name = random.choice(ITEMS_ATK)
                 val = 5; emoji = "🔥"
+                label = f"{item_name} (+{val} ATK)"
             elif l_type == "DEF": 
                 item_name = random.choice(ITEMS_DEF)
                 val = 4; emoji = "🐲"
+                label = f"{item_name} (+{val} DEF)"
             elif l_type == "POTION": 
                 item_name = "Elixir of Life"; val = 5; emoji = "🍷"
+                label = f"{item_name} (+{val})"
             elif l_type == "GOLD": 
                 item_name = "King's Ransom"; val = 200 * floor; emoji = "👑"
+                label = f"{item_name} (+{val})"
             else: 
                 item_name = "Shadow Scoins"; val = 500; emoji = "💎"
+                label = f"{item_name} (+{val})"
             
-        options.append({"name": item_name, "type": l_type, "val": val, "emoji": emoji})
+        options.append({"name": item_name, "label": label, "type": l_type, "val": val, "emoji": emoji})
     return options
 
 class TowerGameView(View):
@@ -583,7 +597,7 @@ class TowerGameView(View):
     def render_loot_menu(self):
         self.clear_items()
         for i, item in enumerate(self.loot_options):
-            btn = Button(label=f"{item['name']}", style=ButtonStyle.primary, emoji=item['emoji'], row=0)
+            btn = Button(label=item['label'], style=ButtonStyle.primary, emoji=item['emoji'], row=0)
             async def callback(interaction, it=item):
                 await self.select_loot(interaction, it)
             btn.callback = callback
@@ -606,7 +620,8 @@ class TowerGameView(View):
             
         else: # COMBAT
             if is_boss:
-                enemy_name = BOSSES.get(self.data["floor"], "Unknown Terror")
+                raw_name = BOSSES.get(self.data["floor"], "Unknown Terror")
+                enemy_name = f"BOSS {raw_name}"
                 enemy_power = (self.data["floor"] * 3) + 20 # Bosses hit HARD
                 color = THEME_BOSS # Red
                 title = f"👹 **BOSS FIGHT: {enemy_name}**"
@@ -659,7 +674,7 @@ class TowerGameView(View):
         self.loot_mode = False
         self.render_main_menu()
         
-        msg = f"✅ **Selected:** {item['name']}\nStats Updated."
+        msg = f"✅ **Selected:** {item['label']}\nStats Updated."
         await interaction.response.edit_message(embed=self.update_embed(msg, THEME_WIN), view=self)
 
     async def use_potion(self, interaction):
@@ -1435,7 +1450,7 @@ async def on_voice_state_update(member, before, after):
         status = "server-muted" if after.mute else "server-unmuted"
         entry = await _find_audit_action(guild, discord.AuditLogAction.member_update, member.id)
         actor = f"**{entry.user.display_name}**" if entry else "Unknown Admin"
-        msg = f"🙊 **{member.display_name}** was **{status}** by {actor}."
+        msg = f"🙉 **{member.display_name}** was **{status}** by {actor}."
     elif before.deaf != after.deaf:
         status = "server-deafened" if after.deaf else "server-undeafened"
         entry = await _find_audit_action(guild, discord.AuditLogAction.member_update, member.id)
