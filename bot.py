@@ -1,12 +1,11 @@
-# bot.py — ShadowSyn (Master: Tower Loot + Inventory Update)
+# bot.py — ShadowSyn (Master: Tower "Pick 3" Update)
 #
 # === FEATURES ===
-# [x] 🏰 SHADOW TOWER UPDATE:
-#     - 🎒 Inventory: Tracks Potions, Attack (ATK), and Defense (DEF).
-#     - ⚔️ Gear System: Find Swords/Armor to permanently buff the current run.
-#     - 🧪 Potions: Loot them, then use the button to heal.
-#     - 📉 Combat Math: Damage = (Enemy Roll - Your DEF). High DEF = 0 Damage.
-#     - 💎 Loot Drops: Scoins, Gems, and Gear found while climbing.
+# [x] 🏰 SHADOW TOWER:
+#     - 🆕 "Pick 3" Loot System: On treasure floors, choose between 3 generated rewards.
+#     - 🆕 "Rest" Button: Replaces Camp. Uses Green ➕ icon.
+#     - 🎒 Inventory & Gear: Permanent upgrades for the run.
+#     - ⚔️ Combat: Monsters scale with Floor level.
 # [x] SHOP & CASINO: All previous features preserved.
 # [x] CORE: All previous features preserved.
 #
@@ -443,26 +442,53 @@ def save_tower_data(user_id, data):
     tower_db[str(user_id)] = data
     _save_tower()
 
+# --- LOOT GENERATION ---
+def generate_loot_options(floor):
+    options = []
+    # Rarity Weights
+    # Low floor = mostly common. High floor = more rare.
+    roll = random.randint(1, 100)
+    tier = "Common"
+    if roll > 90: tier = "Legendary"
+    elif roll > 60: tier = "Rare"
+    
+    # Generate 3 Choices based on Tier
+    for _ in range(3):
+        l_type = random.choice(["ATK", "DEF", "POTION", "GOLD", "SCOINS"])
+        
+        if tier == "Common":
+            if l_type == "ATK": item = {"name": "Rusty Dagger", "type": "ATK", "val": 1, "emoji": "🗡️"}
+            elif l_type == "DEF": item = {"name": "Old Shield", "type": "DEF", "val": 1, "emoji": "🛡️"}
+            elif l_type == "POTION": item = {"name": "Small Potion", "type": "POTION", "val": 1, "emoji": "🧪"}
+            elif l_type == "GOLD": item = {"name": "Small Coin Pouch", "type": "GOLD", "val": 10 * floor, "emoji": "💰"}
+            else: item = {"name": "Pocket Change", "type": "SCOINS", "val": 10, "emoji": "💎"}
+            
+        elif tier == "Rare":
+            if l_type == "ATK": item = {"name": "Steel Sword", "type": "ATK", "val": 3, "emoji": "⚔️"}
+            elif l_type == "DEF": item = {"name": "Chainmail", "type": "DEF", "val": 2, "emoji": "⛓️"}
+            elif l_type == "POTION": item = {"name": "Super Potion", "type": "POTION", "val": 2, "emoji": "⚗️"}
+            elif l_type == "GOLD": item = {"name": "Gold Bar", "type": "GOLD", "val": 50 * floor, "emoji": "🪙"}
+            else: item = {"name": "Gemstone", "type": "SCOINS", "val": 100, "emoji": "💎"}
+            
+        else: # Legendary
+            if l_type == "ATK": item = {"name": "Shadow Blade", "type": "ATK", "val": 5, "emoji": "🔥"}
+            elif l_type == "DEF": item = {"name": "Dragon Armor", "type": "DEF", "val": 4, "emoji": "🐲"}
+            elif l_type == "POTION": item = {"name": "Elixir of Life", "type": "POTION", "val": 5, "emoji": "🍷"}
+            elif l_type == "GOLD": item = {"name": "King's Ransom", "type": "GOLD", "val": 200 * floor, "emoji": "👑"}
+            else: item = {"name": "Shadow Scoins", "type": "SCOINS", "val": 500, "emoji": "💎"}
+            
+        options.append(item)
+    return options
+
 class TowerGameView(View):
     def __init__(self, user):
         super().__init__(timeout=300)
         self.user = user
         self.user_id = str(user.id)
         self.data = get_tower_data(user.id)
-        # Add Potion Button dynamically
-        self.update_buttons()
-
-    def update_buttons(self):
-        # Refresh Potion Button
-        has_pot = False
-        for child in self.children:
-            if isinstance(child, Button) and child.custom_id == "use_potion":
-                self.remove_item(child)
-        
-        if self.data["potions"] > 0:
-            pot_btn = Button(label=f"Drink Potion ({self.data['potions']})", style=ButtonStyle.success, emoji="🧪", custom_id="use_potion", row=1)
-            pot_btn.callback = self.use_potion
-            self.add_item(pot_btn)
+        self.loot_mode = False
+        self.loot_options = []
+        self.render_main_menu()
 
     def update_embed(self, event_text, color=THEME_PRIMARY):
         hp_percent = self.data["hp"] / self.data["max_hp"]
@@ -476,50 +502,58 @@ class TowerGameView(View):
         embed.set_footer(text=f"High Score: Floor {self.data['max_floor']} | Checkpoint: {self.data['checkpoint']}")
         return embed
 
-    @discord.ui.button(label="Climb", style=ButtonStyle.primary, emoji="🧗", row=0)
-    async def climb(self, button, interaction):
+    def render_main_menu(self):
+        self.clear_items()
+        
+        # Row 0: Actions
+        climb = Button(label="Climb", style=ButtonStyle.primary, emoji="🧗", custom_id="climb", row=0)
+        climb.callback = self.climb_action
+        self.add_item(climb)
+        
+        rest = Button(label="Rest (500)", style=ButtonStyle.success, emoji="➕", custom_id="rest", row=0)
+        rest.callback = self.rest_action
+        self.add_item(rest)
+        
+        save = Button(label="Save (Checkpt)", style=ButtonStyle.secondary, emoji="💾", custom_id="save", row=0)
+        save.callback = self.save_action
+        self.add_item(save)
+        
+        # Row 1: Potions
+        if self.data["potions"] > 0:
+            pot = Button(label=f"Use Potion ({self.data['potions']})", style=ButtonStyle.secondary, emoji="🧪", custom_id="pot", row=1)
+            pot.callback = self.use_potion
+            self.add_item(pot)
+
+    def render_loot_menu(self):
+        self.clear_items()
+        for i, item in enumerate(self.loot_options):
+            # Dynamic buttons
+            btn = Button(label=f"{item['name']}", style=ButtonStyle.primary, emoji=item['emoji'], row=0)
+            
+            # We need to capture the item in the closure, loop variable issues in Python
+            # Use default arg trick
+            async def callback(interaction, it=item):
+                await self.select_loot(interaction, it)
+                
+            btn.callback = callback
+            self.add_item(btn)
+
+    async def climb_action(self, interaction):
         if interaction.user.id != self.user.id: return
         
-        # 60% Combat, 40% Loot/Safe
+        # 40% Combat, 60% Loot
         roll = random.randint(1, 100)
         
-        if roll > 60: # LOOT EVENT
-            loot_roll = random.randint(1, 100)
-            msg = ""
+        if roll > 40: # LOOT EVENT (Pick 3)
+            self.loot_mode = True
+            self.loot_options = generate_loot_options(self.data["floor"])
+            self.render_loot_menu()
+            await interaction.response.edit_message(embed=self.update_embed("💎 **Treasure Room!**\nChoose your reward:", THEME_GOLD), view=self)
             
-            if loot_roll > 90: # RARE GEAR
-                if random.choice([True, False]):
-                    self.data["atk"] += 2
-                    msg = "⚔️ **Rare Loot!** You found a **Rusty Dagger** (+2 ATK)."
-                else:
-                    self.data["def"] += 1
-                    msg = "🛡️ **Rare Loot!** You found a **Leather Tunic** (+1 DEF)."
-            elif loot_roll > 70: # POTION
-                self.data["potions"] += 1
-                msg = "🧪 **Found Potion!** Stashed in inventory."
-            elif loot_roll > 50: # SCOINS
-                found = random.randint(10, 50)
-                update_balance(self.user_id, found)
-                msg = f"💎 **Treasure!** You found **{found} Scoins**."
-            else: # GOLD (Score)
-                gold = random.randint(5, 30) * self.data["floor"]
-                self.data["gold"] += gold
-                msg = f"💰 **Safe.** Found **{gold} Gold**."
-
-            self.data["floor"] += 1
-            if self.data["floor"] > self.data["max_floor"]: self.data["max_floor"] = self.data["floor"]
-            save_tower_data(self.user_id, self.data)
-            
-            self.update_buttons()
-            await interaction.response.edit_message(embed=self.update_embed(f"✅ {msg}", THEME_WIN), view=self)
-
-        else: # COMBAT EVENT
+        else: # COMBAT
             enemy_atk = random.randint(10, 30) + (self.data["floor"] // 2)
-            # Damage Formula: Enemy Atk - Player Def
             damage = max(0, enemy_atk - self.data["def"])
-            
-            # Player kills enemy? (Abstracted: If you have high ATK, you take less dmg because you kill faster)
-            # Mitigation: Reduce damage by ATK/2 (Aggressive defense)
+            # ATK mitigation (killing faster takes less dmg)
             damage = max(0, int(damage - (self.data["atk"] / 2)))
             
             self.data["hp"] -= damage
@@ -527,15 +561,35 @@ class TowerGameView(View):
             if self.data["hp"] <= 0:
                 self.data["hp"] = 0
                 save_tower_data(self.user_id, self.data)
-                embed = self.update_embed(f"💀 **You Died!**\nA monster dealt **{damage}** damage (reduced by armor).\n\nUse `/revive` (5000 Scoins) or `/respawn`.", THEME_LOSS)
-                for child in self.children: child.disabled = True
+                embed = self.update_embed(f"💀 **You Died!**\nA monster dealt **{damage}** damage.\n\nUse `/revive` (5000 Scoins) or `/respawn`.", THEME_LOSS)
+                self.clear_items() # Dead
                 await interaction.response.edit_message(embed=embed, view=self)
             else:
                 self.data["floor"] += 1
                 if self.data["floor"] > self.data["max_floor"]: self.data["max_floor"] = self.data["floor"]
                 save_tower_data(self.user_id, self.data)
-                self.update_buttons()
+                self.render_main_menu()
                 await interaction.response.edit_message(embed=self.update_embed(f"⚔️ **Combat!**\nTook **{damage}** dmg (Blocked {self.data['def'] + int(self.data['atk']/2)}).", 0xE67E22), view=self)
+
+    async def select_loot(self, interaction, item):
+        if interaction.user.id != self.user.id: return
+        
+        # Apply Loot
+        if item["type"] == "ATK": self.data["atk"] += item["val"]
+        elif item["type"] == "DEF": self.data["def"] += item["val"]
+        elif item["type"] == "POTION": self.data["potions"] += item["val"]
+        elif item["type"] == "GOLD": self.data["gold"] += item["val"]
+        elif item["type"] == "SCOINS": update_balance(self.user_id, item["val"])
+        
+        self.data["floor"] += 1
+        if self.data["floor"] > self.data["max_floor"]: self.data["max_floor"] = self.data["floor"]
+        save_tower_data(self.user_id, self.data)
+        
+        self.loot_mode = False
+        self.render_main_menu()
+        
+        msg = f"✅ **Selected:** {item['name']}\nStats Updated."
+        await interaction.response.edit_message(embed=self.update_embed(msg, THEME_WIN), view=self)
 
     async def use_potion(self, interaction):
         if self.data["potions"] > 0:
@@ -543,23 +597,24 @@ class TowerGameView(View):
             heal = 30
             self.data["hp"] = min(self.data["hp"] + heal, self.data["max_hp"])
             save_tower_data(self.user_id, self.data)
-            self.update_buttons()
+            self.render_main_menu()
             await interaction.response.edit_message(embed=self.update_embed(f"🧪 **Glug glug...** Healed {heal} HP.", THEME_WIN), view=self)
         else:
             await interaction.response.defer()
 
-    @discord.ui.button(label="Camp (500 Scoins)", style=ButtonStyle.secondary, emoji="🔥", row=0)
-    async def camp(self, button, interaction):
+    async def rest_action(self, interaction):
         if interaction.user.id != self.user.id: return
         cost = 500
         if get_balance(self.user_id) < cost: return await interaction.response.send_message("❌ Need 500 Scoins.", ephemeral=True)
+        
+        if self.data["hp"] >= self.data["max_hp"]: return await interaction.response.send_message("Already full HP.", ephemeral=True)
+
         update_balance(self.user_id, -cost)
         self.data["hp"] = self.data["max_hp"]
         save_tower_data(self.user_id, self.data)
-        await interaction.response.edit_message(embed=self.update_embed(f"🔥 **Rested.** Full HP restored.", THEME_GOLD), view=self)
+        await interaction.response.edit_message(embed=self.update_embed(f"➕ **Rested.** Full HP restored.", THEME_GOLD), view=self)
 
-    @discord.ui.button(label="Save (Checkpt)", style=ButtonStyle.secondary, emoji="💾", row=0)
-    async def checkpoint(self, button, interaction):
+    async def save_action(self, interaction):
         if interaction.user.id != self.user.id: return
         cost = self.data["floor"] * 100
         if get_balance(self.user_id) < cost: return await interaction.response.send_message(f"❌ Need {cost} Scoins.", ephemeral=True)
