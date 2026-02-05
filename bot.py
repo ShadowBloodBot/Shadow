@@ -1,11 +1,14 @@
-# bot.py — ShadowSyn (Final: Departures Restored + Chicken Game)
+# bot.py — ShadowSyn (Master: High/Low Dice Added)
 #
 # === FEATURES ===
-# [x] Departures: RESTORED. "Member Left" / "Member Kicked" rich embeds.
-#     - Shows Account Age, Joined Date, and who kicked them (if kicked).
-# [x] /gamble: Chicken Game (Mines) + Slots (Jackpot alerts).
-# [x] /speak: Auto-Translates text before speaking.
-# [x] /edit_custom & /send_custom: Easy Embed forms.
+# [x] Casino: 
+#     - 🆕 DICE (High/Low): Roll 2 dice. Bet Low (x2), High (x2), or 7 (x5).
+#     - CHICKEN: Minesweeper style.
+#     - SLOTS: 18% House Edge + Public Jackpot Alert.
+#     - LOCKED: Only works in channel 1468766727134249091.
+# [x] Departures: Rich Embeds (Account Age, Kick Detection).
+# [x] Speak: Auto-Translates text before speaking.
+# [x] Embeds: /send_custom & /edit_custom.
 # [x] Music, VoiceMaster, Logs: Preserved.
 #
 # LIBRARY: py-cord[voice]
@@ -616,6 +619,94 @@ class ChickenSetupView(View):
         super().__init__(timeout=60)
         self.add_item(ChickenDifficultySelect(user, bet))
 
+# ==================== CASINO: DICE (HIGH/LOW) ====================
+
+class DiceGameView(View):
+    def __init__(self, user, bet):
+        super().__init__(timeout=60)
+        self.user = user
+        self.user_id = user.id
+        self.bet = bet
+        self.game_over = False
+
+    @discord.ui.button(label="Low (2-6) [x2]", style=ButtonStyle.primary, emoji="⬇️", row=0)
+    async def low_btn(self, button, interaction: Interaction):
+        await self.process_roll(interaction, "low")
+
+    @discord.ui.button(label="Seven (7) [x5]", style=ButtonStyle.secondary, emoji="7️⃣", row=0)
+    async def seven_btn(self, button, interaction: Interaction):
+        await self.process_roll(interaction, "seven")
+
+    @discord.ui.button(label="High (8-12) [x2]", style=ButtonStyle.primary, emoji="⬆️", row=0)
+    async def high_btn(self, button, interaction: Interaction):
+        await self.process_roll(interaction, "high")
+
+    async def process_roll(self, interaction: Interaction, choice):
+        if interaction.user.id != self.user_id:
+            return await interaction.response.send_message("🚫 Not your game.", ephemeral=True)
+        if self.game_over: return
+        
+        # Deduct bet immediately
+        bal = get_balance(str(self.user_id))
+        if bal < self.bet:
+            return await interaction.response.send_message("❌ Insufficient funds.", ephemeral=True)
+        
+        update_balance(str(self.user_id), -self.bet)
+        self.game_over = True # One shot game
+
+        # Roll Dice
+        d1 = random.randint(1, 6)
+        d2 = random.randint(1, 6)
+        total = d1 + d2
+        
+        # Visuals
+        dice_map = {1: "1️⃣", 2: "2️⃣", 3: "3️⃣", 4: "4️⃣", 5: "5️⃣", 6: "6️⃣"}
+        visual = f"{dice_map[d1]} + {dice_map[d2]} = **{total}**"
+
+        # Win Logic
+        won = False
+        payout = 0
+        
+        if choice == "low" and total < 7:
+            won = True
+            payout = int(self.bet * 2)
+        elif choice == "high" and total > 7:
+            won = True
+            payout = int(self.bet * 2)
+        elif choice == "seven" and total == 7:
+            won = True
+            payout = int(self.bet * 5)
+
+        # Result
+        if won:
+            update_balance(str(self.user_id), payout)
+            embed = discord.Embed(title="🎲 Dice Roll", description=f"{visual}\n✅ **WIN!** You won **{payout}** Scoins.", color=THEME_WIN)
+        else:
+            embed = discord.Embed(title="🎲 Dice Roll", description=f"{visual}\n❌ **LOSS.** You lost **{self.bet}** Scoins.", color=THEME_LOSS)
+        
+        # Disable buttons
+        for child in self.children: child.disabled = True
+        
+        # Add "Play Again" button
+        self.add_item(PlayAgainDiceButton(self.user, self.bet))
+        
+        await interaction.response.edit_message(embed=embed, view=self)
+
+class PlayAgainDiceButton(Button):
+    def __init__(self, user, bet):
+        super().__init__(label="Roll Again", style=ButtonStyle.success, emoji="🔄", row=1)
+        self.user = user
+        self.bet = bet
+    async def callback(self, interaction: Interaction):
+        if interaction.user.id != self.user.id: return
+        bal = get_balance(str(self.user.id))
+        if bal < self.bet: return await interaction.response.send_message("❌ Broke.", ephemeral=True)
+        await interaction.response.send_message(
+            f"🎲 **High/Low Dice**\nBet: **{self.bet}**", 
+            view=DiceGameView(self.user, self.bet), 
+            ephemeral=True
+        )
+
 # ==================== CASINO: DASHBOARD ====================
 
 class DuelAcceptView(View):
@@ -702,10 +793,20 @@ class CasinoDashboard(View):
         bal = get_balance(str(interaction.user.id))
 
         async def modal_callback(inter, amount):
-            # Step 2: Choose Difficulty
             await inter.response.send_message("🦴 **Select Difficulty (Bones)**", view=ChickenSetupView(inter.user, amount), ephemeral=True)
 
         await interaction.response.send_modal(BetAmountModal("Chicken Bet", bal, modal_callback))
+
+    @discord.ui.button(label="Dice", style=ButtonStyle.primary, emoji="🎲", row=0)
+    async def dice(self, button, interaction: Interaction):
+        if interaction.channel.id != CASINO_CHANNEL_ID: return await interaction.response.send_message(f"❌ Go to <#{CASINO_CHANNEL_ID}>.", ephemeral=True)
+        if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
+        bal = get_balance(str(interaction.user.id))
+
+        async def modal_callback(inter, amount):
+            await inter.response.send_message(f"🎲 **High/Low Dice**\nBet: **{amount}**", view=DiceGameView(inter.user, amount), ephemeral=True)
+
+        await interaction.response.send_modal(BetAmountModal("Dice Bet", bal, modal_callback))
 
     @discord.ui.button(label="Duel", style=ButtonStyle.danger, emoji="⚔️", row=1)
     async def duel(self, button, interaction: Interaction):
