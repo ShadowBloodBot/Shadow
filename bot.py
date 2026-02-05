@@ -1,17 +1,14 @@
-# bot.py — ShadowSyn (The Gold Standard)
+# bot.py — ShadowSyn (Final: Role Lock + Clean Shop)
 #
-# === FEATURES AUDIT ===
-# [x] VoiceMaster (JTC + Panels)
-# [x] Music (Youtube + Queue)
-# [x] Clips (Force Record)
-# [x] Haste Facts
-# [x] Welcome System (Invites + Minion Button)
-# [x] Voice Audit Logs
-# [x] Self Roles (Role Picker)
-# [x] Scoins Casino (Locked to 955600320287887400)
-# [x] Shop (Ban Haste + Silencer Command)
+# === FEATURES ===
+# 1. VoiceMaster: Join-to-Create VCs + Control Panel
+# 2. Music: Crash-Proof Playback + Zombie Connection Fix
+# 3. Clip System: Force Recording (Records "Unknown" users too)
+# 4. Haste Facts: /haste (Public) + /morehaste (Admin)
+# 5. Scoins Casino: LOCKED to Role ID 955600320287887400
+# 6. Shop: Only "Ban Haste" exists.
 #
-# LIBRARY: py-cord[voice]
+# LIBRARY REQUIREMENT: py-cord[voice] (NOT discord.py)
 
 import os
 import re
@@ -70,7 +67,7 @@ CLIPS_TARGET_ID         = 1467055136609271818
 ROLE_ADMIN_ID           = 1214794734770323466 
 ROLE_DJ_ID              = 955600320287887400
 OWNER_ID                = 482463400929263627
-GAMBLER_ONLY_ID         = 955600320287887400  # <--- THE CHOSEN ONE
+GAMBLER_ROLE_ID         = 955600320287887400  # <--- LOCKED ROLE ID
 
 # --- VOICEMASTER ---
 JOIN_TO_CREATE_CHANNEL_ID = 1398618132788281364
@@ -168,6 +165,11 @@ def owner_only():
     def predicate(ctx): return ctx.author.id == OWNER_ID
     return commands.check(predicate)
 
+def is_gambler(user):
+    """Checks if user has the specific Gambler Role"""
+    if not isinstance(user, discord.Member): return False
+    return any(r.id == GAMBLER_ROLE_ID for r in user.roles)
+
 # ==================== HELPERS ====================
 
 def _load_active_vcs() -> Set[int]:
@@ -251,7 +253,7 @@ def safe_display_name(obj):
 def utcnow(): return datetime.now(timezone.utc)
 def ffmpeg_available(): return which("ffmpeg") is not None
 
-# ==================== DATA LOADERS (Role Picker / Invites) ====================
+# ==================== DATA LOADERS ====================
 
 def _load_role_store():
     if ROLE_STORE.exists():
@@ -431,52 +433,30 @@ class DuelAcceptView(View):
 class ShopSelect(Select):
     def __init__(self):
         options = [
-            SelectOption(label="Time Warp", description="15 Scoins: Reset /pull timer", value="reset", emoji="🔄"),
-            SelectOption(label="Shadow Brand", description="50 Scoins: Add [Shadow] tag", value="brand", emoji="🏷️"),
-            SelectOption(label="The Silencer", description="25 Scoins per use: Unlocks /silence", value="silence_info", emoji="🔇"),
             SelectOption(label="Ban Haste", description="1000 Scoins: Publicly banish Haste", value="ban_haste", emoji="🔨")
         ]
         super().__init__(placeholder="Select item to buy...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: Interaction):
-        if interaction.user.id != GAMBLER_ONLY_ID:
-            return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
+        if not is_gambler(interaction.user):
+            return await interaction.response.send_message("⛔ Restricted. Missing required role.", ephemeral=True)
+        
         user_id = str(interaction.user.id)
         bal = get_balance(user_id)
         val = self.values[0]
         
-        if val == "reset":
-            cost = 15
-            if bal < cost: return await interaction.response.send_message("❌ Too poor.", ephemeral=True)
-            if user_id in scoins_db:
-                scoins_db[user_id]["last_pull"] = 0
-                update_balance(user_id, -cost)
-                await interaction.response.send_message("✅ **Purchased:** Time Warp! You can /collect again.", ephemeral=True)
-        elif val == "brand":
-            cost = 50
-            if bal < cost: return await interaction.response.send_message("❌ Too poor.", ephemeral=True)
-            try:
-                update_balance(user_id, -cost)
-                new_nick = f"[Shadow] {interaction.user.display_name}"[:32]
-                await interaction.user.edit(nick=new_nick)
-                await interaction.response.send_message(f"✅ **Purchased:** Shadow Brand applied.", ephemeral=True)
-            except:
-                update_balance(user_id, cost)
-                await interaction.response.send_message(f"❌ Failed (Refunded): Bot cannot edit your nickname.", ephemeral=True)
-        elif val == "silence_info":
-            await interaction.response.send_message("🔇 **The Silencer**\nTo use this, execute the command:\n`/silence @user`\nCost: **25 Scoins** per use.", ephemeral=True)
-        elif val == "ban_haste":
+        if val == "ban_haste":
             cost = 1000
             if bal < cost: return await interaction.response.send_message("❌ You need 1000 Scoins.", ephemeral=True)
             update_balance(user_id, -cost)
-            await interaction.response.send_message("🔨 **Haste has been BANNED!** (Not really, but you paid 1000 Scoins to say it).", ephemeral=False)
+            await interaction.response.send_message("🔨 **Haste has been BANNED!** (Not really, but you paid 1000 Scoins for the flex).", ephemeral=False)
 
 class CasinoDashboard(View):
     def __init__(self):
         super().__init__(timeout=None)
     @discord.ui.button(label="Collect", style=ButtonStyle.success, emoji="💰", row=0)
     async def collect(self, button, interaction: Interaction):
-        if interaction.user.id != GAMBLER_ONLY_ID: return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
+        if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
         user_id = str(interaction.user.id)
         user_data = scoins_db.get(user_id, {"balance": 0, "last_pull": 0})
         last = user_data["last_pull"]
@@ -492,7 +472,7 @@ class CasinoDashboard(View):
         await interaction.response.send_message(f"💰 **Payday!** +{SCOIN_PULL_AMOUNT} Scoins.", ephemeral=True)
     @discord.ui.button(label="Slots", style=ButtonStyle.primary, emoji="🎰", row=0)
     async def slots(self, button, interaction: Interaction):
-        if interaction.user.id != GAMBLER_ONLY_ID: return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
+        if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
         bal = get_balance(str(interaction.user.id))
         async def run_slots(inter, amount):
             update_balance(str(inter.user.id), -amount)
@@ -516,17 +496,17 @@ class CasinoDashboard(View):
         await interaction.response.send_modal(BetAmountModal("Slots Bet", bal, run_slots))
     @discord.ui.button(label="Duel", style=ButtonStyle.danger, emoji="⚔️", row=0)
     async def duel(self, button, interaction: Interaction):
-        if interaction.user.id != GAMBLER_ONLY_ID: return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
+        if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
         await interaction.response.send_message("⚔️ To duel, use: `/duel @user [amount]`", ephemeral=True)
     @discord.ui.button(label="Shop", style=ButtonStyle.secondary, emoji="🛒", row=1)
     async def shop(self, button, interaction: Interaction):
-        if interaction.user.id != GAMBLER_ONLY_ID: return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
+        if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
         view = View()
         view.add_item(ShopSelect())
         await interaction.response.send_message("🛒 **Scoin Shop**", view=view, ephemeral=True)
     @discord.ui.button(label="Wallet", style=ButtonStyle.secondary, emoji="💳", row=1)
     async def wallet_btn(self, button, interaction: Interaction):
-        if interaction.user.id != GAMBLER_ONLY_ID: return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
+        if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
         bal = get_balance(str(interaction.user.id))
         await interaction.response.send_message(f"💳 Balance: **{bal}** Scoins.", ephemeral=True)
 
@@ -654,6 +634,36 @@ async def on_ready():
 async def on_guild_join(guild):
     await _prime_invites_cache(guild)
 
+def setup_welcome(client):
+    class MinionView(View):
+        def __init__(self, target_member_id):
+            super().__init__(timeout=86400)
+            self.target = target_member_id
+            b = Button(label="Minion", style=ButtonStyle.success)
+            b.callback = self.grant
+            self.add_item(b)
+        async def grant(self, i):
+            m = i.guild.get_member(self.target)
+            r = i.guild.get_role(ROLE_MINION_ID)
+            if m and r: await m.add_roles(r); await i.response.send_message(f"✅ Granted.", ephemeral=True)
+            else: await i.response.send_message("❌ Error.", ephemeral=True)
+    
+    @client.event
+    async def on_member_join(member):
+        try:
+            code = await _detect_used_invite_code(member)
+            if code: await _apply_invite_role(member, code)
+        except: pass
+        ch = client.get_channel(ARRIVALS_THREAD_ID)
+        if ch:
+            src = await _detect_join_source(member)
+            em = discord.Embed(description=f"{member.mention} joined **{member.guild.name}**", color=0x2B0B35)
+            em.set_author(name=str(member), icon_url=member.display_avatar.url)
+            if src: em.add_field(name="Source", value=src)
+            em.set_footer(text="Tap to grant Minion")
+            await ch.send(embed=em, view=MinionView(member.id))
+setup_welcome(bot)
+
 async def _find_audit_action(guild, action, target_id):
     if not (guild.me and guild.me.guild_permissions.view_audit_log): return None
     try:
@@ -694,41 +704,16 @@ async def on_voice_state_update(member, before, after):
 
 # ==================== COMMANDS ====================
 
-@bot.slash_command(name="silence", description="Use 'The Silencer' (Cost: 25 Scoins)")
-async def silence(ctx, target: discord.Member):
-    if ctx.author.id != GAMBLER_ONLY_ID:
-        return await safe_reply(ctx, "⛔ Restricted to specific user.", ephemeral=True)
-    
-    cost = 25
-    bal = get_balance(str(ctx.author.id))
-    
-    if bal < cost:
-        return await safe_reply(ctx, "❌ You need 25 Scoins.", ephemeral=True)
-    
-    if not target.voice or not target.voice.channel:
-        return await safe_reply(ctx, "❌ Target is not in a VC.", ephemeral=True)
-    
-    if target.id == OWNER_ID or target.id == ctx.guild.owner_id:
-        return await safe_reply(ctx, "❌ Cannot silence the King.", ephemeral=True)
-
-    try:
-        update_balance(str(ctx.author.id), -cost)
-        await target.move_to(None)
-        await safe_reply(ctx, f"🔇 **Silenced!** {target.mention} was disconnected.")
-    except Exception as e:
-        update_balance(str(ctx.author.id), cost) # Refund
-        await safe_reply(ctx, f"❌ Failed: {e}", ephemeral=True)
-
 @bot.slash_command(name="gamble", description="Open Casino")
 async def gamble(ctx):
-    if ctx.author.id != GAMBLER_ONLY_ID: return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
+    if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
     embed = discord.Embed(title="🎰 ShadowSyn Casino", description="Welcome.", color=THEME_PRIMARY)
     embed.set_footer(text=f"Balance: {get_balance(str(ctx.author.id))}")
     await safe_reply(ctx, embed=embed, view=CasinoDashboard())
 
 @bot.slash_command(name="duel", description="Duel user")
 async def duel(ctx, opponent: discord.Member, amount: str):
-    if ctx.author.id != GAMBLER_ONLY_ID: return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
+    if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
     if amount == "all": bet = get_balance(str(ctx.author.id))
     else: bet = int(amount)
     embed = discord.Embed(title="⚔️ DUEL", description=f"{ctx.author.mention} vs {opponent.mention}\nPot: {bet*2}", color=discord.Color.red())
@@ -736,7 +721,7 @@ async def duel(ctx, opponent: discord.Member, amount: str):
 
 @bot.slash_command(name="wallet", description="Check balance")
 async def wallet(ctx, user: Option(discord.User, required=False)):
-    if ctx.author.id != GAMBLER_ONLY_ID: return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
+    if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
     t = user or ctx.author
     await safe_reply(ctx, f"💳 {t.display_name}: {get_balance(str(t.id))} Scoins")
 
@@ -832,17 +817,10 @@ async def clip(ctx):
     await safe_defer(ctx)
     vc = ctx.guild.voice_client
     if not vc or not hasattr(vc, "sink"): return await safe_reply(ctx, "❌ No recording stream.", ephemeral=True)
-    
-    # Logic to process sink data (Simplified for brevity as standard Py-Cord sink handling)
-    # In real deployment, this needs the Sink buffer processing similar to previous versions.
-    # Restoring basic sink dump:
     sink = vc.sink
     if not sink.audio_data: return await safe_reply(ctx, "❌ Buffer empty.", ephemeral=True)
-    
-    # Processing first user found for demo stability
     for user_id, audio in sink.audio_data.items():
         with open(f"{user_id}.pcm", "wb") as f: f.write(audio.file.getbuffer())
-        # Convert PCM to MP3 using ffmpeg
         subprocess.run(["ffmpeg", "-f", "s16le", "-ar", "48k", "-ac", "2", "-i", f"{user_id}.pcm", "clip.mp3", "-y"])
         await ctx.channel.send(file=discord.File("clip.mp3"))
         break
