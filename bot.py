@@ -1,12 +1,13 @@
-# bot.py — ShadowSyn (Master: Shadow Tower 3.2 - Economy Integration)
+# bot.py — ShadowSyn (Master: Shadow Tower 3.4 - Leaderboard Fix)
 #
 # === FEATURES ===
-# [x] 🏰 SHADOW TOWER 3.2:
-#     - 💰 ECONOMY: Bosses (Every 10 floors) drop 2-5 Scoins.
-#     - 💎 ARTIFACTS: Rare loot type. Can be sold for +2 Scoins via the UI.
-#     - 🚀 FLOW: Seamless start & XP bars retained.
-#     - ⚡ VISUALS: Elite UI retained.
-# [x] CASINO & CORE: All previous features maintained exactly.
+# [x] 🏰 SHADOW TOWER 3.4:
+#     - 🏆 LEADERBOARD FIX: 'max_floor' is now correctly updated on climb.
+#     - ⚔️ COMBAT: Dynamic Text, Bold DMG, Adrenaline (v3.3).
+#     - 💰 ECONOMY: Boss Drops & Artifacts (v3.2).
+#     - 🚀 CORE: XP Bars, Biomes, Mystery Rooms (v3.0/3.1).
+# [x] CASINO: Slots, Chicken, Dice (High/Low).
+# [x] UTILS: VoiceMaster, Music, Speak, Embeds.
 #
 # LIBRARY: py-cord[voice]
 
@@ -302,7 +303,7 @@ def format_age(dt):
         return f"{delta.days // 365} years ago"
     return f"{delta.days} days ago"
 
-# ==================== DATA LOADERS (INVITES) ====================
+# ==================== DATA LOADERS ====================
 
 def _load_invite_role_store():
     if INVITE_ROLE_STORE.exists():
@@ -453,7 +454,7 @@ class MusicSelectionView(View):
         super().__init__(timeout=60)
         self.add_item(MusicSelect(entries, ctx, vc))
 
-# ==================== SHADOW TOWER 3.2 (ELITE RPG) ====================
+# ==================== SHADOW TOWER 3.4 (ELITE RPG) ====================
 
 def get_tower_data(user_id):
     uid = str(user_id)
@@ -470,6 +471,8 @@ def get_tower_data(user_id):
     defaults = {"class": None, "xp": 0, "level": 1, "perks": [], "pets": [], "gear": None, "adrenaline": 0}
     for k, v in defaults.items():
         if k not in tower_db[uid]: tower_db[uid][k] = v
+        # Ensure max_floor exists if missing
+        if "max_floor" not in tower_db[uid]: tower_db[uid]["max_floor"] = tower_db[uid].get("floor", 1)
     return tower_db[uid]
 
 def save_tower_data(user_id, data):
@@ -604,10 +607,8 @@ class LootView(View):
         self.item = item
         self.data = get_tower_data(user.id)
         
-        # Adjust buttons for Artifacts
         if item.get("type") == "ARTIFACT":
-            self.remove_item(self.equip) # Remove standard equip
-            # Add Sell Button
+            self.remove_item(self.equip) 
             sell_btn = Button(label="Sell to Casino (+2 Scoins)", style=ButtonStyle.success, emoji="💰")
             async def sell_cb(interaction):
                 if interaction.user.id != self.user.id: return
@@ -774,14 +775,23 @@ class TowerGameView(View):
         if "adrenaline" not in self.data: self.data["adrenaline"] = 0
         
         if action == "act_atk":
-            p_dmg = atk_stat + random.randint(1, 5)
-            if self.data["class"] == "Rogue" and random.random() < 0.2: p_dmg *= 2; p_act = "CRIT!"
-            else: p_act = "Attacked"
-            self.data["adrenaline"] = min(100, self.data["adrenaline"] + 10)
+            base_roll = random.randint(2, 6)
+            p_dmg = atk_stat + base_roll
+            
+            if self.data["class"] == "Rogue" and random.random() < 0.25: 
+                p_dmg = int(p_dmg * 2)
+                p_act = "🩸 **CRITICAL HIT!**"
+            else:
+                if p_dmg >= 25: p_act = "💥 **OBLITERATED**"
+                elif p_dmg >= 10: p_act = "⚔️ **STRUCK**"
+                else: p_act = "🗡️ scratched"
+            
+            adren_gain = 10 + int(p_dmg / 2)
+            self.data["adrenaline"] = min(100, self.data["adrenaline"] + adren_gain)
             
         elif action == "act_def":
             p_block = self.data["def"] * 3
-            p_act = "Defended"
+            p_act = "🛡️ **DEFENDED**"
             self.data["adrenaline"] = min(100, self.data["adrenaline"] + 20)
             
         elif action == "act_skill":
@@ -845,7 +855,7 @@ class TowerGameView(View):
             self.data["hp"] -= final_e_dmg
             self.data["adrenaline"] = min(100, self.data["adrenaline"] + 10)
         
-        self.combat_log.append(f"You {p_act} ({int(p_dmg)}). Enemy {e_intent} ({int(final_e_dmg)} dmg).")
+        self.combat_log.append(f"You {p_act} (**{int(p_dmg)}**). Enemy {e_intent} ({int(final_e_dmg)}).")
 
         b_name, b_data = get_biome(self.data["floor"])
         if b_name == "Sewers" and random.random() < 0.2:
@@ -863,9 +873,13 @@ class TowerGameView(View):
             self.data["floor"] += 1
             self.data["adrenaline"] = 0 
             
-            # --- SCOIN BOSS REWARD ---
+            # --- LEADERBOARD FIX: Update Max Floor ---
+            current_max = self.data.get("max_floor", 1)
+            if self.data["floor"] > current_max:
+                self.data["max_floor"] = self.data["floor"]
+
             scoin_bonus = ""
-            if (self.data["floor"] - 1) % 10 == 0: # Check if the defeated enemy was a Boss (floor 10, 20...)
+            if (self.data["floor"] - 1) % 10 == 0: 
                 reward_amt = random.randint(2, 5)
                 update_balance(self.user_id, reward_amt)
                 scoin_bonus = f"\n💰 **BOSS BONUS:** +{reward_amt} Scoins to Casino Balance!"
@@ -986,7 +1000,7 @@ class RepeatSpinView(View):
 
     @discord.ui.button(label="Spin Again", style=ButtonStyle.primary, emoji="🔄")
     async def spin_btn(self, button, interaction: Interaction):
-        if interaction.user.id != self.user_id:
+        if interaction.user.id != self.user.id:
             return await interaction.response.send_message("🚫 Not your game.", ephemeral=True)
         bal = get_balance(str(self.user_id))
         if bal < self.bet:
@@ -1714,14 +1728,23 @@ async def tower(ctx):
 
 @bot.slash_command(name="tower_top", description="Tower Leaderboard")
 async def tower_top(ctx):
+    # Sort by 'max_floor', defaulting to 1 if not set
     sorted_users = sorted(tower_db.items(), key=lambda x: x[1].get("max_floor", 1), reverse=True)
-    msg = "**🏰 Tower Legends**\n"
+    
+    msg = "**🏰 Tower Legends (Highest Floor Reached)**\n"
     for i, (uid, data) in enumerate(sorted_users[:10]):
-        try: user = await bot.fetch_user(int(uid)); name = user.display_name
-        except: name = "Unknown Warrior"
+        try: 
+            user = await bot.fetch_user(int(uid))
+            name = user.display_name
+        except: 
+            name = "Unknown Warrior"
+            
         cls = data.get("class", "Novice")
         lvl = data.get("level", 1)
-        msg += f"{i+1}. **{name}** ({cls} Lvl {lvl}) — Floor {data.get('max_floor', 1)}\n"
+        max_f = data.get("max_floor", 1) # Use saved max floor
+        
+        msg += f"{i+1}. **{name}** ({cls} Lvl {lvl}) — Floor **{max_f}**\n"
+        
     await safe_reply(ctx, msg)
 
 @bot.slash_command(name="revive", description="Revive in Tower (5000 Scoins)")
