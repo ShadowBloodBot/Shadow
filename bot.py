@@ -2,10 +2,10 @@
 #
 # === FEATURES ===
 # [x] 🏰 SHADOW TOWER 3.4:
-#     - 🏆 LEADERBOARD FIX: 'max_floor' is now correctly updated on climb.
-#     - ⚔️ COMBAT: Dynamic Text, Bold DMG, Adrenaline (v3.3).
-#     - 💰 ECONOMY: Boss Drops & Artifacts (v3.2).
-#     - 🚀 CORE: XP Bars, Biomes, Mystery Rooms (v3.0/3.1).
+#      - 🏆 LEADERBOARD FIX: 'max_floor' is now correctly updated on climb.
+#      - ⚔️ COMBAT: Dynamic Text, Bold DMG, Adrenaline (v3.3).
+#      - 💰 ECONOMY: Boss Drops & Artifacts (v3.2).
+#      - 🚀 CORE: XP Bars, Biomes, Mystery Rooms (v3.0/3.1).
 # [x] CASINO: Slots, Chicken, Dice (High/Low).
 # [x] UTILS: VoiceMaster, Music, Speak, Embeds.
 #
@@ -38,16 +38,16 @@ import yt_dlp
 
 # =========================== CONSTANTS ===========================
 
-VANITY_INVITE  = "https://discord.gg/shadowsyn"
-THEME_PRIMARY  = 0x2B0B35
-THEME_WIN      = 0x43B581 
-THEME_LOSS     = 0xF04747 
-THEME_GOLD     = 0xFFD700 
-THEME_COMBAT   = 0xE67E22 
-THEME_BOSS     = 0x992D22 
-THEME_RARE     = 0x3498DB
-THEME_EPIC     = 0x9B59B6
-THEME_LEGEND   = 0xE67E22
+VANITY_INVITE   = "https://discord.gg/shadowsyn"
+THEME_PRIMARY   = 0x2B0B35
+THEME_WIN       = 0x43B581 
+THEME_LOSS      = 0xF04747 
+THEME_GOLD      = 0xFFD700 
+THEME_COMBAT    = 0xE67E22 
+THEME_BOSS      = 0x992D22 
+THEME_RARE      = 0x3498DB
+THEME_EPIC      = 0x9B59B6
+THEME_LEGEND    = 0xE67E22
 
 # --- BIOME THEMES ---
 BIOMES = {
@@ -530,7 +530,7 @@ def generate_loot(floor):
     if tier != "Common" and random.random() < 0.5:
         affix = random.choice(list(AFFIXES.keys()))
         base_name = f"{affix} {base_name}"
-    
+     
     return {
         "name": f"{tier} {base_name}",
         "type": stat_type,
@@ -918,8 +918,13 @@ class TowerGameView(View):
             self.data["floor"] = self.data["checkpoint"]
             self.data["gear"] = None 
             self.data["adrenaline"] = 0
+            # FIX: Explicitly reset stats and potions so they don't carry over
+            self.data["atk"] = 0
+            self.data["def"] = 0
+            self.data["potions"] = 0
+            
             save_tower_data(self.user_id, self.data)
-            await interaction.response.edit_message(embed=self.update_embed("💀 YOU DIED", "Level, Stats, and Gear lost.\nPerks & Pets persisted.", THEME_LOSS), view=None)
+            await interaction.response.edit_message(embed=self.update_embed("💀 YOU DIED", "Level, Stats, and Gear lost.\nPerks, Pets & Gold persisted.", THEME_LOSS), view=None)
             
         else:
             self.enemy["intent"] = random.choice(["Attack", "Heavy Attack", "Defend"])
