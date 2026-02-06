@@ -1,12 +1,13 @@
-# bot.py — ShadowSyn (Master: Shadow Tower 3.7 - Gear Slots Fix)
+# bot.py — ShadowSyn (Master: Shadow Tower 3.8 - Hardcore Mode)
 #
 # === FEATURES ===
-# [x] 🏰 SHADOW TOWER 3.7:
-#      - 🛠️ GEAR FIX: Split into 'gear_weapon' and 'gear_armor' slots.
-#      - ⚖️ PREV: Warrior Ult Rework (No Heal), Bash 30% Stun.
-#      - 🛡️ CORE: Chip Damage, Class Skills, Perks.
-# [x] CASINO: Slots, Chicken, Dice (High/Low).
-# [x] UTILS: VoiceMaster, Music, Speak, Embeds.
+# [x] 🏰 SHADOW TOWER 3.8:
+#      - 💀 HARDCORE: '/respawn' now forces a full restart (Floor 1, New Class).
+#      - 💾 PAID SAVES: Checkpoints now cost 100 Scoins.
+#      - 🛠️ PREV: Gear Slots (Wep/Armor), Warrior Balance, Chip Damage.
+# [x] 🎛️ VOICEMASTER: JTC + Control Panel.
+# [x] 🎰 CASINO: Slots, Chicken, Dice, Duels.
+# [x] 🎵 MUSIC & UTILS: All present.
 #
 # LIBRARY: py-cord[voice]
 
@@ -649,7 +650,7 @@ class LootView(View):
         # Legacy cleanup
         self.data["gear"] = None
         
-        save_tower_data(self.user_id, self.data)
+        save_tower_data(self.user.id, self.data)
         
         slot_name = "Weapon" if slot_key == "gear_weapon" else "Armor"
         await interaction.response.edit_message(embed=discord.Embed(title="⚔️ Equipped", description=f"You wield **{self.item['name']}** ({slot_name}).", color=THEME_WIN), view=TowerGameView(self.user))
@@ -729,7 +730,7 @@ class TowerGameView(View):
         else:
             self.add_item(Button(label="Climb", style=ButtonStyle.success, emoji="🧗", custom_id="nav_climb"))
             self.add_item(Button(label="Rest (100g)", style=ButtonStyle.primary, emoji="💤", custom_id="nav_rest"))
-            self.add_item(Button(label="Save", style=ButtonStyle.secondary, emoji="💾", custom_id="nav_save"))
+            self.add_item(Button(label="Save (100 Sc)", style=ButtonStyle.secondary, emoji="💾", custom_id="nav_save"))
 
     async def interaction_check(self, interaction):
         if interaction.user.id != self.user.id:
@@ -752,9 +753,15 @@ class TowerGameView(View):
                 await interaction.response.send_message("❌ Need 100 Gold.", ephemeral=True)
                 
         elif cid == "nav_save":
-            self.data["checkpoint"] = self.data["floor"]
-            save_tower_data(self.user_id, self.data)
-            await interaction.response.send_message("💾 **Checkpoint Saved.**", ephemeral=True)
+            cost = 100
+            bal = get_balance(self.user_id)
+            if bal >= cost:
+                update_balance(self.user_id, -cost)
+                self.data["checkpoint"] = self.data["floor"]
+                save_tower_data(self.user_id, self.data)
+                await interaction.response.send_message(f"💾 **Checkpoint Saved!**\nPaid {cost} Scoins.", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"❌ Checkpoints cost **{cost} Scoins**.\nYou have {bal}.", ephemeral=True)
             
         elif cid == "nav_climb":
             if random.random() < 0.10 and self.data["floor"] % 10 != 0:
@@ -1050,7 +1057,7 @@ class RepeatSpinView(View):
     async def spin_btn(self, button, interaction: Interaction):
         if interaction.user.id != self.user.id:
             return await interaction.response.send_message("🚫 Not your game.", ephemeral=True)
-        bal = get_balance(str(self.user_id))
+        bal = get_balance(str(self.user.id))
         if bal < self.bet:
             return await interaction.response.send_message(f"❌ Insufficient funds ({bal} < {self.bet}).", ephemeral=True)
         embed, is_jackpot, win_amount = generate_slot_result(interaction.user, self.bet)
@@ -1816,25 +1823,41 @@ async def revive(ctx):
     
     await safe_reply(ctx, "💎 **HEROES NEVER DIE!**\nYou have been revived. Use `/tower` to continue.", ephemeral=True)
 
-@bot.slash_command(name="respawn", description="Give up and return to Checkpoint")
+@bot.slash_command(name="respawn", description="Hard Reset: New Run (Keeps Gold/Perks)")
 async def respawn(ctx):
     if ctx.channel.id != CASINO_CHANNEL_ID: return await safe_reply(ctx, "❌ Wrong channel.", ephemeral=True)
     
     user_id = str(ctx.author.id)
     data = get_tower_data(ctx.author.id)
     
-    if data["hp"] > 0: return await safe_reply(ctx, "❌ You are alive.", ephemeral=True)
+    # HARD RESET LOGIC
+    # Wipes current run progress (Floor, Level, Class, Stats, Gear)
+    # Keeps meta-progression (Gold, Perks, Pets, Scoins)
     
-    # Reset
-    data["floor"] = data["checkpoint"]
-    data["hp"] = data["max_hp"]
+    data["floor"] = 1
+    # Checkpoint logic: 
+    # If a user manually resets via /respawn, we assume they want a fresh start.
+    # However, if they had a paid checkpoint at Floor 50, do we delete it?
+    # The prompt implies "/respawn should start from the start where we pick a class again".
+    # This acts as a "New Game" button.
+    # We will reset checkpoint to 1 to ensure it's a true fresh start.
+    data["checkpoint"] = 1 
+    
+    data["class"] = None
+    data["level"] = 1
+    data["xp"] = 0
+    data["hp"] = 100
+    data["max_hp"] = 100
     data["atk"] = 0
     data["def"] = 0
     data["potions"] = 0
+    data["gear_weapon"] = None
+    data["gear_armor"] = None
+    data["adrenaline"] = 0
     
     save_tower_data(user_id, data)
     
-    await safe_reply(ctx, f"💀 You accepted your fate.\nRespawned at Floor {data['floor']}. Gear lost.", ephemeral=True)
+    await safe_reply(ctx, "💀 **Run Abandoned.**\nYou have returned to the start. Use `/tower` to pick a new class.", ephemeral=True)
 
 @bot.slash_command(name="pets", description="View your captured shadows")
 async def pets(ctx):
