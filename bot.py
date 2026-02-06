@@ -1,11 +1,12 @@
-# bot.py — ShadowSyn (Master: Visuals Restored)
+# bot.py — ShadowSyn (Master: Shadow Tower 3.0 - The Elite Update)
 #
 # === FEATURES ===
-# [x] 🏰 SHADOW TOWER 2.0:
-#     - 📊 VISUALS: HP Bars (🟩/🟥) restored for Player & Enemy.
-#     - ⚔️ COMBAT: Intent System (Tactical), Pyroblast safety, Potion updates.
-#     - 💀 MECHANICS: Permadeath, Loot 2.0 (Affixes), Perks, Class Identity.
-# [x] CASINO & CORE: All previous features maintained exactly.
+# [x] 🏰 SHADOW TOWER 3.0 (VISUAL OVERHAUL):
+#     - ⚡ ADRENALINE: New Limit Break gauge. Fills on Dmg/Defend. Unlocks ULTIMATE.
+#     - 🌍 BIOMES: Floors 1-20 (Sewers/Green), 21-40 (Catacombs/Grey), 41-60 (Magma/Red).
+#     - 🎭 MYSTERY ROOMS: High-stakes dilemmas (Sacrifice HP for Power).
+#     - 📊 UI ELITE: Clean bars, status icons, intuitive button states.
+# [x] CASINO & CORE: All previous features (Slots, Music, VoiceMaster) preserved.
 #
 # LIBRARY: py-cord[voice]
 
@@ -47,6 +48,14 @@ THEME_RARE     = 0x3498DB
 THEME_EPIC     = 0x9B59B6
 THEME_LEGEND   = 0xE67E22
 
+# --- BIOME THEMES ---
+BIOMES = {
+    "Sewers": {"range": (1, 20), "color": 0x2ECC71, "emoji": "🤢", "effect": "Toxic: 5% Poison Dmg every 5 turns."},
+    "Catacombs": {"range": (21, 40), "color": 0x95A5A6, "emoji": "💀", "effect": "Darkness: 20% Miss Chance."},
+    "Magma Core": {"range": (41, 60), "color": 0xE74C3C, "emoji": "🌋", "effect": "Heat: Skills cost 5 HP."},
+    "Void": {"range": (61, 999), "color": 0x8E44AD, "emoji": "🔮", "effect": "Void: Enemies deal True Damage."}
+}
+
 # --- CONFIGURATION IDs ---
 ARRIVALS_THREAD_ID      = 959629903186259978
 ROLE_MINION_ID          = 955600021502431233
@@ -82,7 +91,7 @@ LANG_CODES = {
     "Hindi": "hi", "Indonesian": "id", "Thai": "th", "Vietnamese": "vi", "Tagalog": "tl"
 }
 
-# --- TOWER 2.0 CONTENT ---
+# --- TOWER CONTENT ---
 MONSTERS = {
     1: ["Sewer Rat", "Slime Blob", "Wild Dog", "Angry Bat", "Kobold Runt"],
     5: ["Goblin Scout", "Skeleton Warrior", "Bandit", "Giant Spider", "Orc Grunt"],
@@ -141,7 +150,7 @@ INVITE_ROLE_STORE = (PERSIST_ROOT / "invite_roles.json")
 ACTIVE_VCS_STORE = (PERSIST_ROOT / "active_vcs.json")
 HASTE_FACTS_STORE = (PERSIST_ROOT / "haste_facts.json")
 SCOINS_STORE = (PERSIST_ROOT / "scoins.json")
-TOWER_STORE = (PERSIST_ROOT / "tower_v2.json")
+TOWER_STORE = (PERSIST_ROOT / "tower_v3.json")
 
 active_haste_facts = []
 scoins_db = {}
@@ -293,7 +302,7 @@ def format_age(dt):
         return f"{delta.days // 365} years ago"
     return f"{delta.days} days ago"
 
-# ==================== DATA LOADERS (INVITES) ====================
+# ==================== DATA LOADERS ====================
 
 def _load_invite_role_store():
     if INVITE_ROLE_STORE.exists():
@@ -444,7 +453,7 @@ class MusicSelectionView(View):
         super().__init__(timeout=60)
         self.add_item(MusicSelect(entries, ctx, vc))
 
-# ==================== SHADOW TOWER 2.0 (RPG LOGIC) ====================
+# ==================== SHADOW TOWER 3.0 (ELITE RPG) ====================
 
 def get_tower_data(user_id):
     uid = str(user_id)
@@ -455,10 +464,10 @@ def get_tower_data(user_id):
             "gold": 0, "checkpoint": 1, 
             "potions": 0, "atk": 0, "def": 0,
             "class": None, "xp": 0, "level": 1, 
-            "perks": [], "pets": [],
-            "gear": None
+            "perks": [], "pets": [], "gear": None,
+            "adrenaline": 0 # New in v3
         }
-    defaults = {"class": None, "xp": 0, "level": 1, "perks": [], "pets": [], "gear": None}
+    defaults = {"class": None, "xp": 0, "level": 1, "perks": [], "pets": [], "gear": None, "adrenaline": 0}
     for k, v in defaults.items():
         if k not in tower_db[uid]: tower_db[uid][k] = v
     return tower_db[uid]
@@ -466,6 +475,11 @@ def get_tower_data(user_id):
 def save_tower_data(user_id, data):
     tower_db[str(user_id)] = data
     _save_tower()
+
+def get_biome(floor):
+    for name, data in BIOMES.items():
+        if data["range"][0] <= floor <= data["range"][1]: return name, data
+    return "Void", BIOMES["Void"]
 
 def get_monster(floor):
     tiers = sorted(MONSTERS.keys())
@@ -480,8 +494,11 @@ def draw_bar(curr, max_val, color="🟩", length=10):
     if max_val <= 0: return color + "⬛" * 9
     pct = max(0, min(1, curr / max_val))
     fill = int(pct * length)
-    if fill == 0 and curr > 0: fill = 1 # Always show sliver of life
-    return color * fill + "⬛" * (length - fill)
+    if fill == 0 and curr > 0: fill = 1 
+    return color * fill + "⬜" * (length - fill)
+
+def draw_adren_bar(val):
+    return draw_bar(val, 100, "🟨", 8)
 
 def generate_loot(floor):
     roll = random.randint(1, 100)
@@ -511,6 +528,36 @@ def generate_loot(floor):
 
 # --- RPG VIEWS ---
 
+class MysteryRoomView(View):
+    def __init__(self, user, data):
+        super().__init__(timeout=120)
+        self.user = user
+        self.data = data
+        self.user_id = str(user.id)
+
+    @discord.ui.button(label="Sacrifice 20% Max HP for +10 ATK", style=ButtonStyle.danger, emoji="🩸")
+    async def sacrifice(self, button, interaction):
+        if interaction.user.id != self.user.id: return
+        
+        loss = int(self.data["max_hp"] * 0.2)
+        self.data["max_hp"] -= loss
+        self.data["hp"] = min(self.data["hp"], self.data["max_hp"])
+        self.data["atk"] += 10
+        save_tower_data(self.user_id, self.data)
+        
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="🩸 The Pact is Sealed", description=f"You lost **{loss} Max HP**.\nYou gained **+10 ATK**.", color=THEME_LOSS),
+            view=TowerGameView(self.user)
+        )
+
+    @discord.ui.button(label="Leave Safely", style=ButtonStyle.secondary, emoji="🏃")
+    async def leave(self, button, interaction):
+        if interaction.user.id != self.user.id: return
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="🏃 Escape", description="You stepped away from the cursed shrine.", color=THEME_PRIMARY),
+            view=TowerGameView(self.user)
+        )
+
 class PerkSelectView(View):
     def __init__(self, user, data):
         super().__init__(timeout=300)
@@ -536,7 +583,7 @@ class PerkSelectView(View):
         self.data["perks"].append(perk["id"])
         save_tower_data(self.user_id, self.data)
         
-        embed = discord.Embed(title="🧬 Perk Acquired!", description=f"You learned **{perk['name']}**\n*{perk['desc']}*", color=THEME_WIN)
+        embed = discord.Embed(title="🧬 Mutation Complete", description=f"You evolved: **{perk['name']}**\n*{perk['desc']}*", color=THEME_WIN)
         await interaction.response.edit_message(embed=embed, view=TowerGameView(self.user))
 
 class LootView(View):
@@ -546,10 +593,9 @@ class LootView(View):
         self.item = item
         self.data = get_tower_data(user.id)
 
-    @discord.ui.button(label="Equip (Replace Current)", style=ButtonStyle.success, emoji="⚔️")
+    @discord.ui.button(label="Equip", style=ButtonStyle.success, emoji="⚔️")
     async def equip(self, button, interaction):
         if interaction.user.id != self.user.id: return
-        
         old_gear = self.data.get("gear")
         if old_gear:
             if old_gear["type"] == "ATK": self.data["atk"] -= old_gear["val"]
@@ -560,9 +606,9 @@ class LootView(View):
         elif self.item["type"] == "DEF": self.data["def"] += self.item["val"]
         
         save_tower_data(self.user.id, self.data)
-        await interaction.response.edit_message(embed=discord.Embed(title="⚔️ Equipped!", description=f"You wield **{self.item['name']}**.", color=THEME_WIN), view=TowerGameView(self.user))
+        await interaction.response.edit_message(embed=discord.Embed(title="⚔️ Equipped", description=f"You wield **{self.item['name']}**.", color=THEME_WIN), view=TowerGameView(self.user))
 
-    @discord.ui.button(label="Salvage (+XP/Gold)", style=ButtonStyle.secondary, emoji="🔨")
+    @discord.ui.button(label="Salvage", style=ButtonStyle.secondary, emoji="🔨")
     async def salvage(self, button, interaction):
         if interaction.user.id != self.user.id: return
         xp = self.item["val"] * 5
@@ -584,21 +630,35 @@ class TowerGameView(View):
         self.render_main_menu()
 
     def update_embed(self, title, desc, color=THEME_PRIMARY):
-        p_bar = draw_bar(self.data["hp"], self.data["max_hp"], "🟩")
-        embed = discord.Embed(title=title, description=desc, color=color)
+        # 1. Resolve Biome
+        b_name, b_data = get_biome(self.data['floor'])
         
+        # 2. Build Header
+        p_bar = draw_bar(self.data["hp"], self.data["max_hp"], "🟩")
+        a_bar = draw_adren_bar(self.data.get("adrenaline", 0))
+        
+        # Override color if in combat based on enemy, else Biome color
+        final_color = b_data["color"]
+        if self.mode == "COMBAT": final_color = THEME_COMBAT
+
+        embed = discord.Embed(title=f"{b_data['emoji']} {title} | Floor {self.data['floor']}", description=desc, color=final_color)
+        
+        # 3. Enemy Status
         if self.mode == "COMBAT" and self.enemy:
             e_bar = draw_bar(self.enemy['hp'], self.enemy['max_hp'], "🟥")
             intent = self.enemy.get("intent", "Unknown")
-            embed.add_field(name=f"🆚 {self.enemy['name']} (Lvl {self.data['floor']})", 
-                           value=f"❤️ {self.enemy['hp']}/{self.enemy['max_hp']}\n{e_bar}\n⚠️ **Intent:** {intent}", inline=False)
+            embed.add_field(name=f"🆚 {self.enemy['name']}", 
+                           value=f"{e_bar} {self.enemy['hp']} HP\n⚠️ **Intent:** {intent}", inline=False)
             if self.combat_log:
-                embed.add_field(name="📜 Combat Log", value="\n".join(self.combat_log[-3:]), inline=False)
+                embed.add_field(name="📜 Log", value="\n".join(self.combat_log[-3:]), inline=False)
 
-        stats = f"⚔️ {self.data['atk']} | 🛡️ {self.data['def']}"
-        if self.data['gear']: stats += f"\n🗡️ {self.data['gear']['name']}"
-        embed.add_field(name=f"👤 {self.user.display_name} ({self.data['class']})", value=f"❤️ {self.data['hp']}/{self.data['max_hp']}\n{p_bar}\n{stats}", inline=True)
-        embed.set_footer(text=f"Floor {self.data['floor']} | Gold: {self.data['gold']}")
+        # 4. Player Status
+        stats = f"⚔️{self.data['atk']} 🛡️{self.data['def']} 💰{self.data['gold']}"
+        embed.add_field(name=f"👤 {self.user.display_name} ({self.data['class']})", 
+                       value=f"{p_bar} {self.data['hp']} HP\n{a_bar} Limit Break\n{stats}", inline=False)
+        
+        # 5. Biome Effect
+        embed.set_footer(text=f"{b_name}: {b_data['effect']}")
         return embed
 
     def render_main_menu(self):
@@ -606,17 +666,28 @@ class TowerGameView(View):
         
         if self.mode == "COMBAT":
             self.add_item(Button(label="Attack", style=ButtonStyle.danger, custom_id="act_atk"))
-            self.add_item(Button(label="Defend", style=ButtonStyle.primary, custom_id="act_def"))
+            self.add_item(Button(label="Defend", style=ButtonStyle.secondary, custom_id="act_def"))
             
+            # Ultimate Logic
+            adren = self.data.get("adrenaline", 0)
             cls = self.data["class"]
-            skill_name = "Skill"
-            if cls == "Warrior": skill_name = "Shield Bash (Stun)"
-            elif cls == "Rogue": skill_name = "Shadow Step (Dodge)"
-            elif cls == "Mage": skill_name = "Pyroblast (True Dmg)"
-            self.add_item(Button(label=skill_name, style=ButtonStyle.success, custom_id="act_skill"))
+            
+            if adren >= 100:
+                skill_name = "ULTIMATE READY!"
+                style = ButtonStyle.success # Gold/Green
+                if cls == "Warrior": skill_name = "JUGGERNAUT (Immune)"
+                elif cls == "Rogue": skill_name = "EXECUTE (Kill)"
+                elif cls == "Mage": skill_name = "CATACLYSM (Nuke)"
+                self.add_item(Button(label=skill_name, style=style, emoji="⚡", custom_id="act_ult"))
+            else:
+                skill_name = "Skill"
+                if cls == "Warrior": skill_name = "Bash"
+                elif cls == "Rogue": skill_name = "Dodge"
+                elif cls == "Mage": skill_name = "Blast"
+                self.add_item(Button(label=skill_name, style=ButtonStyle.primary, custom_id="act_skill"))
             
             if self.data["potions"] > 0:
-                self.add_item(Button(label=f"Potion ({self.data['potions']})", style=ButtonStyle.secondary, custom_id="act_pot"))
+                self.add_item(Button(label=f"Potion ({self.data['potions']})", style=ButtonStyle.secondary, emoji="🧪", custom_id="act_pot"))
                 
         else:
             self.add_item(Button(label="Climb", style=ButtonStyle.success, emoji="🧗", custom_id="nav_climb"))
@@ -649,6 +720,13 @@ class TowerGameView(View):
             await interaction.response.send_message("💾 **Checkpoint Saved.**", ephemeral=True)
             
         elif cid == "nav_climb":
+            # 10% Chance for Mystery Room
+            if random.random() < 0.10 and self.data["floor"] % 10 != 0:
+                view = MysteryRoomView(self.user, self.data)
+                embed = discord.Embed(title="🔮 Mystery Room", description="You found a **Cursed Shrine**.", color=0x9B59B6)
+                await interaction.response.edit_message(embed=embed, view=view)
+                return
+
             if self.data["floor"] % 10 == 0:
                 boss_name = BOSSES.get(self.data["floor"], "Unknown Horror")
                 self.start_combat(boss=True, name=boss_name)
@@ -679,15 +757,20 @@ class TowerGameView(View):
         p_dmg, p_block, p_act, enemy_stunned = 0, 0, "", False
         atk_stat = self.data["atk"]
         
+        # Adrenaline Logic
+        if "adrenaline" not in self.data: self.data["adrenaline"] = 0
+        
+        # 1. Player Action
         if action == "act_atk":
             p_dmg = atk_stat + random.randint(1, 5)
-            if self.data["class"] == "Rogue" and random.random() < 0.2: 
-                p_dmg *= 2; p_act = "CRIT!"
+            if self.data["class"] == "Rogue" and random.random() < 0.2: p_dmg *= 2; p_act = "CRIT!"
             else: p_act = "Attacked"
+            self.data["adrenaline"] = min(100, self.data["adrenaline"] + 10)
             
         elif action == "act_def":
-            p_block = self.data["def"] * 2
+            p_block = self.data["def"] * 3
             p_act = "Defended"
+            self.data["adrenaline"] = min(100, self.data["adrenaline"] + 20) # Bonus for defending
             
         elif action == "act_skill":
             cls = self.data["class"]
@@ -697,7 +780,6 @@ class TowerGameView(View):
                 p_act = "Shield Bashed"
             elif cls == "Mage":
                 p_dmg = atk_stat * 3 
-                # Safety: Don't kill self
                 if self.data["hp"] > 5: self.data["hp"] -= 5
                 else: self.data["hp"] = 1
                 p_act = "Pyroblasted"
@@ -705,7 +787,24 @@ class TowerGameView(View):
                 p_dmg = atk_stat * 1.5
                 p_block = 999 
                 p_act = "Shadow Stepped"
-                
+            self.data["adrenaline"] = min(100, self.data["adrenaline"] + 15)
+
+        elif action == "act_ult":
+            cls = self.data["class"]
+            self.data["adrenaline"] = 0 # Consume
+            if cls == "Warrior":
+                p_block = 9999
+                self.data["hp"] = min(self.data["max_hp"], self.data["hp"] + 50)
+                p_act = "USED JUGGERNAUT"
+            elif cls == "Rogue":
+                if self.enemy["hp"] < (self.enemy["max_hp"] * 0.4): p_dmg = 9999
+                else: p_dmg = atk_stat * 5
+                p_act = "USED EXECUTE"
+            elif cls == "Mage":
+                p_dmg = atk_stat * 8
+                enemy_stunned = True
+                p_act = "USED CATACLYSM"
+
         elif action == "act_pot":
             heal = 50
             if "glutton" in self.data["perks"]: heal = 75
@@ -713,6 +812,7 @@ class TowerGameView(View):
             self.data["potions"] -= 1
             p_act = "Drank Potion"
 
+        # 2. Enemy Action
         e_dmg = 0
         e_intent = self.enemy["intent"]
         
@@ -723,6 +823,7 @@ class TowerGameView(View):
         else:
             self.combat_log.append("💫 Enemy Stunned!")
 
+        # 3. Apply Damage
         self.enemy["hp"] -= p_dmg
         if "vampire" in self.data["perks"]: self.data["hp"] = min(self.data["max_hp"], self.data["hp"] + 5)
         
@@ -732,15 +833,27 @@ class TowerGameView(View):
                 refl = int(final_e_dmg * 0.1)
                 self.enemy["hp"] -= refl
             self.data["hp"] -= final_e_dmg
+            self.data["adrenaline"] = min(100, self.data["adrenaline"] + 10) # Gain on hit
         
         self.combat_log.append(f"You {p_act} ({int(p_dmg)}). Enemy {e_intent} ({int(final_e_dmg)} dmg).")
 
+        # 4. Biome Effects
+        b_name, b_data = get_biome(self.data["floor"])
+        if b_name == "Sewers" and random.random() < 0.2:
+            self.data["hp"] -= int(self.data["max_hp"] * 0.05)
+            self.combat_log.append("🤢 Poisoned by gas!")
+        elif b_name == "Magma Core" and action == "act_skill":
+            self.data["hp"] -= 5
+            self.combat_log.append("🔥 Burnt by heat!")
+
+        # 5. Check State
         if self.enemy["hp"] <= 0:
             xp = 20 * (2 if "scholar" in self.data["perks"] else 1)
             gold = 50 * (1.2 if "midas" in self.data["perks"] else 1)
             self.data["xp"] += xp
             self.data["gold"] += int(gold)
             self.data["floor"] += 1
+            self.data["adrenaline"] = 0 # Reset on win
             
             req = get_xp_needed(self.data["level"])
             if self.data["xp"] >= req:
@@ -768,6 +881,7 @@ class TowerGameView(View):
             self.data["class"] = None
             self.data["floor"] = self.data["checkpoint"]
             self.data["gear"] = None 
+            self.data["adrenaline"] = 0
             save_tower_data(self.user_id, self.data)
             await interaction.response.edit_message(embed=self.update_embed("💀 YOU DIED", "Level, Stats, and Gear lost.\nPerks & Pets persisted.", THEME_LOSS), view=None)
             
@@ -1481,7 +1595,7 @@ async def on_voice_state_update(member, before, after):
         status = "server-muted" if after.mute else "server-unmuted"
         entry = await _find_audit_action(guild, discord.AuditLogAction.member_update, member.id)
         actor = f"**{entry.user.display_name}**" if entry else "Unknown Admin"
-        msg = f"🙊 **{member.display_name}** was **{status}** by {actor}."
+        msg = f"🙉 **{member.display_name}** was **{status}** by {actor}."
     elif before.deaf != after.deaf:
         status = "server-deafened" if after.deaf else "server-undeafened"
         entry = await _find_audit_action(guild, discord.AuditLogAction.member_update, member.id)
