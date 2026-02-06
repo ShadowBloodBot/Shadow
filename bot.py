@@ -1,12 +1,12 @@
-# bot.py — ShadowSyn (Master: Shadow Tower 3.0 - The Elite Update)
+# bot.py — ShadowSyn (Master: Shadow Tower 3.2 - Economy Integration)
 #
 # === FEATURES ===
-# [x] 🏰 SHADOW TOWER 3.0 (VISUAL OVERHAUL):
-#     - ⚡ ADRENALINE: New Limit Break gauge. Fills on Dmg/Defend. Unlocks ULTIMATE.
-#     - 🌍 BIOMES: Floors 1-20 (Sewers/Green), 21-40 (Catacombs/Grey), 41-60 (Magma/Red).
-#     - 🎭 MYSTERY ROOMS: High-stakes dilemmas (Sacrifice HP for Power).
-#     - 📊 UI ELITE: Clean bars, status icons, intuitive button states.
-# [x] CASINO & CORE: All previous features (Slots, Music, VoiceMaster) preserved.
+# [x] 🏰 SHADOW TOWER 3.2:
+#     - 💰 ECONOMY: Bosses (Every 10 floors) drop 2-5 Scoins.
+#     - 💎 ARTIFACTS: Rare loot type. Can be sold for +2 Scoins via the UI.
+#     - 🚀 FLOW: Seamless start & XP bars retained.
+#     - ⚡ VISUALS: Elite UI retained.
+# [x] CASINO & CORE: All previous features maintained exactly.
 #
 # LIBRARY: py-cord[voice]
 
@@ -302,7 +302,7 @@ def format_age(dt):
         return f"{delta.days // 365} years ago"
     return f"{delta.days} days ago"
 
-# ==================== DATA LOADERS ====================
+# ==================== DATA LOADERS (INVITES) ====================
 
 def _load_invite_role_store():
     if INVITE_ROLE_STORE.exists():
@@ -453,7 +453,7 @@ class MusicSelectionView(View):
         super().__init__(timeout=60)
         self.add_item(MusicSelect(entries, ctx, vc))
 
-# ==================== SHADOW TOWER 3.0 (ELITE RPG) ====================
+# ==================== SHADOW TOWER 3.2 (ELITE RPG) ====================
 
 def get_tower_data(user_id):
     uid = str(user_id)
@@ -465,7 +465,7 @@ def get_tower_data(user_id):
             "potions": 0, "atk": 0, "def": 0,
             "class": None, "xp": 0, "level": 1, 
             "perks": [], "pets": [], "gear": None,
-            "adrenaline": 0 # New in v3
+            "adrenaline": 0
         }
     defaults = {"class": None, "xp": 0, "level": 1, "perks": [], "pets": [], "gear": None, "adrenaline": 0}
     for k, v in defaults.items():
@@ -501,6 +501,17 @@ def draw_adren_bar(val):
     return draw_bar(val, 100, "🟨", 8)
 
 def generate_loot(floor):
+    # 5% Chance for Scoin Artifact
+    if random.random() < 0.05:
+        return {
+            "name": "💰 Ancient Artifact",
+            "type": "ARTIFACT",
+            "val": 2, # Scoin Value
+            "tier": "Special",
+            "affix": None,
+            "color": THEME_GOLD
+        }
+
     roll = random.randint(1, 100)
     if roll > 95: tier, mult, color = "Legendary", 5, THEME_LEGEND
     elif roll > 80: tier, mult, color = "Epic", 3, THEME_EPIC
@@ -592,6 +603,19 @@ class LootView(View):
         self.user = user
         self.item = item
         self.data = get_tower_data(user.id)
+        
+        # Adjust buttons for Artifacts
+        if item.get("type") == "ARTIFACT":
+            self.remove_item(self.equip) # Remove standard equip
+            # Add Sell Button
+            sell_btn = Button(label="Sell to Casino (+2 Scoins)", style=ButtonStyle.success, emoji="💰")
+            async def sell_cb(interaction):
+                if interaction.user.id != self.user.id: return
+                update_balance(str(self.user.id), 2)
+                save_tower_data(self.user.id, self.data)
+                await interaction.response.edit_message(embed=discord.Embed(title="💰 Sold!", description="You sold the artifact for **2 Scoins**.", color=THEME_GOLD), view=TowerGameView(self.user))
+            sell_btn.callback = sell_cb
+            self.add_item(sell_btn)
 
     @discord.ui.button(label="Equip", style=ButtonStyle.success, emoji="⚔️")
     async def equip(self, button, interaction):
@@ -630,20 +654,14 @@ class TowerGameView(View):
         self.render_main_menu()
 
     def update_embed(self, title, desc, color=THEME_PRIMARY):
-        # 1. Resolve Biome
         b_name, b_data = get_biome(self.data['floor'])
-        
-        # 2. Build Header
         p_bar = draw_bar(self.data["hp"], self.data["max_hp"], "🟩")
         a_bar = draw_adren_bar(self.data.get("adrenaline", 0))
-        
-        # Override color if in combat based on enemy, else Biome color
         final_color = b_data["color"]
         if self.mode == "COMBAT": final_color = THEME_COMBAT
 
         embed = discord.Embed(title=f"{b_data['emoji']} {title} | Floor {self.data['floor']}", description=desc, color=final_color)
         
-        # 3. Enemy Status
         if self.mode == "COMBAT" and self.enemy:
             e_bar = draw_bar(self.enemy['hp'], self.enemy['max_hp'], "🟥")
             intent = self.enemy.get("intent", "Unknown")
@@ -652,12 +670,10 @@ class TowerGameView(View):
             if self.combat_log:
                 embed.add_field(name="📜 Log", value="\n".join(self.combat_log[-3:]), inline=False)
 
-        # 4. Player Status
         stats = f"⚔️{self.data['atk']} 🛡️{self.data['def']} 💰{self.data['gold']}"
         embed.add_field(name=f"👤 {self.user.display_name} ({self.data['class']})", 
                        value=f"{p_bar} {self.data['hp']} HP\n{a_bar} Limit Break\n{stats}", inline=False)
         
-        # 5. Biome Effect
         embed.set_footer(text=f"{b_name}: {b_data['effect']}")
         return embed
 
@@ -668,13 +684,12 @@ class TowerGameView(View):
             self.add_item(Button(label="Attack", style=ButtonStyle.danger, custom_id="act_atk"))
             self.add_item(Button(label="Defend", style=ButtonStyle.secondary, custom_id="act_def"))
             
-            # Ultimate Logic
             adren = self.data.get("adrenaline", 0)
             cls = self.data["class"]
             
             if adren >= 100:
                 skill_name = "ULTIMATE READY!"
-                style = ButtonStyle.success # Gold/Green
+                style = ButtonStyle.success 
                 if cls == "Warrior": skill_name = "JUGGERNAUT (Immune)"
                 elif cls == "Rogue": skill_name = "EXECUTE (Kill)"
                 elif cls == "Mage": skill_name = "CATACLYSM (Nuke)"
@@ -720,7 +735,6 @@ class TowerGameView(View):
             await interaction.response.send_message("💾 **Checkpoint Saved.**", ephemeral=True)
             
         elif cid == "nav_climb":
-            # 10% Chance for Mystery Room
             if random.random() < 0.10 and self.data["floor"] % 10 != 0:
                 view = MysteryRoomView(self.user, self.data)
                 embed = discord.Embed(title="🔮 Mystery Room", description="You found a **Cursed Shrine**.", color=0x9B59B6)
@@ -757,10 +771,8 @@ class TowerGameView(View):
         p_dmg, p_block, p_act, enemy_stunned = 0, 0, "", False
         atk_stat = self.data["atk"]
         
-        # Adrenaline Logic
         if "adrenaline" not in self.data: self.data["adrenaline"] = 0
         
-        # 1. Player Action
         if action == "act_atk":
             p_dmg = atk_stat + random.randint(1, 5)
             if self.data["class"] == "Rogue" and random.random() < 0.2: p_dmg *= 2; p_act = "CRIT!"
@@ -770,7 +782,7 @@ class TowerGameView(View):
         elif action == "act_def":
             p_block = self.data["def"] * 3
             p_act = "Defended"
-            self.data["adrenaline"] = min(100, self.data["adrenaline"] + 20) # Bonus for defending
+            self.data["adrenaline"] = min(100, self.data["adrenaline"] + 20)
             
         elif action == "act_skill":
             cls = self.data["class"]
@@ -791,19 +803,19 @@ class TowerGameView(View):
 
         elif action == "act_ult":
             cls = self.data["class"]
-            self.data["adrenaline"] = 0 # Consume
+            self.data["adrenaline"] = 0 
             if cls == "Warrior":
                 p_block = 9999
                 self.data["hp"] = min(self.data["max_hp"], self.data["hp"] + 50)
-                p_act = "USED JUGGERNAUT"
+                p_act = "🛡️ **TITAN'S WRATH!** (Invincible + Healed 50)"
             elif cls == "Rogue":
                 if self.enemy["hp"] < (self.enemy["max_hp"] * 0.4): p_dmg = 9999
                 else: p_dmg = atk_stat * 5
-                p_act = "USED EXECUTE"
+                p_act = f"🩸 **EXECUTION!** (Dealt {int(p_dmg)} Dmg)"
             elif cls == "Mage":
                 p_dmg = atk_stat * 8
                 enemy_stunned = True
-                p_act = "USED CATACLYSM"
+                p_act = f"🔮 **CATACLYSM!** (Stunned + {int(p_dmg)} True Dmg)"
 
         elif action == "act_pot":
             heal = 50
@@ -812,7 +824,6 @@ class TowerGameView(View):
             self.data["potions"] -= 1
             p_act = "Drank Potion"
 
-        # 2. Enemy Action
         e_dmg = 0
         e_intent = self.enemy["intent"]
         
@@ -823,7 +834,6 @@ class TowerGameView(View):
         else:
             self.combat_log.append("💫 Enemy Stunned!")
 
-        # 3. Apply Damage
         self.enemy["hp"] -= p_dmg
         if "vampire" in self.data["perks"]: self.data["hp"] = min(self.data["max_hp"], self.data["hp"] + 5)
         
@@ -833,11 +843,10 @@ class TowerGameView(View):
                 refl = int(final_e_dmg * 0.1)
                 self.enemy["hp"] -= refl
             self.data["hp"] -= final_e_dmg
-            self.data["adrenaline"] = min(100, self.data["adrenaline"] + 10) # Gain on hit
+            self.data["adrenaline"] = min(100, self.data["adrenaline"] + 10)
         
         self.combat_log.append(f"You {p_act} ({int(p_dmg)}). Enemy {e_intent} ({int(final_e_dmg)} dmg).")
 
-        # 4. Biome Effects
         b_name, b_data = get_biome(self.data["floor"])
         if b_name == "Sewers" and random.random() < 0.2:
             self.data["hp"] -= int(self.data["max_hp"] * 0.05)
@@ -846,16 +855,29 @@ class TowerGameView(View):
             self.data["hp"] -= 5
             self.combat_log.append("🔥 Burnt by heat!")
 
-        # 5. Check State
         if self.enemy["hp"] <= 0:
             xp = 20 * (2 if "scholar" in self.data["perks"] else 1)
             gold = 50 * (1.2 if "midas" in self.data["perks"] else 1)
             self.data["xp"] += xp
             self.data["gold"] += int(gold)
             self.data["floor"] += 1
-            self.data["adrenaline"] = 0 # Reset on win
+            self.data["adrenaline"] = 0 
             
+            # --- SCOIN BOSS REWARD ---
+            scoin_bonus = ""
+            if (self.data["floor"] - 1) % 10 == 0: # Check if the defeated enemy was a Boss (floor 10, 20...)
+                reward_amt = random.randint(2, 5)
+                update_balance(self.user_id, reward_amt)
+                scoin_bonus = f"\n💰 **BOSS BONUS:** +{reward_amt} Scoins to Casino Balance!"
+
             req = get_xp_needed(self.data["level"])
+            xp_bar = draw_bar(self.data["xp"], req, "🟦") 
+            desc = (f"💀 **{self.enemy['name']} Defeated!**\n"
+                    f"💰 **+{int(gold)}** Gold\n"
+                    f"✨ **+{xp}** XP{scoin_bonus}\n\n"
+                    f"**Level {self.data['level']} Progress:**\n"
+                    f"{xp_bar} `{self.data['xp']}/{req}`")
+            
             if self.data["xp"] >= req:
                 self.data["xp"] -= req
                 self.data["level"] += 1
@@ -872,7 +894,7 @@ class TowerGameView(View):
             save_tower_data(self.user_id, self.data)
             
             self.render_main_menu() 
-            await interaction.response.edit_message(embed=self.update_embed("🏆 Victory!", f"Gained {xp} XP, {gold} Gold."), view=self)
+            await interaction.response.edit_message(embed=self.update_embed("🏆 Victory!", desc), view=self)
             
         elif self.data["hp"] <= 0:
             self.data["hp"] = 0
@@ -901,7 +923,9 @@ class ClassSelectView(View):
         d = get_tower_data(i.user.id)
         d.update({"class": cls, "max_hp": hp, "hp": hp, "atk": atk, "def": def_})
         save_tower_data(i.user.id, d)
-        await i.response.send_message(f"✅ Class set to **{cls}**!", ephemeral=True)
+        view = TowerGameView(i.user)
+        embed = view.update_embed("⚔️ The Gates Open", f"You have chosen **{cls}**.\nBegin your ascent.", THEME_PRIMARY)
+        await i.response.edit_message(embed=embed, view=view)
         self.stop()
 
     @discord.ui.button(label="Warrior (Block/Stun)", style=ButtonStyle.danger, emoji="🛡️", row=0)
@@ -916,40 +940,10 @@ class ClassSelectView(View):
     @discord.ui.button(label="Game Guide / Info", style=ButtonStyle.secondary, emoji="ℹ️", row=1)
     async def info(self, button, interaction: Interaction):
         embed = discord.Embed(title="🏰 Shadow Tower Manual", color=THEME_PRIMARY)
-        
-        embed.add_field(
-            name="⚔️ Tactical Combat (The Tick System)", 
-            value="Enemies display their **Intent** (e.g., 'Heavy Attack'). You must react:\n"
-                  "• **Defend** against Heavy Attacks to reduce damage.\n"
-                  "• **Attack** when they are vulnerable.\n"
-                  "• **Stun/Dodge** using class skills to skip their turn.",
-            inline=False
-        )
-
-        embed.add_field(
-            name="📈 Leveling & Perks",
-            value="• **XP:** Earned by killing monsters. Bosses give double.\n"
-                  "• **Perks:** Every **5 Levels**, you gain a permanent mutation (e.g., *Vampirism* or *Midas Touch*) that stays with you forever.",
-            inline=False
-        )
-
-        embed.add_field(
-            name="💎 Loot 2.0 (Gacha)",
-            value="• **Rarities:** Common < Rare < Epic < Legendary.\n"
-                  "• **Affixes:** Gear can have traits like *Vampiric* (Heal on hit) or *Thorned* (Reflect DMG).\n"
-                  "• **Choice:** You must choose to **Equip** (destroy old gear) or **Salvage** (Get XP/Gold) immediately.",
-            inline=False
-        )
-
-        embed.add_field(
-            name="💀 The Cycle of Death", 
-            value="If HP hits 0, you **DIE**.\n"
-                  "• **LOST:** Level, Class, Stats, Current Floor, Gear.\n"
-                  "• **KEPT:** Unlocked Perks, Gold/Scoins, Captured Pets.\n"
-                  "• *Tip: Buy checkpoints with Scoins to respawn safely.*",
-            inline=False
-        )
-        
+        embed.add_field(name="⚔️ Tactical Combat (The Tick System)", value="Enemies display their **Intent** (e.g., 'Heavy Attack'). You must react:\n• **Defend** against Heavy Attacks to reduce damage.\n• **Attack** when they are vulnerable.\n• **Stun/Dodge** using class skills to skip their turn.", inline=False)
+        embed.add_field(name="📈 Leveling & Perks", value="• **XP:** Earned by killing monsters. Bosses give double.\n• **Perks:** Every **5 Levels**, you gain a permanent mutation (e.g., *Vampirism* or *Midas Touch*) that stays with you forever.", inline=False)
+        embed.add_field(name="💎 Loot 2.0 (Gacha)", value="• **Rarities:** Common < Rare < Epic < Legendary.\n• **Affixes:** Gear can have traits like *Vampiric* (Heal on hit) or *Thorned* (Reflect DMG).\n• **Choice:** You must choose to **Equip** (destroy old gear) or **Salvage** (Get XP/Gold) immediately.", inline=False)
+        embed.add_field(name="💀 The Cycle of Death", value="If HP hits 0, you **DIE**.\n• **LOST:** Level, Class, Stats, Current Floor, Gear.\n• **KEPT:** Unlocked Perks, Gold/Scoins, Captured Pets.\n• *Tip: Buy checkpoints with Scoins to respawn safely.*", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ==================== CASINO: SLOTS ====================
