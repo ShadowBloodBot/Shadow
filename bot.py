@@ -1,13 +1,12 @@
-# bot.py — ShadowSyn (Master: Shadow Tower 2.0 Overhaul)
+# bot.py — ShadowSyn (Master: Tower UI Fixes)
 #
 # === FEATURES ===
-# [x] 🏰 SHADOW TOWER 2.0 (ADDICTION UPDATE):
-#     - ⚔️ Tactical Combat: See enemy intent (Attack/Defend) -> React to win.
-#     - 🎲 Loot 2.0: RNG Affixes (Vampiric, Midas, etc.) & Tiers (Common-Legendary).
-#     - 💀 Permadeath & Legacy: Death resets Class/Level. Perks & Scoins persist.
-#     - 🧬 Perks: Every 5 levels, choose a permanent passive boost.
-# [x] CASINO: All gambling features preserved (Slots, Chicken, Dice, Duel).
-# [x] CORE: VoiceMaster, TTS, Admin Tools, Persistence.
+# [x] 🏰 SHADOW TOWER 2.0:
+#     - 🛠️ FIX: Victory now correctly swaps buttons to "Climb" (Seamless transition).
+#     - 🛠️ FIX: Pyroblast cost caps at 1 HP (Cannot commit suicide).
+#     - 🛠️ FIX: Potion counts update visually during combat.
+#     - 💀 Permadeath, Loot, Class System preserved.
+# [x] CASINO & CORE: All previous features maintained exactly.
 #
 # LIBRARY: py-cord[voice]
 
@@ -458,9 +457,8 @@ def get_tower_data(user_id):
             "potions": 0, "atk": 0, "def": 0,
             "class": None, "xp": 0, "level": 1, 
             "perks": [], "pets": [],
-            "gear": None  # New: {"name": "Sword", "type": "ATK", "val": 5, "affix": "Vampiric"}
+            "gear": None
         }
-    # Ensure keys
     defaults = {"class": None, "xp": 0, "level": 1, "perks": [], "pets": [], "gear": None}
     for k, v in defaults.items():
         if k not in tower_db[uid]: tower_db[uid][k] = v
@@ -480,20 +478,17 @@ def get_monster(floor):
 def get_xp_needed(lvl): return lvl * 50
 
 def generate_loot(floor):
-    # Tier Calculation
     roll = random.randint(1, 100)
     if roll > 95: tier, mult, color = "Legendary", 5, THEME_LEGEND
     elif roll > 80: tier, mult, color = "Epic", 3, THEME_EPIC
     elif roll > 60: tier, mult, color = "Rare", 2, THEME_RARE
     else: tier, mult, color = "Common", 1, 0x95A5A6
 
-    # Type
     is_weapon = random.choice([True, False])
     base_name = random.choice(["Dagger", "Sword", "Axe", "Scythe"]) if is_weapon else random.choice(["Shield", "Armor", "Cloak", "Helm"])
     stat_type = "ATK" if is_weapon else "DEF"
     val = (floor * mult) + random.randint(1, 5)
 
-    # Affix
     affix = None
     if tier != "Common" and random.random() < 0.5:
         affix = random.choice(list(AFFIXES.keys()))
@@ -517,7 +512,6 @@ class PerkSelectView(View):
         self.data = data
         self.user_id = str(user.id)
         
-        # Generate 3 random options not already owned
         owned = [p for p in data["perks"]]
         available = [p for p in PERKS if p["id"] not in owned]
         if not available: 
@@ -550,15 +544,11 @@ class LootView(View):
     async def equip(self, button, interaction):
         if interaction.user.id != self.user.id: return
         
-        # Stat adjustment logic could be complex, for simplified RPG we assume gear replaces base stats boost or acts as bonus.
-        # Let's make gear ADD to base stats but not persist through death.
-        # Removing old gear stats
         old_gear = self.data.get("gear")
         if old_gear:
             if old_gear["type"] == "ATK": self.data["atk"] -= old_gear["val"]
             elif old_gear["type"] == "DEF": self.data["def"] -= old_gear["val"]
         
-        # Add new gear
         self.data["gear"] = self.item
         if self.item["type"] == "ATK": self.data["atk"] += self.item["val"]
         elif self.item["type"] == "DEF": self.data["def"] += self.item["val"]
@@ -634,7 +624,7 @@ class TowerGameView(View):
         cid = interaction.data["custom_id"]
         if "act_" in cid: await self.resolve_combat(interaction, cid)
         elif "nav_" in cid: await self.resolve_nav(interaction, cid)
-        return False # Handled
+        return False
 
     async def resolve_nav(self, interaction, cid):
         if cid == "nav_rest":
@@ -652,20 +642,19 @@ class TowerGameView(View):
             await interaction.response.send_message("💾 **Checkpoint Saved.**", ephemeral=True)
             
         elif cid == "nav_climb":
-            # Boss Check
             if self.data["floor"] % 10 == 0:
                 boss_name = BOSSES.get(self.data["floor"], "Unknown Horror")
                 self.start_combat(boss=True, name=boss_name)
             else:
                 roll = random.randint(1, 100)
-                if roll > 30: # 70% Combat
+                if roll > 30: 
                     self.start_combat()
-                else: # Loot Room
+                else: 
                     item = generate_loot(self.data["floor"])
                     view = LootView(self.user, item)
                     embed = discord.Embed(title="🎁 Loot Found!", description=f"You found **{item['name']}**\nType: {item['type']} (+{item['val']})", color=item['color'])
                     await interaction.response.edit_message(embed=embed, view=view)
-                    return # Loot view handles next
+                    return
                     
             await interaction.response.edit_message(embed=self.update_embed("⚔️ Encounter!", "Prepare yourself!"), view=self)
 
@@ -680,17 +669,11 @@ class TowerGameView(View):
         self.render_main_menu()
 
     async def resolve_combat(self, interaction, action):
-        # 1. Player Action
-        p_dmg = 0
-        p_block = 0
-        p_act = ""
-        enemy_stunned = False
-        
+        p_dmg, p_block, p_act, enemy_stunned = 0, 0, "", False
         atk_stat = self.data["atk"]
         
         if action == "act_atk":
             p_dmg = atk_stat + random.randint(1, 5)
-            # Rogue Crit
             if self.data["class"] == "Rogue" and random.random() < 0.2: 
                 p_dmg *= 2; p_act = "CRIT!"
             else: p_act = "Attacked"
@@ -706,12 +689,14 @@ class TowerGameView(View):
                 enemy_stunned = True
                 p_act = "Shield Bashed"
             elif cls == "Mage":
-                p_dmg = atk_stat * 3 # True Dmg
-                self.data["hp"] -= 5 # Cost
+                p_dmg = atk_stat * 3 
+                # Safety: Don't kill self
+                if self.data["hp"] > 5: self.data["hp"] -= 5
+                else: self.data["hp"] = 1
                 p_act = "Pyroblasted"
             elif cls == "Rogue":
                 p_dmg = atk_stat * 1.5
-                p_block = 999 # Dodge
+                p_block = 999 
                 p_act = "Shadow Stepped"
                 
         elif action == "act_pot":
@@ -721,43 +706,35 @@ class TowerGameView(View):
             self.data["potions"] -= 1
             p_act = "Drank Potion"
 
-        # 2. Enemy Action
         e_dmg = 0
         e_intent = self.enemy["intent"]
         
         if not enemy_stunned:
             if e_intent == "Attack": e_dmg = self.enemy["power"]
             elif e_intent == "Heavy Attack": e_dmg = self.enemy["power"] * 1.5
-            elif e_intent == "Defend": p_dmg = int(p_dmg * 0.5) # Reduced dmg taken
+            elif e_intent == "Defend": p_dmg = int(p_dmg * 0.5) 
         else:
             self.combat_log.append("💫 Enemy Stunned!")
 
-        # 3. Resolve Damage
-        # Apply Player Dmg
         self.enemy["hp"] -= p_dmg
-        if "vampire" in self.data["perks"]: self.data["hp"] += 5
+        if "vampire" in self.data["perks"]: self.data["hp"] = min(self.data["max_hp"], self.data["hp"] + 5)
         
-        # Apply Enemy Dmg
         final_e_dmg = max(0, e_dmg - p_block - (self.data["def"] if action != "act_def" else 0))
         if final_e_dmg > 0:
             if "thorns" in self.data["perks"]: 
                 refl = int(final_e_dmg * 0.1)
                 self.enemy["hp"] -= refl
-                
             self.data["hp"] -= final_e_dmg
         
         self.combat_log.append(f"You {p_act} ({int(p_dmg)}). Enemy {e_intent} ({int(final_e_dmg)} dmg).")
 
-        # 4. Check State
         if self.enemy["hp"] <= 0:
-            # Victory
             xp = 20 * (2 if "scholar" in self.data["perks"] else 1)
             gold = 50 * (1.2 if "midas" in self.data["perks"] else 1)
             self.data["xp"] += xp
             self.data["gold"] += int(gold)
             self.data["floor"] += 1
             
-            # Level Up?
             req = get_xp_needed(self.data["level"])
             if self.data["xp"] >= req:
                 self.data["xp"] -= req
@@ -766,7 +743,6 @@ class TowerGameView(View):
                 self.data["atk"] += 2
                 self.data["def"] += 1
                 self.data["hp"] = self.data["max_hp"]
-                
                 if self.data["level"] % 5 == 0:
                     await interaction.response.edit_message(embed=self.update_embed("🧬 Mutation!", "Choose a Perk:"), view=PerkSelectView(self.user, self.data))
                     return
@@ -774,24 +750,24 @@ class TowerGameView(View):
             self.mode = "EXPLORE"
             self.enemy = None
             save_tower_data(self.user_id, self.data)
+            
+            self.render_main_menu() # CRITICAL FIX: Refresh buttons
             await interaction.response.edit_message(embed=self.update_embed("🏆 Victory!", f"Gained {xp} XP, {gold} Gold."), view=self)
             
         elif self.data["hp"] <= 0:
-            # Death (Roguelite Reset)
             self.data["hp"] = 0
             self.data["level"] = 1
             self.data["xp"] = 0
             self.data["class"] = None
-            self.data["floor"] = self.data["checkpoint"] # Checkpoint mercy
-            self.data["gear"] = None # Lose Gear
-            # Keep Perks, Scoins, Pets
+            self.data["floor"] = self.data["checkpoint"]
+            self.data["gear"] = None 
             save_tower_data(self.user_id, self.data)
             await interaction.response.edit_message(embed=self.update_embed("💀 YOU DIED", "Level, Stats, and Gear lost.\nPerks & Pets persisted.", THEME_LOSS), view=None)
             
         else:
-            # Next Round
             self.enemy["intent"] = random.choice(["Attack", "Heavy Attack", "Defend"])
             save_tower_data(self.user_id, self.data)
+            self.render_main_menu() # Refresh for potion counts etc
             await interaction.response.edit_message(embed=self.update_embed("⚔️ Combat", "Next round..."), view=self)
 
 class ClassSelectView(View):
@@ -856,14 +832,11 @@ class RepeatSpinView(View):
     async def spin_btn(self, button, interaction: Interaction):
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("🚫 Not your game.", ephemeral=True)
-        
         bal = get_balance(str(self.user_id))
         if bal < self.bet:
             return await interaction.response.send_message(f"❌ Insufficient funds ({bal} < {self.bet}).", ephemeral=True)
-        
         embed, is_jackpot, win_amount = generate_slot_result(interaction.user, self.bet)
         await interaction.response.send_message(embed=embed, view=RepeatSpinView(self.user_id, self.bet), ephemeral=True)
-
         if is_jackpot:
             target_thread = interaction.guild.get_channel(CASINO_CHANNEL_ID) or await interaction.guild.fetch_channel(CASINO_CHANNEL_ID)
             if target_thread:
@@ -907,20 +880,16 @@ class ChickenGameView(View):
         self.user = user
         self.bet = bet
         self.bones_count = bones_count
-        self.grid_size = 20 # 5x4 grid
-        
-        # Game State
+        self.grid_size = 20 
         self.bones_indices = set(random.sample(range(self.grid_size), bones_count))
         self.revealed = set()
         self.game_over = False
         self.multiplier = 1.0
         
-        # Setup Grid (Rows 0-3)
         for y in range(4):
             for x in range(5):
                 self.add_item(ChickenButton(x, y, self))
         
-        # Cashout Button (Row 4)
         self.cashout_btn = Button(style=ButtonStyle.success, label="Cash Out", row=4, emoji="💰", disabled=True)
         self.cashout_btn.callback = self.cash_out
         self.add_item(self.cashout_btn)
@@ -930,46 +899,35 @@ class ChickenGameView(View):
         safe_remaining = remaining_tiles - self.bones_count
         if safe_remaining <= 0: return self.multiplier
         odds = remaining_tiles / safe_remaining
-        return self.multiplier * odds * 0.97 # 3% House Edge
+        return self.multiplier * odds * 0.97 
 
     async def handle_click(self, button, interaction: Interaction):
         if self.game_over: return
-        
         idx = button.idx
         if idx in self.bones_indices:
-            # HIT A BONE -> LOSS
             self.game_over = True
             update_balance(str(self.user_id), -self.bet)
-            
             button.style = ButtonStyle.danger
             button.emoji = "🦴"
             button.label = ""
-            
-            # Reveal all bones
             for child in self.children:
                 if isinstance(child, ChickenButton):
                     child.disabled = True
                     if child.idx in self.bones_indices and child.idx != idx:
                         child.style = ButtonStyle.secondary
                         child.emoji = "🦴"
-            
             self.cashout_btn.disabled = True
             embed = discord.Embed(title="💥 BONE!", description=f"You hit a bone and lost **{self.bet}** Scoins.", color=THEME_LOSS)
             await interaction.response.edit_message(embed=embed, view=self)
-            
         else:
-            # HIT A CHICKEN -> WIN
             self.revealed.add(idx)
             self.multiplier = self.calculate_next_multiplier()
-            
             button.style = ButtonStyle.success
             button.emoji = "🍗"
             button.label = ""
             button.disabled = True
-            
             self.cashout_btn.disabled = False
             self.cashout_btn.label = f"Cash Out ({int(self.bet * self.multiplier)})"
-            
             current_win = int(self.bet * self.multiplier)
             embed = discord.Embed(title="🍗 CHICKEN!", description=f"Multiplier: **{self.multiplier:.2f}x**\nCurrent Win: **{current_win}**", color=THEME_GOLD)
             await interaction.response.edit_message(embed=embed, view=self)
@@ -977,14 +935,9 @@ class ChickenGameView(View):
     async def cash_out(self, interaction: Interaction):
         if interaction.user.id != self.user_id: return
         self.game_over = True
-        
         win_amount = int(self.bet * self.multiplier)
-        # Net change: -bet + win
         update_balance(str(self.user_id), -self.bet + win_amount)
-
-        # Disable all
         for child in self.children: child.disabled = True
-        
         embed = discord.Embed(title="💰 CASHED OUT", description=f"You won **{win_amount}** Scoins!\nMultiplier: **{self.multiplier:.2f}x**", color=THEME_WIN)
         await interaction.response.edit_message(embed=embed, view=self)
 
@@ -1004,12 +957,9 @@ class ChickenDifficultySelect(Select):
     async def callback(self, interaction: Interaction):
         if interaction.user.id != self.user.id: return
         bones = int(self.values[0])
-        # Check Balance before starting
         bal = get_balance(str(self.user.id))
         if bal < self.bet:
             return await interaction.response.send_message("❌ Insufficient funds.", ephemeral=True)
-        
-        # Start Game
         view = ChickenGameView(self.user, self.bet, bones)
         embed = discord.Embed(title="🍗 Chicken Cross", description=f"Bet: {self.bet} | Bones: {bones}\nFind the chickens, avoid the bones!", color=THEME_PRIMARY)
         await interaction.response.edit_message(embed=embed, view=view)
@@ -1045,28 +995,20 @@ class DiceGameView(View):
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("🚫 Not your game.", ephemeral=True)
         if self.game_over: return
-        
-        # Deduct bet immediately
         bal = get_balance(str(self.user_id))
         if bal < self.bet:
             return await interaction.response.send_message("❌ Insufficient funds.", ephemeral=True)
         
         update_balance(str(self.user_id), -self.bet)
-        self.game_over = True # One shot game
-
-        # Roll Dice
+        self.game_over = True
         d1 = random.randint(1, 6)
         d2 = random.randint(1, 6)
         total = d1 + d2
-        
-        # Visuals
         dice_map = {1: "1️⃣", 2: "2️⃣", 3: "3️⃣", 4: "4️⃣", 5: "5️⃣", 6: "6️⃣"}
         visual = f"{dice_map[d1]} + {dice_map[d2]} = **{total}**"
-
-        # Win Logic
+        
         won = False
         payout = 0
-        
         if choice == "low" and total < 7:
             won = True
             payout = int(self.bet * 2)
@@ -1076,20 +1018,15 @@ class DiceGameView(View):
         elif choice == "seven" and total == 7:
             won = True
             payout = int(self.bet * 5)
-
-        # Result
+        
         if won:
             update_balance(str(self.user_id), payout)
             embed = discord.Embed(title="🎲 Dice Roll", description=f"{visual}\n✅ **WIN!** You won **{payout}** Scoins.", color=THEME_WIN)
         else:
             embed = discord.Embed(title="🎲 Dice Roll", description=f"{visual}\n❌ **LOSS.** You lost **{self.bet}** Scoins.", color=THEME_LOSS)
         
-        # Disable buttons
         for child in self.children: child.disabled = True
-        
-        # Add "Play Again" button
         self.add_item(PlayAgainDiceButton(self.user, self.bet))
-        
         await interaction.response.edit_message(embed=embed, view=self)
 
 class PlayAgainDiceButton(Button):
@@ -1101,11 +1038,7 @@ class PlayAgainDiceButton(Button):
         if interaction.user.id != self.user.id: return
         bal = get_balance(str(self.user.id))
         if bal < self.bet: return await interaction.response.send_message("❌ Broke.", ephemeral=True)
-        await interaction.response.send_message(
-            f"🎲 **High/Low Dice**\nBet: **{self.bet}**", 
-            view=DiceGameView(self.user, self.bet), 
-            ephemeral=True
-        )
+        await interaction.response.send_message(f"🎲 **High/Low Dice**\nBet: **{self.bet}**", view=DiceGameView(self.user, self.bet), ephemeral=True)
 
 # ==================== CASINO: DASHBOARD ====================
 
@@ -1380,15 +1313,23 @@ setup_welcome(bot)
 
 @bot.event
 async def on_member_remove(member):
+    # Get the departures channel
     channel = member.guild.get_channel(DEPARTURES_THREAD_ID) or await member.guild.fetch_channel(DEPARTURES_THREAD_ID)
     if not channel: return
+
+    # Default to "Member Left"
     title = "👋 Member Left"
     description = f"{member.mention} left the server."
     color = THEME_LOSS 
     footer_text = f"ID: {member.id}"
+    
     now = utcnow()
+    
+    # Account Age
     age_str = format_age(member.created_at)
     joined_str = format_age(member.joined_at)
+
+    # Audit Log Check for Kick (Last 10 seconds)
     try:
         async for entry in member.guild.audit_logs(limit=1, action=discord.AuditLogAction.kick):
             if entry.target.id == member.id:
@@ -1398,14 +1339,19 @@ async def on_member_remove(member):
                     color = 0xF04747 
                     break
     except: pass
+
+    # Construct Embed
     embed = discord.Embed(title=title, color=color, timestamp=now)
     embed.set_author(name=f"{member.name} ({member.display_name})", icon_url=safe_avatar_url(member))
     embed.set_thumbnail(url=safe_avatar_url(member))
+    
     embed.add_field(name="User", value=f"{member.mention}\n{member.name} ({member.display_name})", inline=False)
     embed.add_field(name="Joined", value=joined_str, inline=True)
     embed.add_field(name="Account Age", value=age_str, inline=True)
+    
     embed.add_field(name="Details", value=description, inline=False)
     embed.set_footer(text=footer_text)
+
     await channel.send(embed=embed)
 
 async def _find_audit_action(guild, action, target_id):
@@ -1429,6 +1375,7 @@ async def send_control_panel(vc, member):
 @bot.event
 async def on_voice_state_update(member, before, after):
     guild = member.guild
+    # --- JTC LOGIC ---
     if after.channel and after.channel.id == JOIN_TO_CREATE_CHANNEL_ID:
         try:
             cat = get(guild.categories, id=VC_CATEGORY_ID) or after.channel.category
@@ -1437,20 +1384,29 @@ async def on_voice_state_update(member, before, after):
                 category=cat, 
                 bitrate=VC_DEFAULT_BITRATE
             )
+            # EXPLICITLY GRANT SPEAK PERMS
             await new_vc.set_permissions(member, connect=True, speak=True)
+            
             active_temp_vcs.add(new_vc.id)
             _save_active_vcs(active_temp_vcs)
             await member.move_to(new_vc)
+            # CALL RESTORED FUNCTION
             asyncio.create_task(send_control_panel(new_vc, member))
         except: traceback.print_exc()
+    # --- CLEANUP LOGIC ---
     if before.channel and before.channel.id in active_temp_vcs and len(before.channel.members) == 0:
         try: await before.channel.delete(); active_temp_vcs.discard(before.channel.id); _save_active_vcs(active_temp_vcs)
         except: pass
     
+    # ##### ALERT / AUDIT SYSTEM (NO PINGS) #####
     if member.bot: return
+    # --- SEND TO ALERT CHANNEL ---
     target, _ = await resolve_target(bot, DEFAULT_AUDIT_THREAD_ID)
     if not target: return
+
     msg = None
+    
+    # 1. Join/Leave/Move
     if before.channel != after.channel:
         if before.channel is None and after.channel is not None:
             msg = f"🟢 **{member.display_name}** joined **{after.channel.name}**."
@@ -1463,12 +1419,16 @@ async def on_voice_state_update(member, before, after):
                 msg = f"🔀 **{member.display_name}** moved **{before.channel.name}** ➜ **{after.channel.name}** by {actor}."
             else:
                 msg = f"🔀 **{member.display_name}** moved **{before.channel.name}** ➜ **{after.channel.name}**."
+
+    # 2. Self Mute/Deafen (Granular Check)
     elif before.self_mute != after.self_mute:
         status = "muted" if after.self_mute else "unmuted"
         msg = f"🎤 **{member.display_name}** **self-{status}**."
     elif before.self_deaf != after.self_deaf:
         status = "deafened" if after.self_deaf else "undeafened"
         msg = f"🎧 **{member.display_name}** **self-{status}**."
+
+    # 3. Server Mute/Deafen (Admin Abilities Check)
     elif before.mute != after.mute:
         status = "server-muted" if after.mute else "server-unmuted"
         entry = await _find_audit_action(guild, discord.AuditLogAction.member_update, member.id)
@@ -1479,12 +1439,15 @@ async def on_voice_state_update(member, before, after):
         entry = await _find_audit_action(guild, discord.AuditLogAction.member_update, member.id)
         actor = f"**{entry.user.display_name}**" if entry else "Unknown Admin"
         msg = f"🙉 **{member.display_name}** was **{status}** by {actor}."
+
+    # 4. Stream/Video
     elif before.self_stream != after.self_stream:
         status = "started" if after.self_stream else "stopped"
         msg = f"📺 **{member.display_name}** **{status} streaming**."
     elif before.self_video != after.self_video:
         status = "enabled" if after.self_video else "disabled"
         msg = f"📷 **{member.display_name}** **{status} camera**."
+
     if msg:
         try: await target.send(msg)
         except: pass
@@ -1496,29 +1459,46 @@ async def on_voice_state_update(member, before, after):
 async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, default="English")):
     vc = await ensure_voice_simple(ctx)
     if not vc: return
+
     try:
+        # 1. Resolve Language Code
         lang_code = LANG_CODES.get(language, 'en')
+        
+        # 2. Translate if not English
         text_to_speak = text
         if lang_code != 'en':
             try:
                 translation = await bot.loop.run_in_executor(None, lambda: translator.translate(text, dest=lang_code))
                 text_to_speak = translation.text
-            except: pass 
+            except Exception as tr_err:
+                print(f"Translation Error: {tr_err}")
+                text_to_speak = text 
+
+        # 3. Notify User
         await safe_reply(ctx, f"🗣️ **{language}:** {text_to_speak}", ephemeral=True)
+
+        # LOGGING
         log_ch = bot.get_channel(SPEAK_LOG_THREAD_ID)
         if log_ch:
             try: await log_ch.send(f"🗣️ **{ctx.author.display_name}** ({language}): {text_to_speak}")
             except: pass
+
+        # 4. Generate Audio
         tts = gTTS(text=text_to_speak, lang=lang_code)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
             tts.save(fp.name)
             temp_path = fp.name
+        
+        # 5. Play
         vc.play(discord.FFmpegPCMAudio(temp_path), after=lambda e: os.remove(temp_path))
-    except Exception as e: await safe_reply(ctx, f"❌ Error: {e}", ephemeral=True)
+
+    except Exception as e:
+        await safe_reply(ctx, f"❌ Error: {e}", ephemeral=True)
 
 @bot.slash_command(name="haste", description="Random Haste Fact")
 async def haste(ctx):
-    if not active_haste_facts: return await safe_reply(ctx, "No facts yet.")
+    if not active_haste_facts:
+        return await safe_reply(ctx, "No facts yet.")
     fact = random.choice(active_haste_facts)
     await safe_reply(ctx, f"🍌 **Fact:** {fact}")
 
@@ -1531,7 +1511,9 @@ async def morehaste(ctx, fact: str):
 
 @bot.slash_command(name="gamble", description="Open Casino")
 async def gamble(ctx):
-    if ctx.channel.id != CASINO_CHANNEL_ID: return await safe_reply(ctx, f"❌ Go to <#{CASINO_CHANNEL_ID}> to gamble.", ephemeral=True)
+    if ctx.channel.id != CASINO_CHANNEL_ID:
+        return await safe_reply(ctx, f"❌ Go to <#{CASINO_CHANNEL_ID}> to gamble.", ephemeral=True)
+
     if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
     embed = discord.Embed(title="🎰 ShadowSyn Casino", description="Welcome.", color=THEME_PRIMARY)
     embed.set_footer(text=f"Balance: {get_balance(str(ctx.author.id))}")
@@ -1559,9 +1541,14 @@ async def give_scoins(ctx, user: discord.Member, amount: int):
 
 @bot.slash_command(name="tower", description="Play The Shadow Tower")
 async def tower(ctx):
-    if ctx.channel.id != CASINO_CHANNEL_ID: return await safe_reply(ctx, f"❌ Go to <#{CASINO_CHANNEL_ID}>.", ephemeral=True)
+    if ctx.channel.id != CASINO_CHANNEL_ID:
+        return await safe_reply(ctx, f"❌ Go to <#{CASINO_CHANNEL_ID}>.", ephemeral=True)
+    
     data = get_tower_data(ctx.author.id)
-    if not data["class"]: return await safe_reply(ctx, "🛡️ **Choose your Class:**", view=ClassSelectView(ctx.author.id), ephemeral=True)
+    
+    if not data["class"]:
+        return await safe_reply(ctx, "🛡️ **Choose your Class:**", view=ClassSelectView(ctx.author.id), ephemeral=True)
+
     view = TowerGameView(ctx.author)
     embed = view.update_embed("Welcome to the **Shadow Tower**.\nHow high can you climb?", THEME_PRIMARY)
     await safe_reply(ctx, embed=embed, view=view, ephemeral=True)
@@ -1573,30 +1560,61 @@ async def tower_top(ctx):
     for i, (uid, data) in enumerate(sorted_users[:10]):
         try: user = await bot.fetch_user(int(uid)); name = user.display_name
         except: name = "Unknown Warrior"
-        cls = data.get("class", "Novice"); lvl = data.get("level", 1)
+        cls = data.get("class", "Novice")
+        lvl = data.get("level", 1)
         msg += f"{i+1}. **{name}** ({cls} Lvl {lvl}) — Floor {data.get('max_floor', 1)}\n"
     await safe_reply(ctx, msg)
 
 @bot.slash_command(name="revive", description="Revive in Tower (5000 Scoins)")
 async def revive(ctx):
     if ctx.channel.id != CASINO_CHANNEL_ID: return await safe_reply(ctx, "❌ Wrong channel.", ephemeral=True)
+    
     user_id = str(ctx.author.id)
     data = get_tower_data(ctx.author.id)
-    if data["hp"] > 0: return await safe_reply(ctx, "❌ You are not dead.", ephemeral=True)
+    
+    if data["hp"] > 0:
+        return await safe_reply(ctx, "❌ You are not dead.", ephemeral=True)
+        
     cost = 5000
     bal = get_balance(user_id)
-    if bal < cost: return await safe_reply(ctx, f"❌ You need {cost} Scoins to cheat death.", ephemeral=True)
+    if bal < cost:
+        return await safe_reply(ctx, f"❌ You need {cost} Scoins to cheat death.", ephemeral=True)
+        
     update_balance(user_id, -cost)
-    data["hp"] = int(data["max_hp"] / 2) 
+    data["hp"] = int(data["max_hp"] / 2) # Revive with half HP
     save_tower_data(user_id, data)
+    
     await safe_reply(ctx, "💎 **HEROES NEVER DIE!**\nYou have been revived. Use `/tower` to continue.", ephemeral=True)
+
+@bot.slash_command(name="respawn", description="Give up and return to Checkpoint")
+async def respawn(ctx):
+    if ctx.channel.id != CASINO_CHANNEL_ID: return await safe_reply(ctx, "❌ Wrong channel.", ephemeral=True)
+    
+    user_id = str(ctx.author.id)
+    data = get_tower_data(ctx.author.id)
+    
+    if data["hp"] > 0: return await safe_reply(ctx, "❌ You are alive.", ephemeral=True)
+    
+    # Reset
+    data["floor"] = data["checkpoint"]
+    data["hp"] = data["max_hp"]
+    data["atk"] = 0
+    data["def"] = 0
+    data["potions"] = 0
+    
+    save_tower_data(user_id, data)
+    
+    await safe_reply(ctx, f"💀 You accepted your fate.\nRespawned at Floor {data['floor']}. Gear lost.", ephemeral=True)
 
 @bot.slash_command(name="pets", description="View your captured shadows")
 async def pets(ctx):
     data = get_tower_data(ctx.author.id)
-    if not data["pets"]: return await safe_reply(ctx, "🕸️ You haven't captured any shadows yet.")
+    if not data["pets"]:
+        return await safe_reply(ctx, "🕸️ You haven't captured any shadows yet.")
+    
     unique_pets = list(set(data["pets"]))
     desc = "\n".join([f"• {p}" for p in unique_pets])
+    
     embed = discord.Embed(title=f"🕸️ {ctx.author.display_name}'s Shadows", description=desc, color=THEME_PRIMARY)
     embed.set_footer(text=f"Total Captured: {len(unique_pets)}")
     await safe_reply(ctx, embed=embed)
@@ -1616,30 +1634,39 @@ async def silence(ctx, user: discord.Member):
         update_balance(str(ctx.author.id), cost)
         await safe_reply(ctx, f"❌ Failed: {e}", ephemeral=True)
 
+# --- CUSTOM EMBEDS (SIMPLE FORM) ---
 class EasyEmbedModal(Modal):
     def __init__(self, channel, edit_msg=None):
         super().__init__(title="Edit Embed" if edit_msg else "Create Custom Embed")
         self.channel = channel
         self.edit_msg = edit_msg
+
+        # Pre-fill data if editing
         pre_title = edit_msg.embeds[0].title if edit_msg and edit_msg.embeds else ""
         pre_desc = edit_msg.embeds[0].description if edit_msg and edit_msg.embeds else ""
         pre_foot = edit_msg.embeds[0].footer.text if edit_msg and edit_msg.embeds and edit_msg.embeds[0].footer else ""
         pre_col = str(hex(edit_msg.embeds[0].color.value)).replace("0x", "#") if edit_msg and edit_msg.embeds and edit_msg.embeds[0].color else ""
+
         self.add_item(TextInput(label="Title", placeholder="Embed Title...", value=pre_title, required=True))
         self.add_item(TextInput(label="Description", placeholder="Main content...", value=pre_desc, style=discord.InputTextStyle.paragraph, required=True))
         self.add_item(TextInput(label="Footer (Optional)", placeholder="Small text at bottom...", value=pre_foot, required=False))
         self.add_item(TextInput(label="Color (Hex)", placeholder="#2B0B35", value=pre_col, required=False))
+
     async def callback(self, interaction: Interaction):
         title = self.children[0].value
         desc = self.children[1].value
         footer = self.children[2].value
         color_raw = self.children[3].value
+        
+        # Default Color if blank or invalid
         try: 
             if color_raw: color = int(color_raw.replace("#", ""), 16)
             else: color = THEME_PRIMARY
         except: color = THEME_PRIMARY
+
         embed = discord.Embed(title=title, description=desc, color=color)
         if footer: embed.set_footer(text=footer)
+        
         if self.edit_msg:
             await self.edit_msg.edit(embed=embed)
             await interaction.response.send_message("✅ Embed Updated!", ephemeral=True)
@@ -1659,10 +1686,13 @@ async def edit_custom(ctx, message_id: str, channel: Option(discord.TextChannel,
     target_channel = channel or ctx.channel
     try:
         msg = await target_channel.fetch_message(int(message_id))
-        if msg.author != ctx.bot.user: return await ctx.respond("❌ I can only edit my own messages.", ephemeral=True)
+        if msg.author != ctx.bot.user:
+            return await ctx.respond("❌ I can only edit my own messages.", ephemeral=True)
         await ctx.send_modal(EasyEmbedModal(target_channel, edit_msg=msg))
-    except Exception as e: await ctx.respond(f"❌ Error finding message: {e}", ephemeral=True)
+    except Exception as e:
+        await ctx.respond(f"❌ Error finding message: {e}", ephemeral=True)
 
+# --- MUSIC ---
 def check_queue(gid, vc):
     if gid in bot.audio_queues and bot.audio_queues[gid]:
         url, title = bot.audio_queues[gid].popleft()
@@ -1680,14 +1710,22 @@ async def play(ctx, search: str):
     await safe_defer(ctx)
     vc = await ensure_voice_simple(ctx)
     if not vc: return
+    
+    # 1. Search for 5 results
     info = await bot.loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(YTDL_SEARCH_OPTIONS).extract_info(f"ytsearch5:{search}", download=False))
-    if not info or 'entries' not in info or not info['entries']: return await safe_reply(ctx, "❌ No results found.", ephemeral=True)
-    view = MusicSelectionView(info['entries'], ctx, vc)
+    if not info or 'entries' not in info or not info['entries']:
+        return await safe_reply(ctx, "❌ No results found.", ephemeral=True)
+    
+    entries = info['entries']
+    
+    # 2. Present Dropdown
+    view = MusicSelectionView(entries, ctx, vc)
     await safe_reply(ctx, "🔎 **Select a track:**", view=view)
 
 @bot.slash_command(name="queue")
 async def queue(ctx):
-    if ctx.guild.id not in bot.audio_queues or not bot.audio_queues[ctx.guild.id]: return await safe_reply(ctx, "Queue is empty.")
+    if ctx.guild.id not in bot.audio_queues or not bot.audio_queues[ctx.guild.id]:
+        return await safe_reply(ctx, "Queue is empty.")
     lines = [f"{i+1}. {title}" for i, (url, title) in enumerate(bot.audio_queues[ctx.guild.id])]
     await safe_reply(ctx, "\n".join(lines[:10]))
 
@@ -1707,5 +1745,6 @@ async def stop(ctx):
 async def join(ctx):
     await ensure_voice_simple(ctx); await safe_reply(ctx, "✅ Joined.")
 
+# --- RUN ---
 if __name__ == "__main__":
     bot.run(TOKEN)
