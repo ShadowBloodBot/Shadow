@@ -1,11 +1,9 @@
-# bot.py — ShadowSyn (Master: Shadow Tower 3.4 - Leaderboard Fix)
+# bot.py — ShadowSyn (Master: Shadow Tower 3.6 - Warrior Rework)
 #
 # === FEATURES ===
-# [x] 🏰 SHADOW TOWER 3.4:
-#      - 🏆 LEADERBOARD FIX: 'max_floor' is now correctly updated on climb.
-#      - ⚔️ COMBAT: Dynamic Text, Bold DMG, Adrenaline (v3.3).
-#      - 💰 ECONOMY: Boss Drops & Artifacts (v3.2).
-#      - 🚀 CORE: XP Bars, Biomes, Mystery Rooms (v3.0/3.1).
+# [x] 🏰 SHADOW TOWER 3.6:
+#      - ⚖️ WARRIOR ULT REWORK: Removed Healing. Now deals 300% DEF Dmg + Invincibility.
+#      - ⚖️ PREV NERFS: Bash 30% Stun, Chip Damage, Mage HP Cost.
 # [x] CASINO: Slots, Chicken, Dice (High/Low).
 # [x] UTILS: VoiceMaster, Music, Speak, Embeds.
 #
@@ -530,7 +528,7 @@ def generate_loot(floor):
     if tier != "Common" and random.random() < 0.5:
         affix = random.choice(list(AFFIXES.keys()))
         base_name = f"{affix} {base_name}"
-     
+      
     return {
         "name": f"{tier} {base_name}",
         "type": stat_type,
@@ -691,7 +689,7 @@ class TowerGameView(View):
             if adren >= 100:
                 skill_name = "ULTIMATE READY!"
                 style = ButtonStyle.success 
-                if cls == "Warrior": skill_name = "JUGGERNAUT (Immune)"
+                if cls == "Warrior": skill_name = "TITAN'S WRATH (Dmg = 3x DEF)"
                 elif cls == "Rogue": skill_name = "EXECUTE (Kill)"
                 elif cls == "Mage": skill_name = "CATACLYSM (Nuke)"
                 self.add_item(Button(label=skill_name, style=style, emoji="⚡", custom_id="act_ult"))
@@ -797,14 +795,21 @@ class TowerGameView(View):
         elif action == "act_skill":
             cls = self.data["class"]
             if cls == "Warrior": 
+                # NERF: No longer guaranteed stun (30% chance)
                 p_dmg = self.data["def"] * 1.5
-                enemy_stunned = True
-                p_act = "Shield Bashed"
+                if random.random() < 0.30:
+                    enemy_stunned = True
+                    p_act = "Shield Bashed (STUNNED!)"
+                else:
+                    p_act = "Shield Bashed"
+
             elif cls == "Mage":
+                # NERF: Cost scales with HP (5%)
                 p_dmg = atk_stat * 3 
-                if self.data["hp"] > 5: self.data["hp"] -= 5
-                else: self.data["hp"] = 1
+                cost = int(self.data["max_hp"] * 0.05)
+                self.data["hp"] = max(1, self.data["hp"] - cost)
                 p_act = "Pyroblasted"
+
             elif cls == "Rogue":
                 p_dmg = atk_stat * 1.5
                 p_block = 999 
@@ -816,11 +821,13 @@ class TowerGameView(View):
             self.data["adrenaline"] = 0 
             if cls == "Warrior":
                 p_block = 9999
-                self.data["hp"] = min(self.data["max_hp"], self.data["hp"] + 50)
-                p_act = "🛡️ **TITAN'S WRATH!** (Invincible + Healed 50)"
+                # REWORK: NO HEAL. Deals Damage equal to 3x DEF.
+                p_dmg = self.data["def"] * 3
+                p_act = f"🛡️ **TITAN'S WRATH!** (Invincible + {int(p_dmg)} Dmg)"
             elif cls == "Rogue":
-                if self.enemy["hp"] < (self.enemy["max_hp"] * 0.4): p_dmg = 9999
-                else: p_dmg = atk_stat * 5
+                # BUFF: Execute Threshold increased to 50%
+                if self.enemy["hp"] < (self.enemy["max_hp"] * 0.5): p_dmg = 9999
+                else: p_dmg = atk_stat * 4 # Slightly lowered base ult dmg
                 p_act = f"🩸 **EXECUTION!** (Dealt {int(p_dmg)} Dmg)"
             elif cls == "Mage":
                 p_dmg = atk_stat * 8
@@ -847,7 +854,18 @@ class TowerGameView(View):
         self.enemy["hp"] -= p_dmg
         if "vampire" in self.data["perks"]: self.data["hp"] = min(self.data["max_hp"], self.data["hp"] + 5)
         
-        final_e_dmg = max(0, e_dmg - p_block - (self.data["def"] if action != "act_def" else 0))
+        # BALANCE FIX: Chip Damage / Armor Penetration
+        # If player isn't actively defending (blocking), 10% of damage penetrates armor.
+        passive_def = self.data["def"] if action != "act_def" else 0
+        damage_after_armor = max(0, e_dmg - p_block - passive_def)
+        
+        # Chip damage rule: If block is 0 (not active blocking), take at least 10% of raw damage
+        if p_block == 0 and e_dmg > 0:
+            chip_dmg = int(e_dmg * 0.10)
+            final_e_dmg = max(chip_dmg, damage_after_armor)
+        else:
+            final_e_dmg = damage_after_armor
+
         if final_e_dmg > 0:
             if "thorns" in self.data["perks"]: 
                 refl = int(final_e_dmg * 0.1)
@@ -947,7 +965,7 @@ class ClassSelectView(View):
         await i.response.edit_message(embed=embed, view=view)
         self.stop()
 
-    @discord.ui.button(label="Warrior (Block/Stun)", style=ButtonStyle.danger, emoji="🛡️", row=0)
+    @discord.ui.button(label="Warrior (Block/Bash)", style=ButtonStyle.danger, emoji="🛡️", row=0)
     async def warrior(self, b, i): await self._set(i, "Warrior", 150, 5, 8)
 
     @discord.ui.button(label="Rogue (Crit/Dodge)", style=ButtonStyle.success, emoji="🗡️", row=0)
