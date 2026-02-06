@@ -780,22 +780,63 @@ class TowerGameView(View):
 class ClassSelectView(View):
     def __init__(self, user_id):
         super().__init__(timeout=60)
-        self.user = user_id
+        self.user_id = str(user_id)
 
     async def _set(self, i, cls, hp, atk, def_):
-        if str(i.user.id) != str(self.user): return
+        if str(i.user.id) != self.user_id: return
         d = get_tower_data(i.user.id)
         d.update({"class": cls, "max_hp": hp, "hp": hp, "atk": atk, "def": def_})
         save_tower_data(i.user.id, d)
         await i.response.send_message(f"✅ Class set to **{cls}**!", ephemeral=True)
         self.stop()
 
-    @discord.ui.button(label="Warrior (Block/Stun)", style=ButtonStyle.danger, emoji="🛡️")
+    @discord.ui.button(label="Warrior (Block/Stun)", style=ButtonStyle.danger, emoji="🛡️", row=0)
     async def warrior(self, b, i): await self._set(i, "Warrior", 150, 5, 8)
-    @discord.ui.button(label="Rogue (Crit/Dodge)", style=ButtonStyle.success, emoji="🗡️")
+
+    @discord.ui.button(label="Rogue (Crit/Dodge)", style=ButtonStyle.success, emoji="🗡️", row=0)
     async def rogue(self, b, i): await self._set(i, "Rogue", 100, 12, 2)
-    @discord.ui.button(label="Mage (True Dmg)", style=ButtonStyle.primary, emoji="🔮")
+
+    @discord.ui.button(label="Mage (True Dmg)", style=ButtonStyle.primary, emoji="🔮", row=0)
     async def mage(self, b, i): await self._set(i, "Mage", 120, 8, 3)
+
+    @discord.ui.button(label="Game Guide / Info", style=ButtonStyle.secondary, emoji="ℹ️", row=1)
+    async def info(self, button, interaction: Interaction):
+        embed = discord.Embed(title="🏰 Shadow Tower Manual", color=THEME_PRIMARY)
+        
+        embed.add_field(
+            name="⚔️ Tactical Combat (The Tick System)", 
+            value="Enemies display their **Intent** (e.g., 'Heavy Attack'). You must react:\n"
+                  "• **Defend** against Heavy Attacks to reduce damage.\n"
+                  "• **Attack** when they are vulnerable.\n"
+                  "• **Stun/Dodge** using class skills to skip their turn.",
+            inline=False
+        )
+
+        embed.add_field(
+            name="📈 Leveling & Perks",
+            value="• **XP:** Earned by killing monsters. Bosses give double.\n"
+                  "• **Perks:** Every **5 Levels**, you gain a permanent mutation (e.g., *Vampirism* or *Midas Touch*) that stays with you forever.",
+            inline=False
+        )
+
+        embed.add_field(
+            name="💎 Loot 2.0 (Gacha)",
+            value="• **Rarities:** Common < Rare < Epic < Legendary.\n"
+                  "• **Affixes:** Gear can have traits like *Vampiric* (Heal on hit) or *Thorned* (Reflect DMG).\n"
+                  "• **Choice:** You must choose to **Equip** (destroy old gear) or **Salvage** (Get XP/Gold) immediately.",
+            inline=False
+        )
+
+        embed.add_field(
+            name="💀 The Cycle of Death", 
+            value="If HP hits 0, you **DIE**.\n"
+                  "• **LOST:** Level, Class, Stats, Current Floor, Gear.\n"
+                  "• **KEPT:** Unlocked Perks, Gold/Scoins, Captured Pets.\n"
+                  "• *Tip: Buy checkpoints with Scoins to respawn safely.*",
+            inline=False
+        )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ==================== CASINO: SLOTS ====================
 
