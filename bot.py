@@ -1,9 +1,10 @@
-# bot.py — ShadowSyn (Master: Shadow Tower 3.6 - Warrior Rework)
+# bot.py — ShadowSyn (Master: Shadow Tower 3.7 - Gear Slots Fix)
 #
 # === FEATURES ===
-# [x] 🏰 SHADOW TOWER 3.6:
-#      - ⚖️ WARRIOR ULT REWORK: Removed Healing. Now deals 300% DEF Dmg + Invincibility.
-#      - ⚖️ PREV NERFS: Bash 30% Stun, Chip Damage, Mage HP Cost.
+# [x] 🏰 SHADOW TOWER 3.7:
+#      - 🛠️ GEAR FIX: Split into 'gear_weapon' and 'gear_armor' slots.
+#      - ⚖️ PREV: Warrior Ult Rework (No Heal), Bash 30% Stun.
+#      - 🛡️ CORE: Chip Damage, Class Skills, Perks.
 # [x] CASINO: Slots, Chicken, Dice (High/Low).
 # [x] UTILS: VoiceMaster, Music, Speak, Embeds.
 #
@@ -464,13 +465,24 @@ def get_tower_data(user_id):
             "potions": 0, "atk": 0, "def": 0,
             "class": None, "xp": 0, "level": 1, 
             "perks": [], "pets": [], "gear": None,
+            "gear_weapon": None, "gear_armor": None,
             "adrenaline": 0
         }
-    defaults = {"class": None, "xp": 0, "level": 1, "perks": [], "pets": [], "gear": None, "adrenaline": 0}
+    defaults = {"class": None, "xp": 0, "level": 1, "perks": [], "pets": [], "gear": None, "gear_weapon": None, "gear_armor": None, "adrenaline": 0}
     for k, v in defaults.items():
         if k not in tower_db[uid]: tower_db[uid][k] = v
         # Ensure max_floor exists if missing
         if "max_floor" not in tower_db[uid]: tower_db[uid]["max_floor"] = tower_db[uid].get("floor", 1)
+        
+    # --- MIGRATION: Old gear slot -> Specific slot ---
+    if tower_db[uid].get("gear"):
+        old_gear = tower_db[uid]["gear"]
+        if old_gear.get("type") == "ATK" and not tower_db[uid].get("gear_weapon"):
+            tower_db[uid]["gear_weapon"] = old_gear
+        elif old_gear.get("type") == "DEF" and not tower_db[uid].get("gear_armor"):
+            tower_db[uid]["gear_armor"] = old_gear
+        tower_db[uid]["gear"] = None
+
     return tower_db[uid]
 
 def save_tower_data(user_id, data):
@@ -619,17 +631,28 @@ class LootView(View):
     @discord.ui.button(label="Equip", style=ButtonStyle.success, emoji="⚔️")
     async def equip(self, button, interaction):
         if interaction.user.id != self.user.id: return
-        old_gear = self.data.get("gear")
+        
+        # Determine slot based on item type
+        slot_key = "gear_weapon" if self.item["type"] == "ATK" else "gear_armor"
+        old_gear = self.data.get(slot_key)
+        
+        # Remove old stats if present
         if old_gear:
             if old_gear["type"] == "ATK": self.data["atk"] -= old_gear["val"]
             elif old_gear["type"] == "DEF": self.data["def"] -= old_gear["val"]
         
-        self.data["gear"] = self.item
+        # Add new item & stats
+        self.data[slot_key] = self.item
         if self.item["type"] == "ATK": self.data["atk"] += self.item["val"]
         elif self.item["type"] == "DEF": self.data["def"] += self.item["val"]
         
-        save_tower_data(self.user.id, self.data)
-        await interaction.response.edit_message(embed=discord.Embed(title="⚔️ Equipped", description=f"You wield **{self.item['name']}**.", color=THEME_WIN), view=TowerGameView(self.user))
+        # Legacy cleanup
+        self.data["gear"] = None
+        
+        save_tower_data(self.user_id, self.data)
+        
+        slot_name = "Weapon" if slot_key == "gear_weapon" else "Armor"
+        await interaction.response.edit_message(embed=discord.Embed(title="⚔️ Equipped", description=f"You wield **{self.item['name']}** ({slot_name}).", color=THEME_WIN), view=TowerGameView(self.user))
 
     @discord.ui.button(label="Salvage", style=ButtonStyle.secondary, emoji="🔨")
     async def salvage(self, button, interaction):
@@ -934,7 +957,9 @@ class TowerGameView(View):
             self.data["xp"] = 0
             self.data["class"] = None
             self.data["floor"] = self.data["checkpoint"]
-            self.data["gear"] = None 
+            self.data["gear"] = None
+            self.data["gear_weapon"] = None
+            self.data["gear_armor"] = None
             self.data["adrenaline"] = 0
             # FIX: Explicitly reset stats and potions so they don't carry over
             self.data["atk"] = 0
