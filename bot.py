@@ -1,11 +1,10 @@
-# bot.py — ShadowSyn (Master: Tower UI Fixes)
+# bot.py — ShadowSyn (Master: Visuals Restored)
 #
 # === FEATURES ===
 # [x] 🏰 SHADOW TOWER 2.0:
-#     - 🛠️ FIX: Victory now correctly swaps buttons to "Climb" (Seamless transition).
-#     - 🛠️ FIX: Pyroblast cost caps at 1 HP (Cannot commit suicide).
-#     - 🛠️ FIX: Potion counts update visually during combat.
-#     - 💀 Permadeath, Loot, Class System preserved.
+#     - 📊 VISUALS: HP Bars (🟩/🟥) restored for Player & Enemy.
+#     - ⚔️ COMBAT: Intent System (Tactical), Pyroblast safety, Potion updates.
+#     - 💀 MECHANICS: Permadeath, Loot 2.0 (Affixes), Perks, Class Identity.
 # [x] CASINO & CORE: All previous features maintained exactly.
 #
 # LIBRARY: py-cord[voice]
@@ -477,6 +476,13 @@ def get_monster(floor):
 
 def get_xp_needed(lvl): return lvl * 50
 
+def draw_bar(curr, max_val, color="🟩", length=10):
+    if max_val <= 0: return color + "⬛" * 9
+    pct = max(0, min(1, curr / max_val))
+    fill = int(pct * length)
+    if fill == 0 and curr > 0: fill = 1 # Always show sliver of life
+    return color * fill + "⬛" * (length - fill)
+
 def generate_loot(floor):
     roll = random.randint(1, 100)
     if roll > 95: tier, mult, color = "Legendary", 5, THEME_LEGEND
@@ -578,19 +584,20 @@ class TowerGameView(View):
         self.render_main_menu()
 
     def update_embed(self, title, desc, color=THEME_PRIMARY):
-        player_bar = f"{self.data['hp']}/{self.data['max_hp']} HP"
+        p_bar = draw_bar(self.data["hp"], self.data["max_hp"], "🟩")
         embed = discord.Embed(title=title, description=desc, color=color)
         
         if self.mode == "COMBAT" and self.enemy:
+            e_bar = draw_bar(self.enemy['hp'], self.enemy['max_hp'], "🟥")
             intent = self.enemy.get("intent", "Unknown")
             embed.add_field(name=f"🆚 {self.enemy['name']} (Lvl {self.data['floor']})", 
-                           value=f"❤️ {self.enemy['hp']}/{self.enemy['max_hp']}\n⚠️ **Intent:** {intent}", inline=False)
+                           value=f"❤️ {self.enemy['hp']}/{self.enemy['max_hp']}\n{e_bar}\n⚠️ **Intent:** {intent}", inline=False)
             if self.combat_log:
                 embed.add_field(name="📜 Combat Log", value="\n".join(self.combat_log[-3:]), inline=False)
 
         stats = f"⚔️ {self.data['atk']} | 🛡️ {self.data['def']}"
         if self.data['gear']: stats += f"\n🗡️ {self.data['gear']['name']}"
-        embed.add_field(name=f"👤 {self.user.display_name} ({self.data['class']})", value=f"{player_bar}\n{stats}", inline=True)
+        embed.add_field(name=f"👤 {self.user.display_name} ({self.data['class']})", value=f"❤️ {self.data['hp']}/{self.data['max_hp']}\n{p_bar}\n{stats}", inline=True)
         embed.set_footer(text=f"Floor {self.data['floor']} | Gold: {self.data['gold']}")
         return embed
 
@@ -751,7 +758,7 @@ class TowerGameView(View):
             self.enemy = None
             save_tower_data(self.user_id, self.data)
             
-            self.render_main_menu() # CRITICAL FIX: Refresh buttons
+            self.render_main_menu() 
             await interaction.response.edit_message(embed=self.update_embed("🏆 Victory!", f"Gained {xp} XP, {gold} Gold."), view=self)
             
         elif self.data["hp"] <= 0:
@@ -767,16 +774,16 @@ class TowerGameView(View):
         else:
             self.enemy["intent"] = random.choice(["Attack", "Heavy Attack", "Defend"])
             save_tower_data(self.user_id, self.data)
-            self.render_main_menu() # Refresh for potion counts etc
+            self.render_main_menu()
             await interaction.response.edit_message(embed=self.update_embed("⚔️ Combat", "Next round..."), view=self)
 
 class ClassSelectView(View):
     def __init__(self, user_id):
         super().__init__(timeout=60)
-        self.user_id = str(user_id)
+        self.user = user_id
 
     async def _set(self, i, cls, hp, atk, def_):
-        if str(i.user.id) != self.user_id: return
+        if str(i.user.id) != str(self.user): return
         d = get_tower_data(i.user.id)
         d.update({"class": cls, "max_hp": hp, "hp": hp, "atk": atk, "def": def_})
         save_tower_data(i.user.id, d)
@@ -933,7 +940,7 @@ class ChickenGameView(View):
             await interaction.response.edit_message(embed=embed, view=self)
 
     async def cash_out(self, interaction: Interaction):
-        if interaction.user.id != self.user_id: return
+        if interaction.user.id != self.user.id: return
         self.game_over = True
         win_amount = int(self.bet * self.multiplier)
         update_balance(str(self.user_id), -self.bet + win_amount)
@@ -992,10 +999,10 @@ class DiceGameView(View):
         await self.process_roll(interaction, "high")
 
     async def process_roll(self, interaction: Interaction, choice):
-        if interaction.user.id != self.user_id:
+        if interaction.user.id != self.user.id:
             return await interaction.response.send_message("🚫 Not your game.", ephemeral=True)
         if self.game_over: return
-        bal = get_balance(str(self.user_id))
+        bal = get_balance(str(self.user.id))
         if bal < self.bet:
             return await interaction.response.send_message("❌ Insufficient funds.", ephemeral=True)
         
@@ -1468,6 +1475,7 @@ async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, defa
         text_to_speak = text
         if lang_code != 'en':
             try:
+                # Note: Assuming standard googletrans. If it fails, falls back to text.
                 translation = await bot.loop.run_in_executor(None, lambda: translator.translate(text, dest=lang_code))
                 text_to_speak = translation.text
             except Exception as tr_err:
@@ -1511,12 +1519,14 @@ async def morehaste(ctx, fact: str):
 
 @bot.slash_command(name="gamble", description="Open Casino")
 async def gamble(ctx):
+    # 1. CHANNEL LOCK & PRIVACY
     if ctx.channel.id != CASINO_CHANNEL_ID:
         return await safe_reply(ctx, f"❌ Go to <#{CASINO_CHANNEL_ID}> to gamble.", ephemeral=True)
 
     if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
     embed = discord.Embed(title="🎰 ShadowSyn Casino", description="Welcome.", color=THEME_PRIMARY)
     embed.set_footer(text=f"Balance: {get_balance(str(ctx.author.id))}")
+    # Ephemeral Dashboard (Hidden)
     await safe_reply(ctx, embed=embed, view=CasinoDashboard(), ephemeral=True)
 
 @bot.slash_command(name="duel", description="Duel user")
