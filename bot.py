@@ -1,12 +1,13 @@
-# bot.py — ShadowSyn (Master: Shadow Tower 4.0 - Gear 2.0)
+# bot.py — ShadowSyn (Master: Shadow Tower 4.1 - Visual Clarity)
 #
 # === FEATURES ===
-# [x] 🏰 SHADOW TOWER 4.0:
-#      - 🛡️ GEAR 2.0: 4 Slots (Weapon, Helmet, Chest, Boots).
-#      - 💎 LOOT CHOICE: Select 1 of 3.
-#      - 📊 COMPARISON UI: Shows "New vs Current" stats with Diff (+/-).
-#      - 🧬 AFFIX STACKING: Effects work across all slots.
-# [x] 🎛️ VOICEMASTER, CASINO, MUSIC, UTILS: Preserved.
+# [x] 🏰 SHADOW TOWER 4.1:
+#      - 👁️ COMBAT LOG 2.0: Clear icons, code blocks, distinct player/enemy turns.
+#      - 🧬 PERK UI: Better description, Reroll option.
+#      - 🛡️ PREV: 4-Slot Gear, Loot Selection, Hardcore Mode.
+# [x] 🎛️ VOICEMASTER: JTC + Control Panel.
+# [x] 🎰 CASINO: Slots, Chicken, Dice, Duels.
+# [x] 🎵 MUSIC & UTILS: All present.
 #
 # LIBRARY: py-cord[voice]
 
@@ -111,7 +112,9 @@ PERKS = [
     {"id": "midas", "name": "🤑 Midas Touch", "desc": "+20% Gold from enemies."},
     {"id": "vampire", "name": "🩸 Vampirism", "desc": "Heal 5 HP on kill."},
     {"id": "thorns", "name": "🌵 Thorns", "desc": "Reflect 10% damage back."},
-    {"id": "scholar", "name": "📖 Scholar", "desc": "+20% XP gain."}
+    {"id": "scholar", "name": "📖 Scholar", "desc": "+20% XP gain."},
+    {"id": "berserk", "name": "😡 Berserker", "desc": "+15% Damage when under 30% HP."},
+    {"id": "stone", "name": "🪨 Stone Skin", "desc": "+5 Base Defense."}
 ]
 
 # AFFIX SYSTEM 2.0
@@ -628,18 +631,40 @@ class PerkSelectView(View):
         self.data = data
         self.user_id = str(user.id)
         
+        # Determine available perks
         owned = [p for p in data["perks"]]
         available = [p for p in PERKS if p["id"] not in owned]
-        if not available: 
+        
+        if not available:
             self.stop()
             return
             
-        options = random.sample(available, min(3, len(available)))
-        for opt in options:
-            btn = Button(label=opt["name"], style=ButtonStyle.primary)
+        # Select 3 random options
+        self.options = random.sample(available, min(3, len(available)))
+        
+        # Create buttons for the options
+        for i, opt in enumerate(self.options):
+            btn = Button(label=f"Pick: {opt['name']}", style=ButtonStyle.primary, row=0)
+            # Use a closure to capture the specific perk
             async def cb(interaction, o=opt): await self.select_perk(interaction, o)
             btn.callback = cb
             self.add_item(btn)
+
+    @discord.ui.button(label="Reroll (50 Scoins)", style=ButtonStyle.secondary, emoji="🎲", row=1)
+    async def reroll(self, button, interaction):
+        if interaction.user.id != self.user.id: return
+        bal = get_balance(self.user_id)
+        if bal < 50: return await interaction.response.send_message("❌ Need 50 Scoins.", ephemeral=True)
+        update_balance(self.user_id, -50)
+        
+        # Re-init view to get new options
+        new_view = PerkSelectView(self.user, self.data)
+        # Update Embed description
+        embed = discord.Embed(title="🧬 Genetic Mutation", description=f"**Level {self.data['level']} Reached!**\nSelect a permanent evolution:", color=THEME_GOLD)
+        for i, opt in enumerate(new_view.options):
+            embed.add_field(name=f"{i+1}. {opt['name']}", value=f"📝 {opt['desc']}", inline=False)
+        
+        await interaction.response.edit_message(embed=embed, view=new_view)
 
     async def select_perk(self, interaction, perk):
         if interaction.user.id != self.user.id: return
@@ -719,8 +744,12 @@ class TowerGameView(View):
             intent = self.enemy.get("intent", "Unknown")
             embed.add_field(name=f"🆚 {self.enemy['name']}", 
                            value=f"{e_bar} {self.enemy['hp']} HP\n⚠️ **Intent:** {intent}", inline=False)
+            
+            # --- COMBAT LOG 2.0: CODE BLOCK ---
             if self.combat_log:
-                embed.add_field(name="📜 Log", value="\n".join(self.combat_log[-3:]), inline=False)
+                # Take last 6 lines for context
+                log_text = "\n".join(self.combat_log[-6:])
+                embed.add_field(name="📜 Combat Log", value=f"```ansi\n{log_text}\n```", inline=False)
 
         stats = f"⚔️{self.data['atk']} 🛡️{self.data['def']} 💰{self.data['gold']}"
         embed.add_field(name=f"👤 {self.user.display_name} ({self.data['class']})", 
@@ -733,8 +762,11 @@ class TowerGameView(View):
         self.clear_items()
         
         if self.mode == "COMBAT":
-            self.add_item(Button(label="Attack", style=ButtonStyle.danger, custom_id="act_atk"))
-            self.add_item(Button(label="Defend", style=ButtonStyle.secondary, custom_id="act_def"))
+            p_atk = self.data["atk"]
+            p_def = self.data["def"] * 3
+            
+            self.add_item(Button(label=f"Attack (~{p_atk+4})", style=ButtonStyle.danger, custom_id="act_atk", emoji="⚔️"))
+            self.add_item(Button(label=f"Defend ({p_def} Blk)", style=ButtonStyle.secondary, custom_id="act_def", emoji="🛡️"))
             
             adren = self.data.get("adrenaline", 0)
             cls = self.data["class"]
@@ -742,9 +774,9 @@ class TowerGameView(View):
             if adren >= 100:
                 skill_name = "ULTIMATE READY!"
                 style = ButtonStyle.success 
-                if cls == "Warrior": skill_name = "TITAN'S WRATH (Dmg = 3x DEF)"
-                elif cls == "Rogue": skill_name = "EXECUTE (Kill)"
-                elif cls == "Mage": skill_name = "CATACLYSM (Nuke)"
+                if cls == "Warrior": skill_name = "TITAN'S WRATH"
+                elif cls == "Rogue": skill_name = "EXECUTE"
+                elif cls == "Mage": skill_name = "CATACLYSM"
                 self.add_item(Button(label=skill_name, style=style, emoji="⚡", custom_id="act_ult"))
             else:
                 skill_name = "Skill"
@@ -844,7 +876,7 @@ class TowerGameView(View):
         hp = (floor * 20) + (100 if boss else 0)
         power = (floor * 2) + (10 if boss else 2)
         self.enemy = {"name": name, "hp": hp, "max_hp": hp, "power": power, "intent": random.choice(["Attack", "Heavy Attack", "Defend"])}
-        self.combat_log = [f"A wild **{name}** appears!"]
+        self.combat_log = [f"⚔️ Encountered {name}!"]
         self.render_main_menu()
 
     def _check_affix(self, effect):
@@ -870,6 +902,7 @@ class TowerGameView(View):
         swift_count = self._check_affix("speed")
         heavy_count = self._check_affix("heavy")
         
+        # --- PLAYER TURN ---
         if action == "act_atk":
             base_roll = random.randint(2, 6)
             p_dmg = atk_stat + base_roll
@@ -880,19 +913,19 @@ class TowerGameView(View):
             
             if self.data["class"] == "Rogue" and random.random() < crit_chance: 
                 p_dmg = int(p_dmg * 2)
-                p_act = "🩸 **CRITICAL HIT!**"
+                p_act = "CRIT"
             else:
-                if p_dmg >= 25: p_act = "💥 **OBLITERATED**"
-                elif p_dmg >= 10: p_act = "⚔️ **STRUCK**"
-                else: p_act = "🗡️ scratched"
+                p_act = "HIT"
             
             adren_gain = 10 + int(p_dmg / 2) + (swift_count * 5)
             self.data["adrenaline"] = min(100, self.data["adrenaline"] + adren_gain)
+            self.combat_log.append(f"🗡️ You {p_act} for {int(p_dmg)} dmg.")
             
         elif action == "act_def":
             p_block = self.data["def"] * 3
-            p_act = "🛡️ **DEFENDED**"
+            p_act = "DEFEND"
             self.data["adrenaline"] = min(100, self.data["adrenaline"] + 20 + (swift_count * 5))
+            self.combat_log.append(f"🛡️ You raise SHIELD ({p_block} Block).")
             
         elif action == "act_skill":
             cls = self.data["class"]
@@ -900,19 +933,20 @@ class TowerGameView(View):
                 p_dmg = self.data["def"] * 1.5
                 if random.random() < 0.30:
                     enemy_stunned = True
-                    p_act = "Shield Bashed (STUNNED!)"
+                    p_act = "BASH (Stun!)"
                 else:
-                    p_act = "Shield Bashed"
+                    p_act = "BASH"
             elif cls == "Mage":
                 p_dmg = atk_stat * 3 
                 cost = int(self.data["max_hp"] * 0.05)
                 self.data["hp"] = max(1, self.data["hp"] - cost)
-                p_act = "Pyroblasted"
+                p_act = "PYROBLAST"
             elif cls == "Rogue":
                 p_dmg = atk_stat * 1.5
                 p_block = 999 
-                p_act = "Shadow Stepped"
+                p_act = "SHADOW STEP"
             self.data["adrenaline"] = min(100, self.data["adrenaline"] + 15)
+            self.combat_log.append(f"✨ You used {p_act} for {int(p_dmg)} dmg.")
 
         elif action == "act_ult":
             cls = self.data["class"]
@@ -920,32 +954,33 @@ class TowerGameView(View):
             if cls == "Warrior":
                 p_block = 9999
                 p_dmg = self.data["def"] * 3
-                p_act = f"🛡️ **TITAN'S WRATH!** (Invincible + {int(p_dmg)} Dmg)"
+                self.combat_log.append("⚡ LIMIT BREAK: TITAN'S WRATH! (Invincible)")
             elif cls == "Rogue":
                 if self.enemy["hp"] < (self.enemy["max_hp"] * 0.5): p_dmg = 9999
                 else: p_dmg = atk_stat * 4
-                p_act = f"🩸 **EXECUTION!** (Dealt {int(p_dmg)} Dmg)"
+                self.combat_log.append(f"⚡ LIMIT BREAK: EXECUTION! ({int(p_dmg)} Dmg)")
             elif cls == "Mage":
                 p_dmg = atk_stat * 8
                 enemy_stunned = True
-                p_act = f"🔮 **CATACLYSM!** (Stunned + {int(p_dmg)} True Dmg)"
+                self.combat_log.append(f"⚡ LIMIT BREAK: CATACLYSM! (Stunned)")
 
         elif action == "act_pot":
             heal = 50
             if "glutton" in self.data["perks"]: heal = 75
             self.data["hp"] = min(self.data["max_hp"], self.data["hp"] + heal)
             self.data["potions"] -= 1
-            p_act = "Drank Potion"
+            self.combat_log.append(f"🧪 drank POTION (+{heal} HP).")
 
         e_dmg = 0
         e_intent = self.enemy["intent"]
         
+        # --- ENEMY TURN ---
         if not enemy_stunned:
             if e_intent == "Attack": e_dmg = self.enemy["power"]
             elif e_intent == "Heavy Attack": e_dmg = self.enemy["power"] * 1.5
             elif e_intent == "Defend": p_dmg = int(p_dmg * 0.5) 
         else:
-            self.combat_log.append("💫 Enemy Stunned!")
+            self.combat_log.append("💫 Enemy is STUNNED!")
 
         # Apply Player Damage
         self.enemy["hp"] -= p_dmg
@@ -954,6 +989,7 @@ class TowerGameView(View):
         if vamp_count > 0 and p_dmg > 0:
             heal_amt = vamp_count * 3
             self.data["hp"] = min(self.data["max_hp"], self.data["hp"] + heal_amt)
+            self.combat_log.append(f"🩸 Vampiric Drain: +{heal_amt} HP.")
             
         if "vampire" in self.data["perks"]: self.data["hp"] = min(self.data["max_hp"], self.data["hp"] + 5)
         
@@ -972,6 +1008,7 @@ class TowerGameView(View):
             if thorn_count > 0:
                 refl = int(final_e_dmg * (0.10 * thorn_count))
                 self.enemy["hp"] -= refl
+                self.combat_log.append(f"🌵 Thorns reflected {refl} dmg.")
                 
             if "thorns" in self.data["perks"]: 
                 refl = int(final_e_dmg * 0.1)
@@ -979,8 +1016,9 @@ class TowerGameView(View):
                 
             self.data["hp"] -= final_e_dmg
             self.data["adrenaline"] = min(100, self.data["adrenaline"] + 10)
-        
-        self.combat_log.append(f"You {p_act} (**{int(p_dmg)}**). Enemy {e_intent} ({int(final_e_dmg)}).")
+            self.combat_log.append(f"👾 Enemy {e_intent} hits you for {int(final_e_dmg)} dmg.")
+        elif e_dmg > 0:
+            self.combat_log.append(f"🛡️ You BLOCKED the Enemy {e_intent}!")
 
         b_name, b_data = get_biome(self.data["floor"])
         if b_name == "Sewers" and random.random() < 0.2:
@@ -1027,10 +1065,14 @@ class TowerGameView(View):
                 self.data["level"] += 1
                 self.data["max_hp"] += 10
                 self.data["hp"] = self.data["max_hp"]
-                # Stats are now dynamic in calculate_player_stats, no need to increment base manually except saving level
                 
                 if self.data["level"] % 5 == 0:
-                    await interaction.response.edit_message(embed=self.update_embed("🧬 Mutation!", "Choose a Perk:"), view=PerkSelectView(self.user, self.data))
+                    # NEW PERK SYSTEM INITIATED HERE
+                    view = PerkSelectView(self.user, self.data)
+                    embed = discord.Embed(title="🧬 Genetic Mutation", description=f"**Level {self.data['level']} Reached!**\nSelect a permanent evolution:", color=THEME_GOLD)
+                    for i, opt in enumerate(view.options):
+                        embed.add_field(name=f"{i+1}. {opt['name']}", value=f"📝 {opt['desc']}", inline=False)
+                    await interaction.response.edit_message(embed=embed, view=view)
                     return
 
             self.mode = "EXPLORE"
@@ -1310,7 +1352,7 @@ class DiceGameView(View):
         if bal < self.bet:
             return await interaction.response.send_message("❌ Insufficient funds.", ephemeral=True)
         
-        update_balance(str(self.user_id), -self.bet)
+        update_balance(str(self.user.id), -self.bet)
         self.game_over = True
         d1 = random.randint(1, 6)
         d2 = random.randint(1, 6)
