@@ -1,11 +1,10 @@
-# bot.py — ShadowSyn (Master: Shadow Tower 5.0 - Artifacts & Synergies)
+# bot.py — ShadowSyn (Master: Shadow Tower 5.2 - Combat Transparency)
 #
 # === FEATURES ===
-# [x] 🏰 SHADOW TOWER 5.0:
-#      - 💎 LOOT 2.0: 3 Distinct Archetypes (Safe, Synergy, Risk).
-#      - 🧬 NEW AFFIXES: Berserker, Midas, Glass, Bulwark, Siphon.
-#      - 📊 SMART GENERATION: Loot scales intelligently with Floor.
-#      - 🛡️ PREV: Gear 2.0, Combat Log 2.0, Hardcore.
+# [x] 🏰 SHADOW TOWER 5.2:
+#      - 👁️ LOGS: Full transparency on Block/Armor for BOTH sides.
+#      - 🎲 UI: Attack button shows "Base + Roll" to explain dmg variance.
+#      - 💎 PREV: Artifacts, Synergies, Hardcore, Gear 2.0.
 # [x] 🎛️ VOICEMASTER: JTC + Control Panel.
 # [x] 🎰 CASINO: Slots, Chicken, Dice, Duels.
 # [x] 🎵 MUSIC & UTILS: All present.
@@ -126,7 +125,7 @@ AFFIXES = {
     "Thorned": {"desc": "Reflect 15% DMG", "effect": "reflect", "style": "🌵 Counter"},
     "Swift": {"desc": "+10 Adrenaline/Turn", "effect": "speed", "style": "⚡ Speed"},
     
-    # NEW COMPLEX AFFIXES
+    # COMPLEX AFFIXES
     "Berserker": {"desc": "+30% DMG, Take +10% DMG", "effect": "berserk", "style": "👹 Risk"},
     "Midas": {"desc": "+5 Gold per Hit", "effect": "midas", "style": "💰 Greed"},
     "Siphon": {"desc": "15% Chance steal ATK", "effect": "siphon", "style": "👻 Debuff"},
@@ -467,7 +466,7 @@ class MusicSelectionView(View):
         super().__init__(timeout=60)
         self.add_item(MusicSelect(entries, ctx, vc))
 
-# ==================== SHADOW TOWER 5.0 (ARTIFACTS & SYNERGY) ====================
+# ==================== SHADOW TOWER 5.2 (FINAL POLISH) ====================
 
 def get_tower_data(user_id):
     uid = str(user_id)
@@ -546,10 +545,6 @@ def calculate_player_stats(data):
         item = data.get(s)
         if item:
             val = item["val"]
-            # Apply Complex Stats Modifiers from Items
-            if item.get("affix") == "Glass": # +50% stats via generation, but logic here just adds raw
-                pass 
-            
             if item["type"] == "ATK": gear_atk += val
             elif item["type"] == "DEF": gear_def += val
             
@@ -558,10 +553,6 @@ def calculate_player_stats(data):
     return data
 
 def generate_loot_option(floor, archetype):
-    # Archetype 1: Safe (Standard)
-    # Archetype 2: Synergy (Lower stats, good affix)
-    # Archetype 3: Risk/Greed (Cursed/Gold)
-    
     slot = random.choice(SLOT_TYPES)
     stat_type = "ATK" if slot == "Weapon" else "DEF"
     base_val = (floor * 2) + random.randint(2, 6)
@@ -575,7 +566,6 @@ def generate_loot_option(floor, archetype):
     color = 0x95A5A6
     
     if archetype == "safe":
-        # Boost raw stats, unlikely to have complex affix
         base_val = int(base_val * 1.3)
         tier = "Reinforced"
         color = THEME_RARE
@@ -583,25 +573,20 @@ def generate_loot_option(floor, archetype):
             affix = "Reinforced" if stat_type == "DEF" else "Sharp"
             
     elif archetype == "synergy":
-        # Lower stats, guaranteed cool affix
         base_val = int(base_val * 0.9)
         tier = "Enchanted"
         color = THEME_EPIC
-        # Pick from synergy pool
         pool = ["Vampiric", "Thorned", "Swift", "Siphon"]
         affix = random.choice(pool)
         
     elif archetype == "risk":
-        # High Variance
         tier = "Cursed"
         color = THEME_LOSS
         pool = ["Berserker", "Midas", "Glass", "Bulwark", "Lucky"]
         affix = random.choice(pool)
-        
-        # Adjust stats based on risk affix
         if affix == "Glass": base_val = int(base_val * 2.0)
         if affix == "Bulwark" and stat_type == "DEF": base_val = int(base_val * 1.8)
-        if affix == "Midas": base_val = int(base_val * 0.8) # Weaker but gold
+        if affix == "Midas": base_val = int(base_val * 0.8)
     
     name = f"{tier} {slot}"
     if affix: name = f"{affix} {name}"
@@ -634,9 +619,7 @@ class MysteryRoomView(View):
         self.data["max_hp"] -= loss
         self.data["hp"] = min(self.data["hp"], self.data["max_hp"])
         
-        # Simple permanent stat bonus logic for now (v4.2)
-        # Note: Recalc logic might overwrite this if we don't save bonus stats separate. 
-        # For this version, we accept it resets on death anyway.
+        # Simple bonus logic
         self.data["atk"] += 10 
         
         save_tower_data(self.user_id, self.data)
@@ -661,7 +644,6 @@ class PerkSelectView(View):
         self.data = data
         self.user_id = str(user.id)
         
-        # Determine available perks
         owned = [p for p in data["perks"]]
         available = [p for p in PERKS if p["id"] not in owned]
         
@@ -669,13 +651,9 @@ class PerkSelectView(View):
             self.stop()
             return
             
-        # Select 3 random options
         self.options = random.sample(available, min(3, len(available)))
-        
-        # Create buttons for the options
         for i, opt in enumerate(self.options):
             btn = Button(label=f"Pick: {opt['name']}", style=ButtonStyle.primary, row=0)
-            # Use a closure to capture the specific perk
             async def cb(interaction, o=opt): await self.select_perk(interaction, o)
             btn.callback = cb
             self.add_item(btn)
@@ -687,9 +665,7 @@ class PerkSelectView(View):
         if bal < 50: return await interaction.response.send_message("❌ Need 50 Scoins.", ephemeral=True)
         update_balance(self.user_id, -50)
         
-        # Re-init view to get new options
         new_view = PerkSelectView(self.user, self.data)
-        # Update Embed description
         embed = discord.Embed(title="🧬 Genetic Mutation", description=f"**Level {self.data['level']} Reached!**\nSelect a permanent evolution:", color=THEME_GOLD)
         for i, opt in enumerate(new_view.options):
             embed.add_field(name=f"{i+1}. {opt['name']}", value=f"📝 {opt['desc']}", inline=False)
@@ -708,7 +684,7 @@ class LootSelectionView(View):
     def __init__(self, user, items):
         super().__init__(timeout=180)
         self.user = user
-        self.items = items # List of 3 dicts
+        self.items = items
         self.data = get_tower_data(user.id)
 
     def _equip_logic(self, item):
@@ -718,7 +694,6 @@ class LootSelectionView(View):
         }
         key = slot_map.get(item["slot"])
         if key: self.data[key] = item
-        # Recalculate Stats
         self.data = calculate_player_stats(self.data)
         save_tower_data(self.user.id, self.data)
 
@@ -754,7 +729,7 @@ class TowerGameView(View):
         super().__init__(timeout=300)
         self.user = user
         self.user_id = str(user.id)
-        self.data = calculate_player_stats(get_tower_data(user.id)) # Ensure stats are fresh
+        self.data = calculate_player_stats(get_tower_data(user.id))
         self.mode = "EXPLORE"
         self.enemy = None
         self.combat_log = []
@@ -772,12 +747,12 @@ class TowerGameView(View):
         if self.mode == "COMBAT" and self.enemy:
             e_bar = draw_bar(self.enemy['hp'], self.enemy['max_hp'], "🟥")
             intent = self.enemy.get("intent", "Unknown")
-            embed.add_field(name=f"🆚 {self.enemy['name']}", 
+            e_def = self.enemy.get("def", 0)
+            
+            embed.add_field(name=f"🆚 {self.enemy['name']} (🛡️{e_def})", 
                            value=f"{e_bar} {self.enemy['hp']} HP\n⚠️ **Intent:** {intent}", inline=False)
             
-            # --- COMBAT LOG 2.0: CODE BLOCK ---
             if self.combat_log:
-                # Take last 6 lines for context
                 log_text = "\n".join(self.combat_log[-6:])
                 embed.add_field(name="📜 Combat Log", value=f"```ansi\n{log_text}\n```", inline=False)
 
@@ -795,7 +770,9 @@ class TowerGameView(View):
             p_atk = self.data["atk"]
             p_def = self.data["def"] * 3
             
-            self.add_item(Button(label=f"Attack (~{p_atk+4})", style=ButtonStyle.danger, custom_id="act_atk", emoji="⚔️"))
+            # --- BUTTON TEXT UPDATE: SHOW BASE + ROLL ---
+            # Instead of "~30", show "26 + 🎲" to clarify the mechanics
+            self.add_item(Button(label=f"Attack ({p_atk} + 🎲)", style=ButtonStyle.danger, custom_id="act_atk", emoji="⚔️"))
             self.add_item(Button(label=f"Defend ({p_def} Blk)", style=ButtonStyle.secondary, custom_id="act_def", emoji="🛡️"))
             
             adren = self.data.get("adrenaline", 0)
@@ -869,17 +846,14 @@ class TowerGameView(View):
                 if roll > 30: 
                     self.start_combat()
                 else: 
-                    # --- NEW LOOT SYSTEM 5.0: ARCHETYPES ---
                     items = [
                         generate_loot_option(self.data["floor"], "safe"),
                         generate_loot_option(self.data["floor"], "synergy"),
                         generate_loot_option(self.data["floor"], "risk")
                     ]
-                    random.shuffle(items) # Shuffle so "Safe" isn't always top
+                    random.shuffle(items)
                     
                     view = LootSelectionView(self.user, items)
-                    
-                    # Construct Comparison Embed
                     embed = discord.Embed(title="🎁 Treasure Room", description="Choose your destiny.", color=THEME_GOLD)
                     
                     slot_key_map = {"Weapon": "gear_weapon", "Helmet": "gear_helmet", "Chest": "gear_chest", "Boots": "gear_boots"}
@@ -915,12 +889,14 @@ class TowerGameView(View):
         name = name or get_monster(floor)
         hp = (floor * 20) + (100 if boss else 0)
         power = (floor * 2) + (10 if boss else 2)
-        self.enemy = {"name": name, "hp": hp, "max_hp": hp, "power": power, "intent": random.choice(["Attack", "Heavy Attack", "Defend"])}
+        # --- ENEMY ARMOR SCALING ---
+        defense = int(floor * 0.5) + (5 if boss else 0) 
+        
+        self.enemy = {"name": name, "hp": hp, "max_hp": hp, "power": power, "def": defense, "intent": random.choice(["Attack", "Heavy Attack", "Defend"])}
         self.combat_log = [f"⚔️ Encountered {name}!"]
         self.render_main_menu()
 
     def _check_affix(self, effect):
-        # Checks all 4 slots for the effect
         slots = ["gear_weapon", "gear_helmet", "gear_chest", "gear_boots"]
         count = 0
         for s in slots:
@@ -936,7 +912,6 @@ class TowerGameView(View):
         
         if "adrenaline" not in self.data: self.data["adrenaline"] = 0
         
-        # --- AFFIX COUNTING ---
         vamp_count = self._check_affix("heal_hit")
         thorn_count = self._check_affix("reflect")
         swift_count = self._check_affix("speed")
@@ -952,12 +927,10 @@ class TowerGameView(View):
             base_roll = random.randint(2, 6)
             p_dmg = atk_stat + base_roll
             
-            # --- APPLY OFFENSIVE SYNERGIES ---
             if berserk_count > 0: p_dmg = int(p_dmg * (1 + (0.3 * berserk_count)))
             if glass_count > 0: p_dmg = int(p_dmg * 1.5)
-            if bulwark_count > 0: p_dmg = int(p_dmg * 0.8) # Penalty
+            if bulwark_count > 0: p_dmg = int(p_dmg * 0.8)
             
-            # Rogue Crit
             crit_chance = 0.25
             if heavy_count > 0: crit_chance = 0.10 
             
@@ -970,18 +943,24 @@ class TowerGameView(View):
             adren_gain = 10 + int(p_dmg / 2) + (swift_count * 5)
             self.data["adrenaline"] = min(100, self.data["adrenaline"] + adren_gain)
             
-            self.combat_log.append(f"🗡️ You {p_act}: {int(p_dmg)} Dmg.")
+            # --- PLAYER ATTACK MITIGATION LOGIC ---
+            e_def = self.enemy.get("def", 0)
+            final_p_dmg = max(0, p_dmg - e_def)
             
-            # Midas Effect
+            if e_def > 0:
+                self.combat_log.append(f"🗡️ You {p_act}: {int(p_dmg)} (🛡️-{e_def}) ➜ {int(final_p_dmg)} Dmg")
+            else:
+                self.combat_log.append(f"🗡️ You {p_act}: {int(final_p_dmg)} Dmg")
+            
+            p_dmg = final_p_dmg 
+            
             if midas_count > 0:
                 gold_gain = midas_count * 5
                 self.data["gold"] += gold_gain
                 
-            # Siphon Effect
             if siphon_count > 0 and random.random() < (0.15 * siphon_count):
                 steal = 2
                 self.enemy["power"] = max(1, self.enemy["power"] - steal)
-                # Temp buff not implemented, just debuff enemy for now to keep it simple
                 self.combat_log.append(f"👻 Siphoned {steal} Power from enemy!")
             
         elif action == "act_def":
@@ -1010,8 +989,16 @@ class TowerGameView(View):
                 p_dmg = atk_stat * 1.5
                 p_block = 999 
                 p_act = "SHADOW STEP"
+            
             self.data["adrenaline"] = min(100, self.data["adrenaline"] + 15)
-            self.combat_log.append(f"✨ You used {p_act}: {int(p_dmg)} Dmg.")
+            
+            if cls == "Mage":
+                self.combat_log.append(f"✨ {p_act}: {int(p_dmg)} (Ignores Armor)")
+            else:
+                e_def = self.enemy.get("def", 0)
+                final_skill_dmg = max(0, p_dmg - e_def)
+                self.combat_log.append(f"✨ {p_act}: {int(p_dmg)} (🛡️-{e_def}) ➜ {int(final_skill_dmg)}")
+                p_dmg = final_skill_dmg
 
         elif action == "act_ult":
             cls = self.data["class"]
@@ -1039,7 +1026,6 @@ class TowerGameView(View):
         e_dmg = 0
         e_intent = self.enemy["intent"]
         
-        # --- ENEMY TURN ---
         if not enemy_stunned:
             if e_intent == "Attack": e_dmg = self.enemy["power"]
             elif e_intent == "Heavy Attack": e_dmg = self.enemy["power"] * 1.5
@@ -1047,10 +1033,8 @@ class TowerGameView(View):
         else:
             self.combat_log.append("💫 Enemy is STUNNED!")
 
-        # Apply Player Damage
         self.enemy["hp"] -= p_dmg
         
-        # Vampiric Heal
         if vamp_count > 0 and p_dmg > 0:
             heal_amt = vamp_count * 3
             self.data["hp"] = min(self.data["max_hp"], self.data["hp"] + heal_amt)
@@ -1059,34 +1043,29 @@ class TowerGameView(View):
         if "vampire" in self.data["perks"]: self.data["hp"] = min(self.data["max_hp"], self.data["hp"] + 5)
         
         # --- ENEMY DAMAGE CALCULATION (TRANSPARENT) ---
-        
-        # Apply Risk Affix Penalties to Incoming Damage
         if berserk_count > 0: e_dmg = int(e_dmg * 1.1)
         
         passive_def = self.data["def"] if action != "act_def" else 0
         total_mitigation = p_block + passive_def
-        
         damage_after_armor = max(0, e_dmg - total_mitigation)
         
-        # Chip damage logic
         if p_block == 0 and e_dmg > 0:
             chip_dmg = int(e_dmg * 0.10)
             final_e_dmg = max(chip_dmg, damage_after_armor)
         else:
             final_e_dmg = damage_after_armor
 
-        # Log Logic
+        # Log Logic for Enemy Damage
         if e_dmg > 0:
             blocked_amt = int(e_dmg - final_e_dmg)
             if blocked_amt > 0:
-                self.combat_log.append(f"👾 Enemy Hit: {int(e_dmg)} (🛡️ -{blocked_amt}) ➜ {int(final_e_dmg)} Dmg")
+                self.combat_log.append(f"👾 Enemy Hit: {int(e_dmg)} (🛡️-{blocked_amt} Block) ➜ {int(final_e_dmg)} Dmg")
             else:
                 self.combat_log.append(f"👾 Enemy Hit: {int(e_dmg)} ➜ {int(final_e_dmg)} Dmg")
         
         if final_e_dmg > 0:
-            # Thorns Reflection
             if thorn_count > 0:
-                refl = int(final_e_dmg * (0.15 * thorn_count)) # Buffed to 15%
+                refl = int(final_e_dmg * (0.15 * thorn_count))
                 self.enemy["hp"] -= refl
                 self.combat_log.append(f"🌵 Thorns reflected {refl} dmg.")
                 
@@ -1098,7 +1077,7 @@ class TowerGameView(View):
             self.data["adrenaline"] = min(100, self.data["adrenaline"] + 10)
         
         elif e_dmg > 0 and final_e_dmg == 0:
-             self.combat_log.append("✨ FULLY BLOCKED!")
+             self.combat_log.append("✨ FULLY BLOCKED (0 Dmg)!")
 
         b_name, b_data = get_biome(self.data["floor"])
         if b_name == "Sewers" and random.random() < 0.2:
@@ -1112,8 +1091,6 @@ class TowerGameView(View):
             xp = 20 * (2 if "scholar" in self.data["perks"] else 1)
             gold = 50 * (1.2 if "midas" in self.data["perks"] else 1)
             
-            # Lucky Affix Bonus
-            lucky_count = self._check_affix("gold")
             if lucky_count > 0: gold += (lucky_count * 20)
             
             self.data["xp"] += xp
@@ -1121,7 +1098,6 @@ class TowerGameView(View):
             self.data["floor"] += 1
             self.data["adrenaline"] = 0 
             
-            # Update Max Floor
             current_max = self.data.get("max_floor", 1)
             if self.data["floor"] > current_max:
                 self.data["max_floor"] = self.data["floor"]
@@ -1168,7 +1144,6 @@ class TowerGameView(View):
             self.data["class"] = None
             self.data["floor"] = self.data["checkpoint"]
             
-            # Wipe all gear
             self.data["gear_weapon"] = None
             self.data["gear_helmet"] = None
             self.data["gear_chest"] = None
