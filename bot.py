@@ -1,10 +1,9 @@
-# bot.py — ShadowSyn (Master: Shadow Tower 4.1 - Visual Clarity)
+# bot.py — ShadowSyn (Master: Shadow Tower 4.2 - Combat Math Transparency)
 #
 # === FEATURES ===
-# [x] 🏰 SHADOW TOWER 4.1:
-#      - 👁️ COMBAT LOG 2.0: Clear icons, code blocks, distinct player/enemy turns.
-#      - 🧬 PERK UI: Better description, Reroll option.
-#      - 🛡️ PREV: 4-Slot Gear, Loot Selection, Hardcore Mode.
+# [x] 🏰 SHADOW TOWER 4.2:
+#      - 👁️ LOG FIX: Shows Raw Dmg - Mitigation = Final Dmg.
+#      - 🛡️ PREV: Gear 2.0, Loot Selection, Perks UI.
 # [x] 🎛️ VOICEMASTER: JTC + Control Panel.
 # [x] 🎰 CASINO: Slots, Chicken, Dice, Duels.
 # [x] 🎵 MUSIC & UTILS: All present.
@@ -461,7 +460,7 @@ class MusicSelectionView(View):
         super().__init__(timeout=60)
         self.add_item(MusicSelect(entries, ctx, vc))
 
-# ==================== SHADOW TOWER 4.0 (LOOT 2.0) ====================
+# ==================== SHADOW TOWER 4.2 (COMBAT MATH FIX) ====================
 
 def get_tower_data(user_id):
     uid = str(user_id)
@@ -600,14 +599,11 @@ class MysteryRoomView(View):
         loss = int(self.data["max_hp"] * 0.2)
         self.data["max_hp"] -= loss
         self.data["hp"] = min(self.data["hp"], self.data["max_hp"])
-        # Permanent stat boost (saved in base stats implicitly via recalculation logic if we stored base)
-        # For now, just add to a 'bonus_atk' field or similar, but to keep it compatible with existing structure:
-        # We will assume this adds to base stats, which reset on death anyway.
-        # But our calc logic uses level. Let's just add a temporary modifier field if needed, 
-        # OR simply ignore the calc logic for this specific bonus and add it to the 'gearless' calculation.
-        # Simplest approach for v4.0: Just assume it's lost on death anyway.
-        self.data["atk"] += 10 # This might get overwritten by calc_stats, so we should store "bonus_atk" in data if we want it perfect.
-        # For simplicity in this snippet, we won't refactor the whole stat system, just applied.
+        
+        # Simple permanent stat bonus logic for now (v4.2)
+        # Note: Recalc logic might overwrite this if we don't save bonus stats separate. 
+        # For this version, we accept it resets on death anyway.
+        self.data["atk"] += 10 
         
         save_tower_data(self.user_id, self.data)
         
@@ -919,7 +915,10 @@ class TowerGameView(View):
             
             adren_gain = 10 + int(p_dmg / 2) + (swift_count * 5)
             self.data["adrenaline"] = min(100, self.data["adrenaline"] + adren_gain)
-            self.combat_log.append(f"🗡️ You {p_act} for {int(p_dmg)} dmg.")
+            
+            # Note: Player damage is applied to Enemy HP directly (Enemy has no DEF stat in this simple model yet)
+            # Future update: Add enemy defense? For now, raw damage.
+            self.combat_log.append(f"🗡️ You {p_act}: {int(p_dmg)} Dmg.")
             
         elif action == "act_def":
             p_block = self.data["def"] * 3
@@ -946,7 +945,7 @@ class TowerGameView(View):
                 p_block = 999 
                 p_act = "SHADOW STEP"
             self.data["adrenaline"] = min(100, self.data["adrenaline"] + 15)
-            self.combat_log.append(f"✨ You used {p_act} for {int(p_dmg)} dmg.")
+            self.combat_log.append(f"✨ You used {p_act}: {int(p_dmg)} Dmg.")
 
         elif action == "act_ult":
             cls = self.data["class"]
@@ -993,16 +992,27 @@ class TowerGameView(View):
             
         if "vampire" in self.data["perks"]: self.data["hp"] = min(self.data["max_hp"], self.data["hp"] + 5)
         
-        # Enemy Damage Calc
+        # --- ENEMY DAMAGE CALCULATION (TRANSPARENT) ---
         passive_def = self.data["def"] if action != "act_def" else 0
-        damage_after_armor = max(0, e_dmg - p_block - passive_def)
+        total_mitigation = p_block + passive_def
         
+        damage_after_armor = max(0, e_dmg - total_mitigation)
+        
+        # Chip damage logic
         if p_block == 0 and e_dmg > 0:
             chip_dmg = int(e_dmg * 0.10)
             final_e_dmg = max(chip_dmg, damage_after_armor)
         else:
             final_e_dmg = damage_after_armor
 
+        # Log Logic
+        if e_dmg > 0:
+            blocked_amt = int(e_dmg - final_e_dmg)
+            if blocked_amt > 0:
+                self.combat_log.append(f"👾 Enemy Hit: {int(e_dmg)} (🛡️ -{blocked_amt}) ➜ {int(final_e_dmg)} Dmg")
+            else:
+                self.combat_log.append(f"👾 Enemy Hit: {int(e_dmg)} ➜ {int(final_e_dmg)} Dmg")
+        
         if final_e_dmg > 0:
             # Thorns Reflection
             if thorn_count > 0:
@@ -1016,9 +1026,9 @@ class TowerGameView(View):
                 
             self.data["hp"] -= final_e_dmg
             self.data["adrenaline"] = min(100, self.data["adrenaline"] + 10)
-            self.combat_log.append(f"👾 Enemy {e_intent} hits you for {int(final_e_dmg)} dmg.")
-        elif e_dmg > 0:
-            self.combat_log.append(f"🛡️ You BLOCKED the Enemy {e_intent}!")
+        
+        elif e_dmg > 0 and final_e_dmg == 0:
+             self.combat_log.append("✨ FULLY BLOCKED!")
 
         b_name, b_data = get_biome(self.data["floor"])
         if b_name == "Sewers" and random.random() < 0.2:
