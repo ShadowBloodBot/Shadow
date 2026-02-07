@@ -1,10 +1,11 @@
-# bot.py — ShadowSyn (Master: Shadow Tower 5.2 - Combat Transparency)
+# bot.py — ShadowSyn (Master: Shadow Tower 5.3 - Stability Audit)
 #
 # === FEATURES ===
-# [x] 🏰 SHADOW TOWER 5.2:
-#      - 👁️ LOGS: Full transparency on Block/Armor for BOTH sides.
-#      - 🎲 UI: Attack button shows "Base + Roll" to explain dmg variance.
-#      - 💎 PREV: Artifacts, Synergies, Hardcore, Gear 2.0.
+# [x] 🏰 SHADOW TOWER 5.3:
+#      - 🛡️ STABILITY: Added try/except blocks to catch "Interaction Failed".
+#      - ⏱️ DEFER: Interactions defer immediately to prevent timeouts.
+#      - 👁️ LOGS: Full symmetric transparency (Player Block vs Enemy Armor).
+#      - 🧹 SANITIZE: Prevents crashes from malformed gear data.
 # [x] 🎛️ VOICEMASTER: JTC + Control Panel.
 # [x] 🎰 CASINO: Slots, Chicken, Dice, Duels.
 # [x] 🎵 MUSIC & UTILS: All present.
@@ -466,7 +467,7 @@ class MusicSelectionView(View):
         super().__init__(timeout=60)
         self.add_item(MusicSelect(entries, ctx, vc))
 
-# ==================== SHADOW TOWER 5.2 (FINAL POLISH) ====================
+# ==================== SHADOW TOWER 5.3 (STABILITY & SANITY) ====================
 
 def get_tower_data(user_id):
     uid = str(user_id)
@@ -539,14 +540,15 @@ def calculate_player_stats(data):
     gear_atk = 0
     gear_def = 0
     
-    # Check all slots
+    # Check all slots with SANITY CHECK
     slots = ["gear_weapon", "gear_helmet", "gear_chest", "gear_boots"]
     for s in slots:
         item = data.get(s)
-        if item:
-            val = item["val"]
-            if item["type"] == "ATK": gear_atk += val
-            elif item["type"] == "DEF": gear_def += val
+        # Ensure item is a Dictionary before accessing keys
+        if item and isinstance(item, dict):
+            val = item.get("val", 0)
+            if item.get("type") == "ATK": gear_atk += val
+            elif item.get("type") == "DEF": gear_def += val
             
     data["atk"] = base_atk + gear_atk
     data["def"] = base_def + gear_def
@@ -618,10 +620,7 @@ class MysteryRoomView(View):
         loss = int(self.data["max_hp"] * 0.2)
         self.data["max_hp"] -= loss
         self.data["hp"] = min(self.data["hp"], self.data["max_hp"])
-        
-        # Simple bonus logic
         self.data["atk"] += 10 
-        
         save_tower_data(self.user_id, self.data)
         
         await interaction.response.edit_message(
@@ -770,8 +769,7 @@ class TowerGameView(View):
             p_atk = self.data["atk"]
             p_def = self.data["def"] * 3
             
-            # --- BUTTON TEXT UPDATE: SHOW BASE + ROLL ---
-            # Instead of "~30", show "26 + 🎲" to clarify the mechanics
+            # --- UI: SHOW VARIANCE TO USER ---
             self.add_item(Button(label=f"Attack ({p_atk} + 🎲)", style=ButtonStyle.danger, custom_id="act_atk", emoji="⚔️"))
             self.add_item(Button(label=f"Defend ({p_def} Blk)", style=ButtonStyle.secondary, custom_id="act_def", emoji="🛡️"))
             
@@ -806,7 +804,16 @@ class TowerGameView(View):
             return False
         
         cid = interaction.data["custom_id"]
-        if "act_" in cid: await self.resolve_combat(interaction, cid)
+        # SAFETY WRAPPER FOR COMBAT TO PREVENT "INTERACTION FAILED"
+        if "act_" in cid:
+            try:
+                await interaction.response.defer() # PREVENT TIMEOUT
+                await self.resolve_combat(interaction, cid)
+            except Exception as e:
+                print(f"COMBAT ERROR: {e}")
+                traceback.print_exc()
+                try: await interaction.followup.send(f"⚠️ Combat Error: {e}", ephemeral=True)
+                except: pass
         elif "nav_" in cid: await self.resolve_nav(interaction, cid)
         return False
 
@@ -861,7 +868,7 @@ class TowerGameView(View):
                     for idx, item in enumerate(items):
                         s_key = slot_key_map.get(item["slot"])
                         curr = self.data.get(s_key)
-                        curr_val = curr["val"] if curr else 0
+                        curr_val = curr["val"] if (curr and isinstance(curr, dict)) else 0
                         diff = item["val"] - curr_val
                         diff_str = f"+{diff}" if diff > 0 else f"{diff}"
                         icon = "🟢" if diff > 0 else "🔴" if diff < 0 else "⚪"
@@ -889,7 +896,6 @@ class TowerGameView(View):
         name = name or get_monster(floor)
         hp = (floor * 20) + (100 if boss else 0)
         power = (floor * 2) + (10 if boss else 2)
-        # --- ENEMY ARMOR SCALING ---
         defense = int(floor * 0.5) + (5 if boss else 0) 
         
         self.enemy = {"name": name, "hp": hp, "max_hp": hp, "power": power, "def": defense, "intent": random.choice(["Attack", "Heavy Attack", "Defend"])}
@@ -901,7 +907,7 @@ class TowerGameView(View):
         count = 0
         for s in slots:
             item = self.data.get(s)
-            if item and item.get("affix"):
+            if item and isinstance(item, dict) and item.get("affix"):
                 if AFFIXES.get(item["affix"], {}).get("effect") == effect:
                     count += 1
         return count
@@ -922,7 +928,6 @@ class TowerGameView(View):
         siphon_count = self._check_affix("siphon")
         bulwark_count = self._check_affix("bulwark")
         
-        # --- PLAYER TURN ---
         if action == "act_atk":
             base_roll = random.randint(2, 6)
             p_dmg = atk_stat + base_roll
@@ -943,7 +948,6 @@ class TowerGameView(View):
             adren_gain = 10 + int(p_dmg / 2) + (swift_count * 5)
             self.data["adrenaline"] = min(100, self.data["adrenaline"] + adren_gain)
             
-            # --- PLAYER ATTACK MITIGATION LOGIC ---
             e_def = self.enemy.get("def", 0)
             final_p_dmg = max(0, p_dmg - e_def)
             
@@ -1127,7 +1131,8 @@ class TowerGameView(View):
                     embed = discord.Embed(title="🧬 Genetic Mutation", description=f"**Level {self.data['level']} Reached!**\nSelect a permanent evolution:", color=THEME_GOLD)
                     for i, opt in enumerate(view.options):
                         embed.add_field(name=f"{i+1}. {opt['name']}", value=f"📝 {opt['desc']}", inline=False)
-                    await interaction.response.edit_message(embed=embed, view=view)
+                    # Note: edit_message on followup
+                    await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=view)
                     return
 
             self.mode = "EXPLORE"
@@ -1135,7 +1140,7 @@ class TowerGameView(View):
             save_tower_data(self.user_id, self.data)
             
             self.render_main_menu() 
-            await interaction.response.edit_message(embed=self.update_embed("🏆 Victory!", desc), view=self)
+            await interaction.followup.edit_message(message_id=interaction.message.id, embed=self.update_embed("🏆 Victory!", desc), view=self)
             
         elif self.data["hp"] <= 0:
             self.data["hp"] = 0
@@ -1155,13 +1160,13 @@ class TowerGameView(View):
             self.data["potions"] = 0
             
             save_tower_data(self.user_id, self.data)
-            await interaction.response.edit_message(embed=self.update_embed("💀 YOU DIED", "Level, Stats, and Gear lost.\nPerks, Pets & Gold persisted.", THEME_LOSS), view=None)
+            await interaction.followup.edit_message(message_id=interaction.message.id, embed=self.update_embed("💀 YOU DIED", "Level, Stats, and Gear lost.\nPerks, Pets & Gold persisted.", THEME_LOSS), view=None)
             
         else:
             self.enemy["intent"] = random.choice(["Attack", "Heavy Attack", "Defend"])
             save_tower_data(self.user_id, self.data)
             self.render_main_menu()
-            await interaction.response.edit_message(embed=self.update_embed("⚔️ Combat", "Next round..."), view=self)
+            await interaction.followup.edit_message(message_id=interaction.message.id, embed=self.update_embed("⚔️ Combat", "Next round..."), view=self)
 
 class ClassSelectView(View):
     def __init__(self, user_id):
