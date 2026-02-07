@@ -1,9 +1,11 @@
-# bot.py — ShadowSyn (Master: Shadow Tower 4.2 - Combat Math Transparency)
+# bot.py — ShadowSyn (Master: Shadow Tower 5.0 - Artifacts & Synergies)
 #
 # === FEATURES ===
-# [x] 🏰 SHADOW TOWER 4.2:
-#      - 👁️ LOG FIX: Shows Raw Dmg - Mitigation = Final Dmg.
-#      - 🛡️ PREV: Gear 2.0, Loot Selection, Perks UI.
+# [x] 🏰 SHADOW TOWER 5.0:
+#      - 💎 LOOT 2.0: 3 Distinct Archetypes (Safe, Synergy, Risk).
+#      - 🧬 NEW AFFIXES: Berserker, Midas, Glass, Bulwark, Siphon.
+#      - 📊 SMART GENERATION: Loot scales intelligently with Floor.
+#      - 🛡️ PREV: Gear 2.0, Combat Log 2.0, Hardcore.
 # [x] 🎛️ VOICEMASTER: JTC + Control Panel.
 # [x] 🎰 CASINO: Slots, Chicken, Dice, Duels.
 # [x] 🎵 MUSIC & UTILS: All present.
@@ -116,15 +118,20 @@ PERKS = [
     {"id": "stone", "name": "🪨 Stone Skin", "desc": "+5 Base Defense."}
 ]
 
-# AFFIX SYSTEM 2.0
+# --- AFFIX SYSTEM 5.0 (SYNERGIES) ---
 AFFIXES = {
-    "Vampiric": {"desc": "Heal 3 HP on hit", "effect": "heal_hit"}, 
-    "Sharp": {"desc": "+20% DMG", "effect": "dmg_boost"}, 
-    "Reinforced": {"desc": "+20% DEF", "effect": "def_boost"},
-    "Thorned": {"desc": "Reflect 10% DMG", "effect": "reflect"},
-    "Swift": {"desc": "+10 Adrenaline/Turn", "effect": "speed"},
-    "Heavy": {"desc": "Huge Stats, No Dodge", "effect": "heavy"},
-    "Lucky": {"desc": "+Gold Drop", "effect": "gold"}
+    "Vampiric": {"desc": "Heal 3 HP on hit", "effect": "heal_hit", "style": "🩸 Sustain"}, 
+    "Sharp": {"desc": "+20% DMG", "effect": "dmg_boost", "style": "⚔️ DPS"}, 
+    "Reinforced": {"desc": "+20% DEF", "effect": "def_boost", "style": "🛡️ Tank"},
+    "Thorned": {"desc": "Reflect 15% DMG", "effect": "reflect", "style": "🌵 Counter"},
+    "Swift": {"desc": "+10 Adrenaline/Turn", "effect": "speed", "style": "⚡ Speed"},
+    
+    # NEW COMPLEX AFFIXES
+    "Berserker": {"desc": "+30% DMG, Take +10% DMG", "effect": "berserk", "style": "👹 Risk"},
+    "Midas": {"desc": "+5 Gold per Hit", "effect": "midas", "style": "💰 Greed"},
+    "Siphon": {"desc": "15% Chance steal ATK", "effect": "siphon", "style": "👻 Debuff"},
+    "Glass": {"desc": "+50% ATK, -30% Max HP", "effect": "glass", "style": "💀 Glass Cannon"},
+    "Bulwark": {"desc": "+50% DEF, -20% ATK", "effect": "bulwark", "style": "🏯 Wall"}
 }
 
 SLOT_TYPES = ["Weapon", "Helmet", "Chest", "Boots"]
@@ -460,7 +467,7 @@ class MusicSelectionView(View):
         super().__init__(timeout=60)
         self.add_item(MusicSelect(entries, ctx, vc))
 
-# ==================== SHADOW TOWER 4.2 (COMBAT MATH FIX) ====================
+# ==================== SHADOW TOWER 5.0 (ARTIFACTS & SYNERGY) ====================
 
 def get_tower_data(user_id):
     uid = str(user_id)
@@ -538,49 +545,76 @@ def calculate_player_stats(data):
     for s in slots:
         item = data.get(s)
         if item:
-            if item["type"] == "ATK": gear_atk += item["val"]
-            elif item["type"] == "DEF": gear_def += item["val"]
-            # Apply 'Heavy' affix penalty/buff handled in generation, mostly stat stick
+            val = item["val"]
+            # Apply Complex Stats Modifiers from Items
+            if item.get("affix") == "Glass": # +50% stats via generation, but logic here just adds raw
+                pass 
+            
+            if item["type"] == "ATK": gear_atk += val
+            elif item["type"] == "DEF": gear_def += val
             
     data["atk"] = base_atk + gear_atk
     data["def"] = base_def + gear_def
     return data
 
-def generate_loot_item(floor):
-    roll = random.randint(1, 100)
-    if roll > 95: tier, mult, color = "Legendary", 5, THEME_LEGEND
-    elif roll > 80: tier, mult, color = "Epic", 3, THEME_EPIC
-    elif roll > 60: tier, mult, color = "Rare", 2, THEME_RARE
-    else: tier, mult, color = "Common", 1, 0x95A5A6
-
+def generate_loot_option(floor, archetype):
+    # Archetype 1: Safe (Standard)
+    # Archetype 2: Synergy (Lower stats, good affix)
+    # Archetype 3: Risk/Greed (Cursed/Gold)
+    
     slot = random.choice(SLOT_TYPES)
     stat_type = "ATK" if slot == "Weapon" else "DEF"
-    
-    # Base Val Scaling
-    val = (floor * mult) + random.randint(1, 5)
+    base_val = (floor * 2) + random.randint(2, 6)
     
     # Slot Modifiers
-    if slot == "Chest": val = int(val * 1.5) # Chest gives more DEF
-    elif slot == "Boots" or slot == "Helmet": val = int(val * 0.8) # Boots/Helm give less DEF
+    if slot == "Chest": base_val = int(base_val * 1.4)
+    elif slot == "Boots": base_val = int(base_val * 0.7)
     
     affix = None
-    if tier != "Common" and random.random() < 0.6:
-        affix = random.choice(list(AFFIXES.keys()))
-        if affix == "Heavy": val = int(val * 1.5)
-        if affix == "Sharp" and stat_type == "ATK": val = int(val * 1.2)
-        if affix == "Reinforced" and stat_type == "DEF": val = int(val * 1.2)
+    tier = "Common"
+    color = 0x95A5A6
+    
+    if archetype == "safe":
+        # Boost raw stats, unlikely to have complex affix
+        base_val = int(base_val * 1.3)
+        tier = "Reinforced"
+        color = THEME_RARE
+        if random.random() < 0.3:
+            affix = "Reinforced" if stat_type == "DEF" else "Sharp"
+            
+    elif archetype == "synergy":
+        # Lower stats, guaranteed cool affix
+        base_val = int(base_val * 0.9)
+        tier = "Enchanted"
+        color = THEME_EPIC
+        # Pick from synergy pool
+        pool = ["Vampiric", "Thorned", "Swift", "Siphon"]
+        affix = random.choice(pool)
+        
+    elif archetype == "risk":
+        # High Variance
+        tier = "Cursed"
+        color = THEME_LOSS
+        pool = ["Berserker", "Midas", "Glass", "Bulwark", "Lucky"]
+        affix = random.choice(pool)
+        
+        # Adjust stats based on risk affix
+        if affix == "Glass": base_val = int(base_val * 2.0)
+        if affix == "Bulwark" and stat_type == "DEF": base_val = int(base_val * 1.8)
+        if affix == "Midas": base_val = int(base_val * 0.8) # Weaker but gold
     
     name = f"{tier} {slot}"
     if affix: name = f"{affix} {name}"
 
     return {
         "name": name,
-        "slot": slot, # Weapon, Helmet, etc
+        "slot": slot,
         "type": stat_type,
-        "val": val,
+        "val": base_val,
         "tier": tier,
         "affix": affix,
-        "color": color
+        "color": color,
+        "archetype": archetype
     }
 
 # --- RPG VIEWS ---
@@ -835,12 +869,18 @@ class TowerGameView(View):
                 if roll > 30: 
                     self.start_combat()
                 else: 
-                    # --- NEW LOOT SYSTEM 4.0 ---
-                    items = [generate_loot_item(self.data["floor"]) for _ in range(3)]
+                    # --- NEW LOOT SYSTEM 5.0: ARCHETYPES ---
+                    items = [
+                        generate_loot_option(self.data["floor"], "safe"),
+                        generate_loot_option(self.data["floor"], "synergy"),
+                        generate_loot_option(self.data["floor"], "risk")
+                    ]
+                    random.shuffle(items) # Shuffle so "Safe" isn't always top
+                    
                     view = LootSelectionView(self.user, items)
                     
                     # Construct Comparison Embed
-                    embed = discord.Embed(title="🎁 Treasure Room", description="Choose **ONE** item to equip.", color=THEME_GOLD)
+                    embed = discord.Embed(title="🎁 Treasure Room", description="Choose your destiny.", color=THEME_GOLD)
                     
                     slot_key_map = {"Weapon": "gear_weapon", "Helmet": "gear_helmet", "Chest": "gear_chest", "Boots": "gear_boots"}
                     
@@ -852,11 +892,15 @@ class TowerGameView(View):
                         diff_str = f"+{diff}" if diff > 0 else f"{diff}"
                         icon = "🟢" if diff > 0 else "🔴" if diff < 0 else "⚪"
                         
-                        afx_str = f"\n✨ {item['affix']}: {AFFIXES[item['affix']]['desc']}" if item['affix'] else ""
+                        afx = item.get('affix')
+                        style_tag = ""
+                        if afx:
+                            meta = AFFIXES.get(afx, {})
+                            style_tag = f"\n**[{meta.get('style', 'Special')}]** {meta.get('desc', '')}"
                         
                         embed.add_field(
                             name=f"Option {idx+1}: {item['name']}",
-                            value=f"Type: {item['slot']} ({item['type']})\nStat: **{item['val']}** (Curr: {curr_val}) {icon} **{diff_str}**{afx_str}",
+                            value=f"Type: {item['slot']} ({item['type']})\nStat: **{item['val']}** (Curr: {curr_val}) {icon} **{diff_str}**{style_tag}",
                             inline=False
                         )
                         
@@ -892,20 +936,30 @@ class TowerGameView(View):
         
         if "adrenaline" not in self.data: self.data["adrenaline"] = 0
         
-        # --- AFFIX BUFFS ---
+        # --- AFFIX COUNTING ---
         vamp_count = self._check_affix("heal_hit")
         thorn_count = self._check_affix("reflect")
         swift_count = self._check_affix("speed")
         heavy_count = self._check_affix("heavy")
+        glass_count = self._check_affix("glass")
+        berserk_count = self._check_affix("berserk")
+        midas_count = self._check_affix("midas")
+        siphon_count = self._check_affix("siphon")
+        bulwark_count = self._check_affix("bulwark")
         
         # --- PLAYER TURN ---
         if action == "act_atk":
             base_roll = random.randint(2, 6)
             p_dmg = atk_stat + base_roll
             
+            # --- APPLY OFFENSIVE SYNERGIES ---
+            if berserk_count > 0: p_dmg = int(p_dmg * (1 + (0.3 * berserk_count)))
+            if glass_count > 0: p_dmg = int(p_dmg * 1.5)
+            if bulwark_count > 0: p_dmg = int(p_dmg * 0.8) # Penalty
+            
             # Rogue Crit
             crit_chance = 0.25
-            if heavy_count > 0: crit_chance = 0.10 # Heavy gear reduces crit/dodge
+            if heavy_count > 0: crit_chance = 0.10 
             
             if self.data["class"] == "Rogue" and random.random() < crit_chance: 
                 p_dmg = int(p_dmg * 2)
@@ -916,12 +970,24 @@ class TowerGameView(View):
             adren_gain = 10 + int(p_dmg / 2) + (swift_count * 5)
             self.data["adrenaline"] = min(100, self.data["adrenaline"] + adren_gain)
             
-            # Note: Player damage is applied to Enemy HP directly (Enemy has no DEF stat in this simple model yet)
-            # Future update: Add enemy defense? For now, raw damage.
             self.combat_log.append(f"🗡️ You {p_act}: {int(p_dmg)} Dmg.")
+            
+            # Midas Effect
+            if midas_count > 0:
+                gold_gain = midas_count * 5
+                self.data["gold"] += gold_gain
+                
+            # Siphon Effect
+            if siphon_count > 0 and random.random() < (0.15 * siphon_count):
+                steal = 2
+                self.enemy["power"] = max(1, self.enemy["power"] - steal)
+                # Temp buff not implemented, just debuff enemy for now to keep it simple
+                self.combat_log.append(f"👻 Siphoned {steal} Power from enemy!")
             
         elif action == "act_def":
             p_block = self.data["def"] * 3
+            if bulwark_count > 0: p_block = int(p_block * 1.5)
+            
             p_act = "DEFEND"
             self.data["adrenaline"] = min(100, self.data["adrenaline"] + 20 + (swift_count * 5))
             self.combat_log.append(f"🛡️ You raise SHIELD ({p_block} Block).")
@@ -993,6 +1059,10 @@ class TowerGameView(View):
         if "vampire" in self.data["perks"]: self.data["hp"] = min(self.data["max_hp"], self.data["hp"] + 5)
         
         # --- ENEMY DAMAGE CALCULATION (TRANSPARENT) ---
+        
+        # Apply Risk Affix Penalties to Incoming Damage
+        if berserk_count > 0: e_dmg = int(e_dmg * 1.1)
+        
         passive_def = self.data["def"] if action != "act_def" else 0
         total_mitigation = p_block + passive_def
         
@@ -1016,7 +1086,7 @@ class TowerGameView(View):
         if final_e_dmg > 0:
             # Thorns Reflection
             if thorn_count > 0:
-                refl = int(final_e_dmg * (0.10 * thorn_count))
+                refl = int(final_e_dmg * (0.15 * thorn_count)) # Buffed to 15%
                 self.enemy["hp"] -= refl
                 self.combat_log.append(f"🌵 Thorns reflected {refl} dmg.")
                 
@@ -1077,7 +1147,6 @@ class TowerGameView(View):
                 self.data["hp"] = self.data["max_hp"]
                 
                 if self.data["level"] % 5 == 0:
-                    # NEW PERK SYSTEM INITIATED HERE
                     view = PerkSelectView(self.user, self.data)
                     embed = discord.Embed(title="🧬 Genetic Mutation", description=f"**Level {self.data['level']} Reached!**\nSelect a permanent evolution:", color=THEME_GOLD)
                     for i, opt in enumerate(view.options):
