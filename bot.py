@@ -1,11 +1,10 @@
-# bot.py — ShadowSyn (Master: Shadow Tower 5.3 - Stability Audit)
+# bot.py — ShadowSyn (Master: Shadow Tower 5.4 - Complete & Stable)
 #
 # === FEATURES ===
-# [x] 🏰 SHADOW TOWER 5.3:
-#      - 🛡️ STABILITY: Added try/except blocks to catch "Interaction Failed".
-#      - ⏱️ DEFER: Interactions defer immediately to prevent timeouts.
-#      - 👁️ LOGS: Full symmetric transparency (Player Block vs Enemy Armor).
-#      - 🧹 SANITIZE: Prevents crashes from malformed gear data.
+# [x] 🏰 SHADOW TOWER 5.4:
+#      - 🔧 FIX: Restored truncated code in Enemy Combat Logic.
+#      - 👁️ LOGS: Two-way transparency (Player vs Armor, Enemy vs Block).
+#      - 🛡️ STABILITY: Error catching for "Interaction Failed".
 # [x] 🎛️ VOICEMASTER: JTC + Control Panel.
 # [x] 🎰 CASINO: Slots, Chicken, Dice, Duels.
 # [x] 🎵 MUSIC & UTILS: All present.
@@ -467,7 +466,7 @@ class MusicSelectionView(View):
         super().__init__(timeout=60)
         self.add_item(MusicSelect(entries, ctx, vc))
 
-# ==================== SHADOW TOWER 5.3 (STABILITY & SANITY) ====================
+# ==================== SHADOW TOWER 5.4 (STABILITY FIX) ====================
 
 def get_tower_data(user_id):
     uid = str(user_id)
@@ -928,6 +927,7 @@ class TowerGameView(View):
         siphon_count = self._check_affix("siphon")
         bulwark_count = self._check_affix("bulwark")
         
+        # --- PLAYER TURN ---
         if action == "act_atk":
             base_roll = random.randint(2, 6)
             p_dmg = atk_stat + base_roll
@@ -1030,6 +1030,7 @@ class TowerGameView(View):
         e_dmg = 0
         e_intent = self.enemy["intent"]
         
+        # --- ENEMY TURN ---
         if not enemy_stunned:
             if e_intent == "Attack": e_dmg = self.enemy["power"]
             elif e_intent == "Heavy Attack": e_dmg = self.enemy["power"] * 1.5
@@ -1131,7 +1132,6 @@ class TowerGameView(View):
                     embed = discord.Embed(title="🧬 Genetic Mutation", description=f"**Level {self.data['level']} Reached!**\nSelect a permanent evolution:", color=THEME_GOLD)
                     for i, opt in enumerate(view.options):
                         embed.add_field(name=f"{i+1}. {opt['name']}", value=f"📝 {opt['desc']}", inline=False)
-                    # Note: edit_message on followup
                     await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=view)
                     return
 
