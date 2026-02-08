@@ -1,11 +1,10 @@
-# bot.py — ShadowSyn (Master: v6.1 - Full UI RPG)
+# bot.py — ShadowSyn (Master: v6.2 - Stability & UI Polish)
 #
 # === FEATURES ===
-# [x] 🎒 UI INVENTORY: No commands. Click "Bag" -> Use Dropdown to Equip.
+# [x] 🎒 INVENTORY: Fixed "Double Interaction" crash on equip.
 # [x] ⚔️ RPG STATS: STR (Dmg), VIT (HP), AGI (Crit), INT (Gold/Heal).
-# [x] 🛒 SHOP: Auto-triggers every 5 floors. Sell/Buy buttons.
-# [x] 💎 LOOT: "Diablo-style" generation (Rarity + Stats).
-# [x] 🛡️ STABILITY: All crash fixes included.
+# [x] 🛒 SHOP: Auto-triggers every 5 floors.
+# [x] 💎 LOOT: Rarity colors + Stats + Seamless looting UI.
 #
 # LIBRARY: py-cord[voice]
 
@@ -37,7 +36,6 @@ import yt_dlp
 
 # =========================== CONSTANTS ===========================
 
-VANITY_INVITE   = "https://discord.gg/shadowsyn"
 THEME_PRIMARY   = 0x2B0B35
 THEME_WIN       = 0x43B581 
 THEME_LOSS      = 0xF04747 
@@ -412,7 +410,7 @@ class MusicSelectionView(View):
         super().__init__(timeout=60)
         self.add_item(MusicSelect(entries, ctx, vc))
 
-# ==================== SHADOW TOWER 6.1 (FULL UI OVERHAUL) ====================
+# ==================== SHADOW TOWER 6.2 (CRASH FIXES + UI POLISH) ====================
 
 def get_tower_data(user_id):
     uid = str(user_id)
@@ -527,13 +525,10 @@ class LootDropView(View):
         if interaction.user.id != self.user.id: return
         self.data["inventory"].append(self.item)
         save_tower_data(self.user.id, self.data)
-        await interaction.response.edit_message(embed=discord.Embed(title="🎒 Looted", description=f"You picked up **{self.item['name']}**.", color=THEME_WIN), view=None)
         
-        await asyncio.sleep(1)
+        # Smooth Transition back to tower
         view = TowerGameView(self.user)
-        # Assuming last message is editable or we send new one. For smooth UX we send ephemeral confirm then user acts on next turn.
-        # Actually better UX: Update original message to "Looted" then show next menu.
-        await interaction.followup.send(embed=view.update_embed("Ready", "Continue climbing."), view=view, ephemeral=True)
+        await interaction.response.edit_message(embed=view.update_embed("Resume Climbing", f"Looted **{self.item['name']}**."), view=view)
 
     @discord.ui.button(label="Salvage (Gold)", style=ButtonStyle.secondary, emoji="💰")
     async def salvage(self, button, interaction):
@@ -541,11 +536,10 @@ class LootDropView(View):
         val = self.item["value"]
         self.data["gold"] += val
         save_tower_data(self.user.id, self.data)
-        await interaction.response.edit_message(embed=discord.Embed(title="🔨 Salvaged", description=f"You gained **{val} Gold**.", color=THEME_GOLD), view=None)
         
-        await asyncio.sleep(1)
+        # Smooth Transition back to tower
         view = TowerGameView(self.user)
-        await interaction.followup.send(embed=view.update_embed("Ready", "Continue climbing."), view=view, ephemeral=True)
+        await interaction.response.edit_message(embed=view.update_embed("Resume Climbing", f"Salvaged for **{val} Gold**."), view=view)
 
 class TowerGameView(View):
     def __init__(self, user):
@@ -692,6 +686,8 @@ class TowerGameView(View):
 
     async def equip_callback(self, interaction):
         if interaction.user.id != self.user.id: return
+        await interaction.response.defer() # FIX: Defer first to prevent timeout/double interaction
+        
         val = interaction.data["values"][0]
         to_equip = next((i for i in self.data["inventory"] if i["id"] == val), None)
         if to_equip:
@@ -701,11 +697,11 @@ class TowerGameView(View):
             self.data["equipment"][slot] = to_equip
             self.data["inventory"].remove(to_equip)
             save_tower_data(self.user.id, self.data)
-            self.stats = get_total_stats(self.data) # Update stats immediately
-            await interaction.response.edit_message(embed=self.update_embed("Gear Updated", ""), view=self)
-            # Re-render to update dropdown
-            self.render_main_menu()
-            await interaction.edit_original_response(view=self)
+            
+            self.stats = get_total_stats(self.data) 
+            self.render_main_menu() # Re-render dropdowns
+            
+            await interaction.edit_original_response(embed=self.update_embed("Gear Updated", ""), view=self)
 
     async def wrapper(self, interaction, cid):
         if interaction.user.id != self.user.id:
