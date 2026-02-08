@@ -1,10 +1,11 @@
-# bot.py — ShadowSyn (Master: v6.2 - Stability & UI Polish)
+# bot.py — ShadowSyn (Master: v6.3 - Stable Gold Standard)
 #
 # === FEATURES ===
-# [x] 🎒 INVENTORY: Fixed "Double Interaction" crash on equip.
-# [x] ⚔️ RPG STATS: STR (Dmg), VIT (HP), AGI (Crit), INT (Gold/Heal).
-# [x] 🛒 SHOP: Auto-triggers every 5 floors.
-# [x] 💎 LOOT: Rarity colors + Stats + Seamless looting UI.
+# [x] 🛡️ FIX: "bot not defined" crash resolved.
+# [x] 🎒 RPG: Full UI Inventory, Stats (STR/VIT/AGI/INT), Shop, Loot.
+# [x] 🎰 CASINO: Slots, Chicken, Dice, Duels (RESTORED).
+# [x] 🎛️ VOICEMASTER: JTC + Control Panel (RESTORED).
+# [x] 🎵 MUSIC: Play/Skip/Queue/Join (RESTORED).
 #
 # LIBRARY: py-cord[voice]
 
@@ -36,6 +37,7 @@ import yt_dlp
 
 # =========================== CONSTANTS ===========================
 
+VANITY_INVITE   = "https://discord.gg/shadowsyn"
 THEME_PRIMARY   = 0x2B0B35
 THEME_WIN       = 0x43B581 
 THEME_LOSS      = 0xF04747 
@@ -95,6 +97,14 @@ MONSTERS = {
     15: ["Troll", "Ogre", "Gargoyle", "Vampire Spawn", "Cursed Armor", "Dark Elf"],
     30: ["Lich", "Demon Soldier", "Shadow Stalker", "Bone Golem", "Hellhound"],
     50: ["Void Walker", "Abyssal Horror", "Fallen Angel", "Dragon Whelp", "Void Titan"]
+}
+
+# --- BIOME THEMES ---
+BIOMES = {
+    "Sewers": {"range": (1, 20), "color": 0x2ECC71, "emoji": "🤢", "effect": "Toxic: 5% Poison Dmg every 5 turns."},
+    "Catacombs": {"range": (21, 40), "color": 0x95A5A6, "emoji": "💀", "effect": "Darkness: 20% Miss Chance."},
+    "Magma Core": {"range": (41, 60), "color": 0xE74C3C, "emoji": "🌋", "effect": "Heat: Skills cost 5 HP."},
+    "Void": {"range": (61, 999), "color": 0x8E44AD, "emoji": "🔮", "effect": "Void: Enemies deal True Damage."}
 }
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -352,6 +362,16 @@ async def _apply_invite_role(member, used_code):
         return True, role.name
     except Exception as e: return False, str(e)
 
+# ==================== BOT INSTANCE CREATION (FIX) ====================
+
+class ShadowSynBot(discord.Bot):
+    def __init__(self):
+        super().__init__(intents=discord.Intents.all())
+        self.audio_queues = {}
+
+# CRITICAL FIX: Define bot instance BEFORE using @bot.slash_command
+bot = ShadowSynBot()
+
 # ==================== MUSIC LOGIC ====================
 
 YTDL_PLAY_OPTIONS = {'format': 'bestaudio/best', 'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s', 'restrictfilenames': True, 'noplaylist': True, 'nocheckcertificate': True, 'ignoreerrors': False, 'logtostderr': False, 'quiet': True, 'no_warnings': True, 'default_search': 'auto', 'source_address': '0.0.0.0', 'socket_timeout': 10, 'retries': 5}
@@ -410,7 +430,7 @@ class MusicSelectionView(View):
         super().__init__(timeout=60)
         self.add_item(MusicSelect(entries, ctx, vc))
 
-# ==================== SHADOW TOWER 6.2 (CRASH FIXES + UI POLISH) ====================
+# ==================== SHADOW TOWER 6.3 (STABILITY + UI POLISH) ====================
 
 def get_tower_data(user_id):
     uid = str(user_id)
@@ -844,6 +864,580 @@ class TowerGameView(View):
             save_tower_data(self.user_id, self.data)
             await interaction.edit_original_response(embed=self.update_embed("Combat", "Fighting..."), view=self)
 
+# ==================== CASINO LOGIC (RESTORED) ====================
+
+def generate_slot_result(user, bet):
+    user_id = str(user.id)
+    update_balance(user_id, -bet)
+    emojis = ["🍒", "🍋", "🍇", "💎", "7️⃣", "🔔", "🍊"]
+    a, b, c = random.choice(emojis), random.choice(emojis), random.choice(emojis)
+    payout = 0
+    is_jackpot = False
+    
+    if a == b == c: payout = bet * 13; is_jackpot = True
+    elif a == b or b == c or a == c: payout = int(bet * 1.5) 
+    
+    if payout > 0:
+        update_balance(user_id, payout)
+        col = THEME_GOLD if payout > bet * 2 else THEME_WIN
+        msg = f"🎰 **{a} | {b} | {c}**\n✅ **WIN!** +{payout}"
+    else:
+        col = THEME_LOSS
+        msg = f"🎰 **{a} | {b} | {c}**\n❌ **Lost** {bet}"
+        
+    embed = discord.Embed(description=msg, color=col)
+    if user.display_avatar: embed.set_author(name=f"{user.display_name}'s Spin", icon_url=user.display_avatar.url)
+    else: embed.set_author(name=f"{user.display_name}'s Spin")
+    embed.set_footer(text=f"Bet: {bet} Scoins")
+    return embed, is_jackpot, payout
+
+class RepeatSpinView(View):
+    def __init__(self, user_id, bet):
+        super().__init__(timeout=120)
+        self.user_id = user_id
+        self.bet = bet
+
+    @discord.ui.button(label="Spin Again", style=ButtonStyle.primary, emoji="🔄")
+    async def spin_btn(self, button, interaction: Interaction):
+        if interaction.user.id != self.user.id:
+            return await interaction.response.send_message("🚫 Not your game.", ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True) 
+            bal = get_balance(str(self.user.id))
+            if bal < self.bet:
+                return await interaction.followup.send(f"❌ Insufficient funds ({bal} < {self.bet}).", ephemeral=True)
+            embed, is_jackpot, win_amount = generate_slot_result(interaction.user, self.bet)
+            await interaction.followup.send(embed=embed, view=RepeatSpinView(self.user_id, self.bet), ephemeral=True)
+            if is_jackpot:
+                target_thread = interaction.guild.get_channel(CASINO_CHANNEL_ID) or await interaction.guild.fetch_channel(CASINO_CHANNEL_ID)
+                if target_thread: await target_thread.send(f"🚨 **JACKPOT!** 🎰\n**{interaction.user.display_name}** just hit a **3x Match** and won **{win_amount}** Scoins!")
+        except Exception as e: await interaction.followup.send(f"⚠️ Error: {e}", ephemeral=True)
+
+class BetAmountModal(Modal):
+    def __init__(self, title, balance, callback_func):
+        super().__init__(title=title)
+        self.balance = balance
+        self.callback_func = callback_func
+        self.add_item(TextInput(label=f"Amount (Max: {balance})", placeholder="Enter amount or 'all'", min_length=1))
+    async def callback(self, interaction: Interaction):
+        raw = self.children[0].value.lower()
+        if raw == "all": amount = self.balance
+        else:
+            try: amount = int(raw)
+            except: return await interaction.response.send_message("❌ Invalid number.", ephemeral=True)
+        if amount <= 0: return await interaction.response.send_message("❌ Must bet > 0.", ephemeral=True)
+        if amount > self.balance: return await interaction.response.send_message("❌ Insufficient funds.", ephemeral=True)
+        await self.callback_func(interaction, amount)
+
+class ChickenButton(Button):
+    def __init__(self, x, y, view_ref):
+        super().__init__(style=ButtonStyle.secondary, label="\u200b", row=y)
+        self.x = x
+        self.y = y
+        self.view_ref = view_ref
+        self.idx = y * 5 + x
+    async def callback(self, interaction: Interaction):
+        if interaction.user.id != self.view_ref.user_id:
+            return await interaction.response.send_message("🚫 Not your game.", ephemeral=True)
+        await self.view_ref.handle_click(self, interaction)
+
+class ChickenGameView(View):
+    def __init__(self, user, bet, bones_count):
+        super().__init__(timeout=180)
+        self.user_id = user.id
+        self.user = user
+        self.bet = bet
+        self.bones_count = bones_count
+        self.grid_size = 20 
+        self.bones_indices = set(random.sample(range(self.grid_size), bones_count))
+        self.revealed = set()
+        self.game_over = False
+        self.multiplier = 1.0
+        for y in range(4):
+            for x in range(5):
+                self.add_item(ChickenButton(x, y, self))
+        self.cashout_btn = Button(style=ButtonStyle.success, label="Cash Out", row=4, emoji="💰", disabled=True)
+        self.cashout_btn.callback = self.cash_out
+        self.add_item(self.cashout_btn)
+    def calculate_next_multiplier(self):
+        remaining_tiles = self.grid_size - len(self.revealed)
+        safe_remaining = remaining_tiles - self.bones_count
+        if safe_remaining <= 0: return self.multiplier
+        odds = remaining_tiles / safe_remaining
+        return self.multiplier * odds * 0.97 
+    async def handle_click(self, button, interaction: Interaction):
+        if self.game_over: return
+        idx = button.idx
+        if idx in self.bones_indices:
+            self.game_over = True
+            update_balance(str(self.user_id), -self.bet)
+            button.style = ButtonStyle.danger
+            button.emoji = "🦴"
+            button.label = ""
+            for child in self.children:
+                if isinstance(child, ChickenButton):
+                    child.disabled = True
+                    if child.idx in self.bones_indices and child.idx != idx:
+                        child.style = ButtonStyle.secondary
+                        child.emoji = "🦴"
+            self.cashout_btn.disabled = True
+            embed = discord.Embed(title="💥 BONE!", description=f"You hit a bone and lost **{self.bet}** Scoins.", color=THEME_LOSS)
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            self.revealed.add(idx)
+            self.multiplier = self.calculate_next_multiplier()
+            button.style = ButtonStyle.success
+            button.emoji = "🍗"
+            button.label = ""
+            button.disabled = True
+            self.cashout_btn.disabled = False
+            self.cashout_btn.label = f"Cash Out ({int(self.bet * self.multiplier)})"
+            current_win = int(self.bet * self.multiplier)
+            embed = discord.Embed(title="🍗 CHICKEN!", description=f"Multiplier: **{self.multiplier:.2f}x**\nCurrent Win: **{current_win}**", color=THEME_GOLD)
+            await interaction.response.edit_message(embed=embed, view=self)
+    async def cash_out(self, interaction: Interaction):
+        if interaction.user.id != self.user.id: return
+        self.game_over = True
+        win_amount = int(self.bet * self.multiplier)
+        update_balance(str(self.user_id), -self.bet + win_amount)
+        for child in self.children: child.disabled = True
+        embed = discord.Embed(title="💰 CASHED OUT", description=f"You won **{win_amount}** Scoins!\nMultiplier: **{self.multiplier:.2f}x**", color=THEME_WIN)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+class ChickenDifficultySelect(Select):
+    def __init__(self, user, bet):
+        self.user = user
+        self.bet = bet
+        options = [SelectOption(label="1 Bone (Safe)", value="1"), SelectOption(label="3 Bones", value="3"), SelectOption(label="5 Bones", value="5"), SelectOption(label="10 Bones", value="10"), SelectOption(label="15 Bones", value="15")]
+        super().__init__(placeholder="Select Difficulty...", min_values=1, max_values=1, options=options)
+    async def callback(self, interaction: Interaction):
+        if interaction.user.id != self.user.id: return
+        bones = int(self.values[0])
+        bal = get_balance(str(self.user.id))
+        if bal < self.bet: return await interaction.response.send_message("❌ Insufficient funds.", ephemeral=True)
+        view = ChickenGameView(self.user, self.bet, bones)
+        embed = discord.Embed(title="🍗 Chicken Cross", description=f"Bet: {self.bet} | Bones: {bones}", color=THEME_PRIMARY)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+class ChickenSetupView(View):
+    def __init__(self, user, bet):
+        super().__init__(timeout=60)
+        self.add_item(ChickenDifficultySelect(user, bet))
+
+class DiceGameView(View):
+    def __init__(self, user, bet):
+        super().__init__(timeout=60)
+        self.user = user
+        self.user_id = user.id
+        self.bet = bet
+        self.game_over = False
+    @discord.ui.button(label="Low (2-6) [x2]", style=ButtonStyle.primary, emoji="⬇️", row=0)
+    async def low_btn(self, button, interaction: Interaction): await self.process_roll(interaction, "low")
+    @discord.ui.button(label="Seven (7) [x5]", style=ButtonStyle.secondary, emoji="7️⃣", row=0)
+    async def seven_btn(self, button, interaction: Interaction): await self.process_roll(interaction, "seven")
+    @discord.ui.button(label="High (8-12) [x2]", style=ButtonStyle.primary, emoji="⬆️", row=0)
+    async def high_btn(self, button, interaction: Interaction): await self.process_roll(interaction, "high")
+    async def process_roll(self, interaction: Interaction, choice):
+        if interaction.user.id != self.user.id: return await interaction.response.send_message("🚫 Not your game.", ephemeral=True)
+        if self.game_over: return
+        bal = get_balance(str(self.user.id))
+        if bal < self.bet: return await interaction.response.send_message("❌ Insufficient funds.", ephemeral=True)
+        update_balance(str(self.user.id), -self.bet)
+        self.game_over = True
+        d1 = random.randint(1, 6)
+        d2 = random.randint(1, 6)
+        total = d1 + d2
+        dice_map = {1: "1️⃣", 2: "2️⃣", 3: "3️⃣", 4: "4️⃣", 5: "5️⃣", 6: "6️⃣"}
+        visual = f"{dice_map[d1]} + {dice_map[d2]} = **{total}**"
+        won = False
+        payout = 0
+        if choice == "low" and total < 7: won = True; payout = int(self.bet * 2)
+        elif choice == "high" and total > 7: won = True; payout = int(self.bet * 2)
+        elif choice == "seven" and total == 7: won = True; payout = int(self.bet * 5)
+        if won:
+            update_balance(str(self.user_id), payout)
+            embed = discord.Embed(title="🎲 Dice Roll", description=f"{visual}\n✅ **WIN!** You won **{payout}** Scoins.", color=THEME_WIN)
+        else:
+            embed = discord.Embed(title="🎲 Dice Roll", description=f"{visual}\n❌ **LOSS.** You lost **{self.bet}** Scoins.", color=THEME_LOSS)
+        for child in self.children: child.disabled = True
+        self.add_item(PlayAgainDiceButton(self.user, self.bet))
+        await interaction.response.edit_message(embed=embed, view=self)
+
+class PlayAgainDiceButton(Button):
+    def __init__(self, user, bet):
+        super().__init__(label="Roll Again", style=ButtonStyle.success, emoji="🔄", row=1)
+        self.user = user
+        self.bet = bet
+    async def callback(self, interaction: Interaction):
+        if interaction.user.id != self.user.id: return
+        bal = get_balance(str(self.user.id))
+        if bal < self.bet: return await interaction.response.send_message("❌ Broke.", ephemeral=True)
+        await interaction.response.send_message(f"🎲 **High/Low Dice**\nBet: **{self.bet}**", view=DiceGameView(self.user, self.bet), ephemeral=True)
+
+class DuelAcceptView(View):
+    def __init__(self, p1, p2, amount):
+        super().__init__(timeout=60)
+        self.p1 = p1
+        self.p2 = p2
+        self.amount = amount
+    @discord.ui.button(label="ACCEPT DUEL", style=ButtonStyle.danger, emoji="⚔️")
+    async def accept(self, button, interaction: Interaction):
+        if interaction.user.id != self.p2.id: return
+        if get_balance(str(self.p1.id)) < self.amount or get_balance(str(self.p2.id)) < self.amount:
+            return await interaction.response.send_message("❌ Someone went broke during the wait.", ephemeral=True)
+        update_balance(str(self.p1.id), -self.amount)
+        update_balance(str(self.p2.id), -self.amount)
+        winner = random.choice([self.p1, self.p2])
+        loser = self.p2 if winner == self.p1 else self.p1
+        win_amt = self.amount * 2
+        update_balance(str(winner.id), win_amt)
+        embed = discord.Embed(title="🩸 DUEL FINISHED", description=f"🏆 **Winner:** {winner.mention}\n💀 **Loser:** {loser.mention}\n💰 **Won:** {win_amt} Scoins", color=THEME_GOLD)
+        self.clear_items()
+        await interaction.response.edit_message(view=self, embed=embed)
+
+class CasinoDashboard(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    @discord.ui.button(label="Collect", style=ButtonStyle.success, emoji="💰", row=0)
+    async def collect(self, button, interaction: Interaction):
+        if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
+        user_id = str(interaction.user.id)
+        user_data = scoins_db.get(user_id, {"balance": 0, "last_pull": 0})
+        last = user_data["last_pull"]
+        now = time.time()
+        if now - last < (SCOIN_COOLDOWN_HOURS * 3600):
+            remaining = (SCOIN_COOLDOWN_HOURS * 3600) - (now - last)
+            hours = int(remaining // 3600)
+            mins = int((remaining % 3600) // 60)
+            return await interaction.response.send_message(f"⏳ **Cooldown:** {hours}h {mins}m.", ephemeral=True)
+        update_balance(user_id, SCOIN_PULL_AMOUNT)
+        scoins_db[user_id]["last_pull"] = now
+        _save_scoins()
+        await interaction.response.send_message(f"💰 **Payday!** +{SCOIN_PULL_AMOUNT} Scoins.", ephemeral=True)
+    @discord.ui.button(label="Slots", style=ButtonStyle.primary, emoji="🎰", row=0)
+    async def slots(self, button, interaction: Interaction):
+        if interaction.channel.id != CASINO_CHANNEL_ID: return await interaction.response.send_message(f"❌ Go to <#{CASINO_CHANNEL_ID}>.", ephemeral=True)
+        if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
+        bal = get_balance(str(interaction.user.id))
+        async def modal_callback(inter, amount):
+            embed, is_jackpot, win_amount = generate_slot_result(inter.user, amount)
+            await inter.response.send_message(embed=embed, view=RepeatSpinView(inter.user.id, amount), ephemeral=True)
+            if is_jackpot:
+                target_thread = inter.guild.get_channel(CASINO_CHANNEL_ID) or await inter.guild.fetch_channel(CASINO_CHANNEL_ID)
+                if target_thread: await target_thread.send(f"🚨 **JACKPOT!** 🎰\n**{inter.user.display_name}** just hit a **3x Match** and won **{win_amount}** Scoins!")
+        await interaction.response.send_modal(BetAmountModal("Slots Bet", bal, modal_callback))
+    @discord.ui.button(label="Chicken", style=ButtonStyle.primary, emoji="🍗", row=0)
+    async def chicken(self, button, interaction: Interaction):
+        if interaction.channel.id != CASINO_CHANNEL_ID: return await interaction.response.send_message(f"❌ Go to <#{CASINO_CHANNEL_ID}>.", ephemeral=True)
+        if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
+        bal = get_balance(str(interaction.user.id))
+        async def modal_callback(inter, amount): await inter.response.send_message("🦴 **Select Difficulty (Bones)**", view=ChickenSetupView(inter.user, amount), ephemeral=True)
+        await interaction.response.send_modal(BetAmountModal("Chicken Bet", bal, modal_callback))
+    @discord.ui.button(label="Dice", style=ButtonStyle.primary, emoji="🎲", row=0)
+    async def dice(self, button, interaction: Interaction):
+        if interaction.channel.id != CASINO_CHANNEL_ID: return await interaction.response.send_message(f"❌ Go to <#{CASINO_CHANNEL_ID}>.", ephemeral=True)
+        if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
+        bal = get_balance(str(interaction.user.id))
+        async def modal_callback(inter, amount): await inter.response.send_message(f"🎲 **High/Low Dice**\nBet: **{amount}**", view=DiceGameView(inter.user, amount), ephemeral=True)
+        await interaction.response.send_modal(BetAmountModal("Dice Bet", bal, modal_callback))
+    @discord.ui.button(label="Duel", style=ButtonStyle.danger, emoji="⚔️", row=1)
+    async def duel(self, button, interaction: Interaction):
+        if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
+        await interaction.response.send_message("⚔️ To duel, use: `/duel @user [amount]`", ephemeral=True)
+    @discord.ui.button(label="Wallet", style=ButtonStyle.secondary, emoji="💳", row=1)
+    async def wallet_btn(self, button, interaction: Interaction):
+        if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
+        bal = get_balance(str(interaction.user.id))
+        await interaction.response.send_message(f"💳 Balance: **{bal}** Scoins.", ephemeral=True)
+
+# ==================== VOICEMASTER (RESTORED) ====================
+
+class VCNameModal(Modal):
+    def __init__(self, vc):
+        super().__init__(title="Rename Voice Channel")
+        self.vc = vc
+        self.add_item(TextInput(label="New VC Name", placeholder="Enter name...", required=True, max_length=50))
+    async def callback(self, interaction: Interaction):
+        try:
+            await self.vc.edit(name=self.children[0].value)
+            await interaction.response.send_message(f"✅ Renamed.", ephemeral=True)
+        except Exception as e: await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+class KickMemberDropdown(Select):
+    def __init__(self, vc, members):
+        options = [SelectOption(label=m.display_name, value=str(m.id)) for m in members]
+        super().__init__(placeholder="Select member to kick...", options=options, min_values=1, max_values=1)
+        self.vc = vc
+    async def callback(self, interaction: Interaction):
+        try:
+            member = self.vc.guild.get_member(int(self.values[0]))
+            if member and member in self.vc.members:
+                await member.move_to(None)
+                await interaction.response.send_message(f"👢 Kicked {member.display_name}.", ephemeral=True)
+            else: await interaction.response.send_message("⚠️ Member not found.", ephemeral=True)
+        except Exception as e: await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+class KickMemberView(View):
+    def __init__(self, vc, members):
+        super().__init__(timeout=30)
+        self.add_item(KickMemberDropdown(vc, members))
+
+class RoleRestrictSelect(Select):
+    def __init__(self, vc, creator):
+        self.vc = vc
+        self.creator = creator
+        options = [SelectOption(label="Everyone (default)", value="everyone")]
+        roles = sorted([r for r in vc.guild.roles if r != vc.guild.default_role and not r.managed], key=lambda r: r.position, reverse=True)[:24]
+        for r in roles: options.append(SelectOption(label=(r.name or "Role")[:100], value=str(r.id)))
+        super().__init__(placeholder="Restrict VC...", options=options, min_values=1, max_values=1, custom_id="restrict_role_select")
+    async def callback(self, interaction: Interaction):
+        if interaction.user.id != self.creator.id: return await interaction.response.send_message("🚫 Only creator.", ephemeral=True)
+        try:
+            if self.values[0] == "everyone":
+                await self.vc.set_permissions(interaction.guild.default_role, connect=True)
+                await interaction.response.send_message("✅ Restriction cleared.", ephemeral=True)
+            else:
+                role = interaction.guild.get_role(int(self.values[0]))
+                if role:
+                    await self.vc.set_permissions(interaction.guild.default_role, connect=False)
+                    await self.vc.set_permissions(role, connect=True)
+                    await self.vc.set_permissions(self.creator, connect=True)
+                    await interaction.response.send_message(f"🔐 Restricted to {role.name}.", ephemeral=True)
+        except: await interaction.response.send_message("❌ Failed.", ephemeral=True)
+
+class VCControlPanel(View):
+    def __init__(self, vc, creator):
+        super().__init__(timeout=None)
+        self.vc = vc
+        self.creator = creator
+        try: self.add_item(RoleRestrictSelect(vc, creator))
+        except: pass
+    async def _check(self, i):
+        if i.user.id == self.creator.id: return True
+        if i.data.get("custom_id") == "delete_vc" and any(r.name == ADMIN_ROLE_NAME or r.id == ROLE_ADMIN_ID for r in i.user.roles): return True
+        await i.response.send_message("🚫 Only creator.", ephemeral=True); return False
+    @discord.ui.button(label="🔒 Lock", style=ButtonStyle.danger, custom_id="lock_vc")
+    async def lock(self, button, i):
+        if not await self._check(i): return
+        await self.vc.set_permissions(i.guild.default_role, connect=False)
+        await i.response.send_message("🔒 Locked.", ephemeral=True)
+    @discord.ui.button(label="🔓 Unlock", style=ButtonStyle.success, custom_id="unlock_vc")
+    async def unlock(self, button, i):
+        if not await self._check(i): return
+        await self.vc.set_permissions(i.guild.default_role, connect=True)
+        await i.response.send_message("🔓 Unlocked.", ephemeral=True)
+    @discord.ui.button(label="❌ Delete", style=ButtonStyle.red, custom_id="delete_vc")
+    async def delete(self, button, i):
+        if not await self._check(i): return
+        await self.vc.delete()
+        await i.response.send_message("🗑️ Deleted.", ephemeral=True)
+    @discord.ui.button(label="✏️ Rename", style=ButtonStyle.blurple, custom_id="rename_vc")
+    async def rename(self, button, i):
+        if not await self._check(i): return
+        await i.response.send_modal(VCNameModal(self.vc))
+    @discord.ui.button(label="👢 Kick", style=ButtonStyle.gray, custom_id="kick_members")
+    async def kick(self, button, i):
+        if not await self._check(i): return
+        m = [m for m in self.vc.members if m != i.guild.me]
+        if not m: return await i.response.send_message("⚠️ No one to kick.", ephemeral=True)
+        await i.response.send_message("Select:", view=KickMemberView(self.vc, m), ephemeral=True)
+    @discord.ui.select(placeholder="Bitrate", options=[SelectOption(label="64k", value="64000"), SelectOption(label="384k", value="384000")], custom_id="bitrate_select")
+    async def bitrate(self, select, i):
+        if not await self._check(i): return
+        try: await self.vc.edit(bitrate=int(select.values[0])); await i.response.send_message(f"📶 Set.", ephemeral=True)
+        except: await i.response.send_message("❌ Failed.", ephemeral=True)
+    @discord.ui.select(placeholder="Limit", options=[SelectOption(label="Unl", value="0"), SelectOption(label="5", value="5"), SelectOption(label="10", value="10")], custom_id="limit_select")
+    async def limit(self, select, i):
+        if not await self._check(i): return
+        try: await self.vc.edit(user_limit=int(select.values[0])); await i.response.send_message(f"👥 Set.", ephemeral=True)
+        except: await i.response.send_message("❌ Failed.", ephemeral=True)
+
+# ==================== BOT EVENTS ====================
+
+@bot.event
+async def on_ready():
+    print(f"✅ Logged in as {bot.user}")
+    _load_persistence()
+    for guild in bot.guilds:
+        await _prime_invites_cache(guild)
+
+@bot.event
+async def on_guild_join(guild):
+    await _prime_invites_cache(guild)
+
+# ##### WELCOME / ARRIVALS SYSTEM #####
+def setup_welcome(client):
+    class MinionView(View):
+        def __init__(self, target_member_id):
+            super().__init__(timeout=86400)
+            self.target = target_member_id
+            b = Button(label="Minion", style=ButtonStyle.success)
+            b.callback = self.grant
+            self.add_item(b)
+        async def grant(self, i):
+            m = i.guild.get_member(self.target)
+            r = i.guild.get_role(ROLE_MINION_ID)
+            if m and r: await m.add_roles(r); await i.response.send_message(f"✅ Granted.", ephemeral=True)
+            else: await i.response.send_message("❌ Error.", ephemeral=True)
+    
+    @client.event
+    async def on_member_join(member):
+        try:
+            code = await _detect_used_invite_code(member)
+            if code: await _apply_invite_role(member, code)
+        except: pass
+        # --- SEND TO ARRIVALS CHANNEL ---
+        ch = client.get_channel(ARRIVALS_THREAD_ID)
+        if ch:
+            src = await _detect_join_source(member)
+            em = discord.Embed(description=f"{member.mention} joined **{member.guild.name}**", color=0x2B0B35)
+            em.set_author(name=str(member), icon_url=member.display_avatar.url)
+            if src: em.add_field(name="Source", value=src)
+            em.set_footer(text="Tap to grant Minion")
+            await ch.send(embed=em, view=MinionView(member.id))
+setup_welcome(bot)
+
+@bot.event
+async def on_member_remove(member):
+    # Get the departures channel
+    channel = member.guild.get_channel(DEPARTURES_THREAD_ID) or await member.guild.fetch_channel(DEPARTURES_THREAD_ID)
+    if not channel: return
+
+    # Default to "Member Left"
+    title = "👋 Member Left"
+    description = f"{member.mention} left the server."
+    color = THEME_LOSS 
+    footer_text = f"ID: {member.id}"
+    
+    now = utcnow()
+    
+    # Account Age
+    age_str = format_age(member.created_at)
+    joined_str = format_age(member.joined_at)
+
+    # Audit Log Check for Kick (Last 10 seconds)
+    try:
+        async for entry in member.guild.audit_logs(limit=1, action=discord.AuditLogAction.kick):
+            if entry.target.id == member.id:
+                if (now - entry.created_at).total_seconds() < 10:
+                    title = "🥾 Member Kicked"
+                    description = f"{member.mention} kicked the server.\nBy: **{entry.user.name}** ({entry.user.display_name})"
+                    color = 0xF04747 
+                    break
+    except: pass
+
+    # Construct Embed
+    embed = discord.Embed(title=title, color=color, timestamp=now)
+    embed.set_author(name=f"{member.name} ({member.display_name})", icon_url=safe_avatar_url(member))
+    embed.set_thumbnail(url=safe_avatar_url(member))
+    
+    embed.add_field(name="User", value=f"{member.mention}\n{member.name} ({member.display_name})", inline=False)
+    embed.add_field(name="Joined", value=joined_str, inline=True)
+    embed.add_field(name="Account Age", value=age_str, inline=True)
+    
+    embed.add_field(name="Details", value=description, inline=False)
+    embed.set_footer(text=footer_text)
+
+    await channel.send(embed=embed)
+
+async def _find_audit_action(guild, action, target_id):
+    if not (guild.me and guild.me.guild_permissions.view_audit_log): return None
+    try:
+        async for entry in guild.audit_logs(limit=10, action=action):
+            if entry.target.id == target_id and (utcnow() - entry.created_at.replace(tzinfo=timezone.utc)).total_seconds() <= 30: return entry
+    except: pass
+    return None
+
+async def send_control_panel(vc, member):
+    try:
+        await asyncio.sleep(1)
+        embed = discord.Embed(title="🎛️ Voice Control", description=f"Manage **{vc.name}**", color=THEME_PRIMARY)
+        view = VCControlPanel(vc, member)
+        await vc.send(embed=embed, view=view)
+    except:
+        try: await member.send(f"🎛️ **{vc.name}** Control Panel:", view=VCControlPanel(vc, member))
+        except: pass
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    guild = member.guild
+    # --- JTC LOGIC ---
+    if after.channel and after.channel.id == JOIN_TO_CREATE_CHANNEL_ID:
+        try:
+            cat = get(guild.categories, id=VC_CATEGORY_ID) or after.channel.category
+            new_vc = await guild.create_voice_channel(
+                name=_limit_channel_name(_to_sans_bold_italic(f"{member.display_name}'s Room")), 
+                category=cat, 
+                bitrate=VC_DEFAULT_BITRATE
+            )
+            # EXPLICITLY GRANT SPEAK PERMS
+            await new_vc.set_permissions(member, connect=True, speak=True)
+            
+            active_temp_vcs.add(new_vc.id)
+            _save_active_vcs(active_temp_vcs)
+            await member.move_to(new_vc)
+            # CALL RESTORED FUNCTION
+            asyncio.create_task(send_control_panel(new_vc, member))
+        except: traceback.print_exc()
+    # --- CLEANUP LOGIC ---
+    if before.channel and before.channel.id in active_temp_vcs and len(before.channel.members) == 0:
+        try: await before.channel.delete(); active_temp_vcs.discard(before.channel.id); _save_active_vcs(active_temp_vcs)
+        except: pass
+    
+    # ##### ALERT / AUDIT SYSTEM (NO PINGS) #####
+    if member.bot: return
+    # --- SEND TO ALERT CHANNEL ---
+    target, _ = await resolve_target(bot, DEFAULT_AUDIT_THREAD_ID)
+    if not target: return
+
+    msg = None
+    
+    # 1. Join/Leave/Move
+    if before.channel != after.channel:
+        if before.channel is None and after.channel is not None:
+            msg = f"🟢 **{member.display_name}** joined **{after.channel.name}**."
+        elif before.channel is not None and after.channel is None:
+            msg = f"🔴 **{member.display_name}** left **{before.channel.name}**."
+        elif before.channel is not None and after.channel is not None:
+            entry = await _find_audit_action(guild, discord.AuditLogAction.member_move, member.id)
+            if entry:
+                actor = f"**{entry.user.display_name}**"
+                msg = f"🔀 **{member.display_name}** moved **{before.channel.name}** ➜ **{after.channel.name}** by {actor}."
+            else:
+                msg = f"🔀 **{member.display_name}** moved **{before.channel.name}** ➜ **{after.channel.name}**."
+
+    # 2. Self Mute/Deafen (Granular Check)
+    elif before.self_mute != after.self_mute:
+        status = "muted" if after.self_mute else "unmuted"
+        msg = f"🎤 **{member.display_name}** **self-{status}**."
+    elif before.self_deaf != after.self_deaf:
+        status = "deafened" if after.self_deaf else "undeafened"
+        msg = f"🎧 **{member.display_name}** **self-{status}**."
+
+    # 3. Server Mute/Deafen (Admin Abilities Check)
+    elif before.mute != after.mute:
+        status = "server-muted" if after.mute else "server-unmuted"
+        entry = await _find_audit_action(guild, discord.AuditLogAction.member_update, member.id)
+        actor = f"**{entry.user.display_name}**" if entry else "Unknown Admin"
+        msg = f"🙉 **{member.display_name}** was **{status}** by {actor}."
+    elif before.deaf != after.deaf:
+        status = "server-deafened" if after.deaf else "server-undeafened"
+        entry = await _find_audit_action(guild, discord.AuditLogAction.member_update, member.id)
+        actor = f"**{entry.user.display_name}**" if entry else "Unknown Admin"
+        msg = f"🙉 **{member.display_name}** was **{status}** by {actor}."
+
+    # 4. Stream/Video
+    elif before.self_stream != after.self_stream:
+        status = "started" if after.self_stream else "stopped"
+        msg = f"📺 **{member.display_name}** **{status} streaming**."
+    elif before.self_video != after.self_video:
+        status = "enabled" if after.self_video else "disabled"
+        msg = f"📷 **{member.display_name}** **{status} camera**."
+
+    if msg:
+        try: await target.send(msg)
+        except: pass
+
 # ==================== COMMANDS ====================
 
 @bot.slash_command(name="tower", description="Play RPG Tower")
@@ -858,6 +1452,160 @@ async def gamble(ctx):
     embed = discord.Embed(title="🎰 ShadowSyn Casino", description="Welcome.", color=THEME_PRIMARY)
     embed.set_footer(text=f"Balance: {get_balance(str(ctx.author.id))}")
     await safe_reply(ctx, embed=embed, view=CasinoDashboard(), ephemeral=True) 
+
+@bot.slash_command(name="duel", description="Duel user")
+async def duel(ctx, opponent: discord.Member, amount: str):
+    if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
+    try:
+        if amount.lower() == "all": bet = get_balance(str(ctx.author.id))
+        else: bet = int(amount)
+        if bet <= 0: raise ValueError
+    except: return await safe_reply(ctx, "❌ Invalid amount. Use a number or 'all'.", ephemeral=True)
+    embed = discord.Embed(title="⚔️ DUEL", description=f"{ctx.author.mention} vs {opponent.mention}\nPot: {bet*2}", color=discord.Color.red())
+    await safe_reply(ctx, content=opponent.mention, embed=embed, view=DuelAcceptView(ctx.author, opponent, bet))
+
+@bot.slash_command(name="wallet", description="Check balance")
+async def wallet(ctx, user: Option(discord.User, required=False)):
+    if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
+    t = user or ctx.author
+    await safe_reply(ctx, f"💳 {t.display_name}: {get_balance(str(t.id))} Scoins")
+
+@bot.slash_command(name="speak", description="Text to Speech (Auto-Translates)")
+@dj_or_admin()
+async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, default="English")):
+    vc = await ensure_voice_simple(ctx)
+    if not vc: return
+    try:
+        lang_code = LANG_CODES.get(language, 'en')
+        text_to_speak = text
+        if lang_code != 'en':
+            try:
+                translation = await bot.loop.run_in_executor(None, lambda: translator.translate(text, dest=lang_code))
+                text_to_speak = translation.text
+            except: text_to_speak = text 
+        await safe_reply(ctx, f"🗣️ **{language}:** {text_to_speak}", ephemeral=True)
+        log_ch = bot.get_channel(SPEAK_LOG_THREAD_ID)
+        if log_ch: await log_ch.send(f"🗣️ **{ctx.author.display_name}** ({language}): {text_to_speak}")
+        tts = gTTS(text=text_to_speak, lang=lang_code)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
+            tts.save(fp.name)
+            temp_path = fp.name
+        vc.play(discord.FFmpegPCMAudio(temp_path), after=lambda e: os.remove(temp_path))
+    except Exception as e: await safe_reply(ctx, f"❌ Error: {e}", ephemeral=True)
+
+class EasyEmbedModal(Modal):
+    def __init__(self, channel, edit_msg=None):
+        super().__init__(title="Edit Embed" if edit_msg else "Create Custom Embed")
+        self.channel = channel
+        self.edit_msg = edit_msg
+        pre_title = edit_msg.embeds[0].title if edit_msg and edit_msg.embeds else ""
+        pre_desc = edit_msg.embeds[0].description if edit_msg and edit_msg.embeds else ""
+        pre_foot = edit_msg.embeds[0].footer.text if edit_msg and edit_msg.embeds and edit_msg.embeds[0].footer else ""
+        pre_col = str(hex(edit_msg.embeds[0].color.value)).replace("0x", "#") if edit_msg and edit_msg.embeds and edit_msg.embeds[0].color else ""
+        self.add_item(TextInput(label="Title", placeholder="Embed Title...", value=pre_title, required=True))
+        self.add_item(TextInput(label="Description", placeholder="Main content...", value=pre_desc, style=discord.InputTextStyle.paragraph, required=True))
+        self.add_item(TextInput(label="Footer (Optional)", placeholder="Small text at bottom...", value=pre_foot, required=False))
+        self.add_item(TextInput(label="Color (Hex)", placeholder="#2B0B35", value=pre_col, required=False))
+    async def callback(self, interaction: Interaction):
+        title = self.children[0].value
+        desc = self.children[1].value
+        footer = self.children[2].value
+        color_raw = self.children[3].value
+        try: 
+            if color_raw: color = int(color_raw.replace("#", ""), 16)
+            else: color = THEME_PRIMARY
+        except: color = THEME_PRIMARY
+        embed = discord.Embed(title=title, description=desc, color=color)
+        if footer: embed.set_footer(text=footer)
+        if self.edit_msg:
+            await self.edit_msg.edit(embed=embed)
+            await interaction.response.send_message("✅ Embed Updated!", ephemeral=True)
+        else:
+            await self.channel.send(embed=embed)
+            await interaction.response.send_message("✅ Embed Sent!", ephemeral=True)
+
+@bot.slash_command(name="send_custom", description="Send a clean embed message")
+@admin_only()
+async def send_custom(ctx, channel: Option(discord.TextChannel, required=False)):
+    target = channel or ctx.channel
+    await ctx.send_modal(EasyEmbedModal(target))
+
+@bot.slash_command(name="edit_custom", description="Edit an existing bot embed")
+@admin_only()
+async def edit_custom(ctx, message_id: str, channel: Option(discord.TextChannel, required=False)):
+    target_channel = channel or ctx.channel
+    try:
+        msg = await target_channel.fetch_message(int(message_id))
+        if msg.author != ctx.bot.user: return await ctx.respond("❌ I can only edit my own messages.", ephemeral=True)
+        await ctx.send_modal(EasyEmbedModal(target_channel, edit_msg=msg))
+    except Exception as e: await ctx.respond(f"❌ Error: {e}", ephemeral=True)
+
+@bot.slash_command(name="play")
+@dj_or_admin()
+async def play(ctx, search: str):
+    await safe_defer(ctx)
+    vc = await ensure_voice_simple(ctx)
+    if not vc: return
+    info = await bot.loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(YTDL_SEARCH_OPTIONS).extract_info(f"ytsearch5:{search}", download=False))
+    if not info or 'entries' not in info or not info['entries']: return await safe_reply(ctx, "❌ No results found.", ephemeral=True)
+    view = MusicSelectionView(info['entries'], ctx, vc)
+    await safe_reply(ctx, "🔎 **Select a track:**", view=view)
+
+@bot.slash_command(name="queue")
+async def queue(ctx):
+    if ctx.guild.id not in bot.audio_queues or not bot.audio_queues[ctx.guild.id]: return await safe_reply(ctx, "Queue is empty.")
+    lines = [f"{i+1}. {title}" for i, (url, title) in enumerate(bot.audio_queues[ctx.guild.id])]
+    await safe_reply(ctx, "\n".join(lines[:10]))
+
+@bot.slash_command(name="skip")
+@dj_or_admin()
+async def skip(ctx):
+    if ctx.guild.voice_client: ctx.guild.voice_client.stop(); await safe_reply(ctx, "⏭️ Skipped.")
+
+@bot.slash_command(name="stop")
+@dj_or_admin()
+async def stop(ctx):
+    if ctx.guild.id in bot.audio_queues: bot.audio_queues[ctx.guild.id].clear()
+    if ctx.guild.voice_client: ctx.guild.voice_client.stop(); await safe_reply(ctx, "⏹️ Stopped.")
+
+@bot.slash_command(name="join")
+@dj_or_admin()
+async def join(ctx):
+    await ensure_voice_simple(ctx); await safe_reply(ctx, "✅ Joined.")
+
+@bot.slash_command(name="haste", description="Random Haste Fact")
+async def haste(ctx):
+    if not active_haste_facts: return await safe_reply(ctx, "No facts yet.")
+    fact = random.choice(active_haste_facts)
+    await safe_reply(ctx, f"🍌 **Fact:** {fact}")
+
+@bot.slash_command(name="morehaste", description="Add Haste Fact")
+@admin_only()
+async def morehaste(ctx, fact: str):
+    active_haste_facts.append(fact)
+    _save_haste_facts()
+    await safe_reply(ctx, "✅ Added.")
+
+@bot.slash_command(name="give_scoins", description="Owner Only")
+@owner_only()
+async def give_scoins(ctx, user: discord.Member, amount: int):
+    update_balance(str(user.id), amount)
+    await safe_reply(ctx, f"✅ Done. New balance: {get_balance(str(user.id))}", ephemeral=True)
+
+@bot.slash_command(name="silence", description="Pay 2000 Scoins to Timeout someone for 60s")
+async def silence(ctx, user: discord.Member):
+    if ctx.channel.id != CASINO_CHANNEL_ID: return await safe_reply(ctx, "❌ Wrong channel.", ephemeral=True)
+    cost = 2000
+    bal = get_balance(str(ctx.author.id))
+    if bal < cost: return await safe_reply(ctx, f"❌ You need {cost} Scoins.", ephemeral=True)
+    if user.guild_permissions.administrator: return await safe_reply(ctx, "❌ You cannot silence an Admin.", ephemeral=True)
+    update_balance(str(ctx.author.id), -cost)
+    try:
+        await user.timeout_for(timedelta(seconds=60), reason=f"Paid Silence by {ctx.author.display_name}")
+        await safe_reply(ctx, f"🤫 **Shhh!** {user.mention} has been silenced for 60s.")
+    except Exception as e:
+        update_balance(str(ctx.author.id), cost)
+        await safe_reply(ctx, f"❌ Failed: {e}", ephemeral=True)
 
 # --- RUN ---
 if __name__ == "__main__":
