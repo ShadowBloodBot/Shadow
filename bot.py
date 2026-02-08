@@ -1,11 +1,10 @@
-# bot.py — ShadowSyn (Master: Shadow Tower 5.5 - Stability Overhaul)
+# bot.py — ShadowSyn (Master: Shadow Tower 5.6 - Crash Fixes)
 #
 # === FEATURES ===
-# [x] 🏰 SHADOW TOWER 5.5:
-#      - 🔧 FIX: Rewrote Victory Logic to prevent "NoneType" crashes on kill.
-#      - 🔧 FIX: Explicit button callbacks to stop "Interaction Failed".
-#      - 👁️ LOGS: Full 2-way damage transparency (Armor vs Block).
-#      - 💾 SAVE: Forces save immediately upon death or victory.
+# [x] 🏰 SHADOW TOWER 5.6:
+#      - 🔧 FIX: Added missing "Lucky" & "Heavy" definitions to AFFIXES (Fixed kill crash).
+#      - 🔧 FIX: Robust /duel command handling.
+#      - 🔧 FIX: Slots "Spin Again" button responsiveness.
 # [x] 🎛️ VOICEMASTER: JTC + Control Panel.
 # [x] 🎰 CASINO: Slots, Chicken, Dice, Duels.
 # [x] 🎵 MUSIC & UTILS: All present.
@@ -118,20 +117,23 @@ PERKS = [
     {"id": "stone", "name": "🪨 Stone Skin", "desc": "+5 Base Defense."}
 ]
 
-# --- AFFIX SYSTEM 5.0 (SYNERGIES) ---
+# --- AFFIX SYSTEM 5.6 (FIXED MISSING KEYS) ---
 AFFIXES = {
+    # Basic
     "Vampiric": {"desc": "Heal 3 HP on hit", "effect": "heal_hit", "style": "🩸 Sustain"}, 
     "Sharp": {"desc": "+20% DMG", "effect": "dmg_boost", "style": "⚔️ DPS"}, 
     "Reinforced": {"desc": "+20% DEF", "effect": "def_boost", "style": "🛡️ Tank"},
     "Thorned": {"desc": "Reflect 15% DMG", "effect": "reflect", "style": "🌵 Counter"},
     "Swift": {"desc": "+10 Adrenaline/Turn", "effect": "speed", "style": "⚡ Speed"},
+    "Heavy": {"desc": "Higher Dmg, Lower Crit", "effect": "heavy", "style": "🔨 Heavy"},
     
-    # COMPLEX AFFIXES
+    # Complex / Risk
     "Berserker": {"desc": "+30% DMG, Take +10% DMG", "effect": "berserk", "style": "👹 Risk"},
     "Midas": {"desc": "+5 Gold per Hit", "effect": "midas", "style": "💰 Greed"},
     "Siphon": {"desc": "15% Chance steal ATK", "effect": "siphon", "style": "👻 Debuff"},
     "Glass": {"desc": "+50% ATK, -30% Max HP", "effect": "glass", "style": "💀 Glass Cannon"},
-    "Bulwark": {"desc": "+50% DEF, -20% ATK", "effect": "bulwark", "style": "🏯 Wall"}
+    "Bulwark": {"desc": "+50% DEF, -20% ATK", "effect": "bulwark", "style": "🏯 Wall"},
+    "Lucky": {"desc": "+20 Bonus Gold on Kill", "effect": "gold", "style": "🍀 Luck"} 
 }
 
 SLOT_TYPES = ["Weapon", "Helmet", "Chest", "Boots"]
@@ -467,7 +469,7 @@ class MusicSelectionView(View):
         super().__init__(timeout=60)
         self.add_item(MusicSelect(entries, ctx, vc))
 
-# ==================== SHADOW TOWER 5.5 (STABILITY OVERHAUL) ====================
+# ==================== SHADOW TOWER 5.6 (STABILITY + LUCKY FIX) ====================
 
 def get_tower_data(user_id):
     uid = str(user_id)
@@ -762,7 +764,6 @@ class TowerGameView(View):
             p_atk = self.data["atk"]
             p_def = self.data["def"] * 3
             
-            # Use EXPLICIT CALLBACKS instead of custom_id interception
             atk_btn = Button(label=f"Attack ({p_atk} + 🎲)", style=ButtonStyle.danger, emoji="⚔️")
             atk_btn.callback = lambda i: self.wrapper(i, "act_atk")
             self.add_item(atk_btn)
@@ -811,16 +812,12 @@ class TowerGameView(View):
             self.add_item(save_btn)
 
     async def wrapper(self, interaction, cid):
-        """Unified wrapper to handle errors and ensure execution"""
         if interaction.user.id != self.user.id:
             return await interaction.response.send_message("🚫 Not your session.", ephemeral=True)
-        
         try:
             await interaction.response.defer()
-            if "act_" in cid: 
-                await self.resolve_combat(interaction, cid)
-            else: 
-                await self.resolve_nav(interaction, cid)
+            if "act_" in cid: await self.resolve_combat(interaction, cid)
+            else: await self.resolve_nav(interaction, cid)
         except Exception as e:
             traceback.print_exc()
             try: await interaction.followup.send(f"⚠️ Error: {e}", ephemeral=True)
@@ -868,34 +865,23 @@ class TowerGameView(View):
                         generate_loot_option(self.data["floor"], "risk")
                     ]
                     random.shuffle(items)
-                    
                     view = LootSelectionView(self.user, items)
                     embed = discord.Embed(title="🎁 Treasure Room", description="Choose your destiny.", color=THEME_GOLD)
-                    
-                    slot_key_map = {"Weapon": "gear_weapon", "Helmet": "gear_helmet", "Chest": "gear_chest", "Boots": "gear_boots"}
-                    
                     for idx, item in enumerate(items):
-                        s_key = slot_key_map.get(item["slot"])
+                        s_key = {"Weapon": "gear_weapon", "Helmet": "gear_helmet", "Chest": "gear_chest", "Boots": "gear_boots"}.get(item["slot"])
                         curr = self.data.get(s_key)
                         curr_val = curr["val"] if (curr and isinstance(curr, dict)) else 0
                         diff = item["val"] - curr_val
                         diff_str = f"+{diff}" if diff > 0 else f"{diff}"
                         icon = "🟢" if diff > 0 else "🔴" if diff < 0 else "⚪"
-                        
                         afx = item.get('affix')
                         style_tag = ""
                         if afx:
                             meta = AFFIXES.get(afx, {})
                             style_tag = f"\n**[{meta.get('style', 'Special')}]** {meta.get('desc', '')}"
-                        
-                        embed.add_field(
-                            name=f"Option {idx+1}: {item['name']}",
-                            value=f"Type: {item['slot']} ({item['type']})\nStat: **{item['val']}** (Curr: {curr_val}) {icon} **{diff_str}**{style_tag}",
-                            inline=False
-                        )
+                        embed.add_field(name=f"Option {idx+1}: {item['name']}", value=f"Type: {item['slot']} ({item['type']})\nStat: **{item['val']}** (Curr: {curr_val}) {icon} **{diff_str}**{style_tag}", inline=False)
                     await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=view)
                     return
-                    
             await interaction.followup.edit_message(message_id=interaction.message.id, embed=self.update_embed("⚔️ Encounter!", "Prepare yourself!"), view=self)
 
     def start_combat(self, boss=False, name=None):
@@ -915,12 +901,13 @@ class TowerGameView(View):
         for s in slots:
             item = self.data.get(s)
             if item and isinstance(item, dict) and item.get("affix"):
-                if AFFIXES.get(item["affix"], {}).get("effect") == effect:
+                # SAFE ACCESS TO AFFIX DICT
+                meta = AFFIXES.get(item["affix"])
+                if meta and meta.get("effect") == effect:
                     count += 1
         return count
 
     async def resolve_combat(self, interaction, action):
-        # --- CRASH PROTECTION ---
         if not self.enemy:
             self.mode = "EXPLORE"
             self.render_main_menu()
@@ -941,45 +928,29 @@ class TowerGameView(View):
         midas_count = self._check_affix("midas")
         siphon_count = self._check_affix("siphon")
         bulwark_count = self._check_affix("bulwark")
-        lucky_count = self._check_affix("gold") # Added missing var
+        lucky_count = self._check_affix("gold")
         
         if action == "act_atk":
             base_roll = random.randint(2, 6)
             p_dmg = atk_stat + base_roll
-            
             if berserk_count > 0: p_dmg = int(p_dmg * (1 + (0.3 * berserk_count)))
             if glass_count > 0: p_dmg = int(p_dmg * 1.5)
             if bulwark_count > 0: p_dmg = int(p_dmg * 0.8)
-            
             crit_chance = 0.25
             if heavy_count > 0: crit_chance = 0.10 
-            
             if self.data["class"] == "Rogue" and random.random() < crit_chance: 
-                p_dmg = int(p_dmg * 2)
-                p_act = "CRIT"
-            else:
-                p_act = "HIT"
-            
+                p_dmg = int(p_dmg * 2); p_act = "CRIT"
+            else: p_act = "HIT"
             adren_gain = 10 + int(p_dmg / 2) + (swift_count * 5)
             self.data["adrenaline"] = min(100, self.data["adrenaline"] + adren_gain)
-            
             e_def = self.enemy.get("def", 0)
             final_p_dmg = max(0, p_dmg - e_def)
-            
-            if e_def > 0:
-                self.combat_log.append(f"🗡️ You {p_act}: {int(p_dmg)} (🛡️-{e_def}) ➜ {int(final_p_dmg)} Dmg")
-            else:
-                self.combat_log.append(f"🗡️ You {p_act}: {int(final_p_dmg)} Dmg")
-            
+            if e_def > 0: self.combat_log.append(f"🗡️ You {p_act}: {int(p_dmg)} (🛡️-{e_def}) ➜ {int(final_p_dmg)} Dmg")
+            else: self.combat_log.append(f"🗡️ You {p_act}: {int(final_p_dmg)} Dmg")
             p_dmg = final_p_dmg 
-            
-            if midas_count > 0:
-                gold_gain = midas_count * 5
-                self.data["gold"] += gold_gain
-                
+            if midas_count > 0: self.data["gold"] += (midas_count * 5)
             if siphon_count > 0 and random.random() < (0.15 * siphon_count):
-                steal = 2
-                self.enemy["power"] = max(1, self.enemy["power"] - steal)
+                steal = 2; self.enemy["power"] = max(1, self.enemy["power"] - steal)
                 self.combat_log.append(f"👻 Siphoned {steal} Power from enemy!")
             
         elif action == "act_def":
@@ -993,46 +964,30 @@ class TowerGameView(View):
             cls = self.data["class"]
             if cls == "Warrior": 
                 p_dmg = self.data["def"] * 1.5
-                if random.random() < 0.30:
-                    enemy_stunned = True
-                    p_act = "BASH (Stun!)"
-                else:
-                    p_act = "BASH"
+                if random.random() < 0.30: enemy_stunned = True; p_act = "BASH (Stun!)"
+                else: p_act = "BASH"
             elif cls == "Mage":
                 p_dmg = atk_stat * 3 
-                cost = int(self.data["max_hp"] * 0.05)
-                self.data["hp"] = max(1, self.data["hp"] - cost)
+                cost = int(self.data["max_hp"] * 0.05); self.data["hp"] = max(1, self.data["hp"] - cost)
                 p_act = "PYROBLAST"
             elif cls == "Rogue":
-                p_dmg = atk_stat * 1.5
-                p_block = 999 
-                p_act = "SHADOW STEP"
-            
+                p_dmg = atk_stat * 1.5; p_block = 999; p_act = "SHADOW STEP"
             self.data["adrenaline"] = min(100, self.data["adrenaline"] + 15)
-            
-            if cls == "Mage":
-                self.combat_log.append(f"✨ {p_act}: {int(p_dmg)} (Ignores Armor)")
+            if cls == "Mage": self.combat_log.append(f"✨ {p_act}: {int(p_dmg)} (Ignores Armor)")
             else:
-                e_def = self.enemy.get("def", 0)
-                final_skill_dmg = max(0, p_dmg - e_def)
+                e_def = self.enemy.get("def", 0); final_skill_dmg = max(0, p_dmg - e_def)
                 self.combat_log.append(f"✨ {p_act}: {int(p_dmg)} (🛡️-{e_def}) ➜ {int(final_skill_dmg)}")
                 p_dmg = final_skill_dmg
 
         elif action == "act_ult":
             cls = self.data["class"]
             self.data["adrenaline"] = 0 
-            if cls == "Warrior":
-                p_block = 9999
-                p_dmg = self.data["def"] * 3
-                self.combat_log.append("⚡ LIMIT BREAK: TITAN'S WRATH! (Invincible)")
+            if cls == "Warrior": p_block = 9999; p_dmg = self.data["def"] * 3; self.combat_log.append("⚡ LIMIT BREAK: TITAN'S WRATH! (Invincible)")
             elif cls == "Rogue":
                 if self.enemy["hp"] < (self.enemy["max_hp"] * 0.5): p_dmg = 9999
                 else: p_dmg = atk_stat * 4
                 self.combat_log.append(f"⚡ LIMIT BREAK: EXECUTION! ({int(p_dmg)} Dmg)")
-            elif cls == "Mage":
-                p_dmg = atk_stat * 8
-                enemy_stunned = True
-                self.combat_log.append(f"⚡ LIMIT BREAK: CATACLYSM! (Stunned)")
+            elif cls == "Mage": p_dmg = atk_stat * 8; enemy_stunned = True; self.combat_log.append(f"⚡ LIMIT BREAK: CATACLYSM! (Stunned)")
 
         elif action == "act_pot":
             heal = 50
@@ -1059,55 +1014,38 @@ class TowerGameView(View):
             self.combat_log.append(f"🩸 Vampiric Drain: +{heal_amt} HP.")
             
         if "vampire" in self.data["perks"]: self.data["hp"] = min(self.data["max_hp"], self.data["hp"] + 5)
-        
         if berserk_count > 0: e_dmg = int(e_dmg * 1.1)
         
         passive_def = self.data["def"] if action != "act_def" else 0
         total_mitigation = p_block + passive_def
         damage_after_armor = max(0, e_dmg - total_mitigation)
-        
         if p_block == 0 and e_dmg > 0:
-            chip_dmg = int(e_dmg * 0.10)
-            final_e_dmg = max(chip_dmg, damage_after_armor)
-        else:
-            final_e_dmg = damage_after_armor
+            chip_dmg = int(e_dmg * 0.10); final_e_dmg = max(chip_dmg, damage_after_armor)
+        else: final_e_dmg = damage_after_armor
 
         if e_dmg > 0:
             blocked_amt = int(e_dmg - final_e_dmg)
-            if blocked_amt > 0:
-                self.combat_log.append(f"👾 Enemy Hit: {int(e_dmg)} (🛡️-{blocked_amt} Block) ➜ {int(final_e_dmg)} Dmg")
-            else:
-                self.combat_log.append(f"👾 Enemy Hit: {int(e_dmg)} ➜ {int(final_e_dmg)} Dmg")
+            if blocked_amt > 0: self.combat_log.append(f"👾 Enemy Hit: {int(e_dmg)} (🛡️-{blocked_amt} Block) ➜ {int(final_e_dmg)} Dmg")
+            else: self.combat_log.append(f"👾 Enemy Hit: {int(e_dmg)} ➜ {int(final_e_dmg)} Dmg")
         
         if final_e_dmg > 0:
             if thorn_count > 0:
-                refl = int(final_e_dmg * (0.15 * thorn_count))
-                self.enemy["hp"] -= refl
+                refl = int(final_e_dmg * (0.15 * thorn_count)); self.enemy["hp"] -= refl
                 self.combat_log.append(f"🌵 Thorns reflected {refl} dmg.")
-                
-            if "thorns" in self.data["perks"]: 
-                refl = int(final_e_dmg * 0.1)
-                self.enemy["hp"] -= refl
-                
+            if "thorns" in self.data["perks"]: refl = int(final_e_dmg * 0.1); self.enemy["hp"] -= refl
             self.data["hp"] -= final_e_dmg
             self.data["adrenaline"] = min(100, self.data["adrenaline"] + 10)
-        
         elif e_dmg > 0 and final_e_dmg == 0:
              self.combat_log.append("✨ FULLY BLOCKED (0 Dmg)!")
 
         b_name, b_data = get_biome(self.data["floor"])
         if b_name == "Sewers" and random.random() < 0.2:
-            self.data["hp"] -= int(self.data["max_hp"] * 0.05)
-            self.combat_log.append("🤢 Poisoned by gas!")
+            self.data["hp"] -= int(self.data["max_hp"] * 0.05); self.combat_log.append("🤢 Poisoned by gas!")
         elif b_name == "Magma Core" and action == "act_skill":
-            self.data["hp"] -= 5
-            self.combat_log.append("🔥 Burnt by heat!")
+            self.data["hp"] -= 5; self.combat_log.append("🔥 Burnt by heat!")
 
-        # --- VICTORY LOGIC (REWRITTEN FOR STABILITY) ---
         if self.enemy["hp"] <= 0:
-            # 1. Gather all info while enemy exists
             enemy_name = self.enemy['name']
-            
             xp = 20 * (2 if "scholar" in self.data["perks"] else 1)
             gold = 50 * (1.2 if "midas" in self.data["perks"] else 1)
             if lucky_count > 0: gold += (lucky_count * 20)
@@ -1129,14 +1067,12 @@ class TowerGameView(View):
             req = get_xp_needed(self.data["level"])
             xp_bar = draw_bar(self.data["xp"], req, "🟦") 
             
-            # 2. Prepare description string
             desc = (f"💀 **{enemy_name} Defeated!**\n"
                     f"💰 **+{int(gold)}** Gold\n"
                     f"✨ **+{xp}** XP{scoin_bonus}\n\n"
                     f"**Level {self.data['level']} Progress:**\n"
                     f"{xp_bar} `{self.data['xp']}/{req}`")
             
-            # 3. LEVEL UP CHECK
             leveled_up = False
             if self.data["xp"] >= req:
                 self.data["xp"] -= req
@@ -1145,13 +1081,11 @@ class TowerGameView(View):
                 self.data["hp"] = self.data["max_hp"]
                 leveled_up = True
             
-            # 4. ATOMIC STATE UPDATE
             self.mode = "EXPLORE"
-            self.enemy = None # Safe to remove now
+            self.enemy = None 
             self.render_main_menu()
-            save_tower_data(self.user_id, self.data) # FORCE SAVE
+            save_tower_data(self.user_id, self.data)
             
-            # 5. Handle View Response
             if leveled_up and self.data["level"] % 5 == 0:
                 view = PerkSelectView(self.user, self.data)
                 embed = discord.Embed(title="🧬 Genetic Mutation", description=f"**Level {self.data['level']} Reached!**\nSelect a permanent evolution:", color=THEME_GOLD)
@@ -1231,11 +1165,8 @@ def generate_slot_result(user, bet):
     payout = 0
     is_jackpot = False
     
-    if a == b == c: 
-        payout = bet * 13 
-        is_jackpot = True
-    elif a == b or b == c or a == c: 
-        payout = int(bet * 1.5) 
+    if a == b == c: payout = bet * 13; is_jackpot = True
+    elif a == b or b == c or a == c: payout = int(bet * 1.5) 
     
     if payout > 0:
         update_balance(user_id, payout)
@@ -1246,10 +1177,8 @@ def generate_slot_result(user, bet):
         msg = f"🎰 **{a} | {b} | {c}**\n❌ **Lost** {bet}"
         
     embed = discord.Embed(description=msg, color=col)
-    if user.display_avatar:
-        embed.set_author(name=f"{user.display_name}'s Spin", icon_url=user.display_avatar.url)
-    else:
-        embed.set_author(name=f"{user.display_name}'s Spin")
+    if user.display_avatar: embed.set_author(name=f"{user.display_name}'s Spin", icon_url=user.display_avatar.url)
+    else: embed.set_author(name=f"{user.display_name}'s Spin")
     embed.set_footer(text=f"Bet: {bet} Scoins")
     return embed, is_jackpot, payout
 
@@ -1263,15 +1192,21 @@ class RepeatSpinView(View):
     async def spin_btn(self, button, interaction: Interaction):
         if interaction.user.id != self.user.id:
             return await interaction.response.send_message("🚫 Not your game.", ephemeral=True)
-        bal = get_balance(str(self.user.id))
-        if bal < self.bet:
-            return await interaction.response.send_message(f"❌ Insufficient funds ({bal} < {self.bet}).", ephemeral=True)
-        embed, is_jackpot, win_amount = generate_slot_result(interaction.user, self.bet)
-        await interaction.response.send_message(embed=embed, view=RepeatSpinView(self.user_id, self.bet), ephemeral=True)
-        if is_jackpot:
-            target_thread = interaction.guild.get_channel(CASINO_CHANNEL_ID) or await interaction.guild.fetch_channel(CASINO_CHANNEL_ID)
-            if target_thread:
-                await target_thread.send(f"🚨 **JACKPOT!** 🎰\n**{interaction.user.display_name}** just hit a **3x Match** and won **{win_amount}** Scoins!")
+        
+        try:
+            # FIX: Ensure robust response for rapid clicks
+            await interaction.response.defer(ephemeral=True) 
+            bal = get_balance(str(self.user.id))
+            if bal < self.bet:
+                return await interaction.followup.send(f"❌ Insufficient funds ({bal} < {self.bet}).", ephemeral=True)
+            
+            embed, is_jackpot, win_amount = generate_slot_result(interaction.user, self.bet)
+            await interaction.followup.send(embed=embed, view=RepeatSpinView(self.user_id, self.bet), ephemeral=True)
+            
+            if is_jackpot:
+                target_thread = interaction.guild.get_channel(CASINO_CHANNEL_ID) or await interaction.guild.fetch_channel(CASINO_CHANNEL_ID)
+                if target_thread: await target_thread.send(f"🚨 **JACKPOT!** 🎰\n**{interaction.user.display_name}** just hit a **3x Match** and won **{win_amount}** Scoins!")
+        except: pass
 
 class BetAmountModal(Modal):
     def __init__(self, title, balance, callback_func):
@@ -1440,15 +1375,9 @@ class DiceGameView(View):
         
         won = False
         payout = 0
-        if choice == "low" and total < 7:
-            won = True
-            payout = int(self.bet * 2)
-        elif choice == "high" and total > 7:
-            won = True
-            payout = int(self.bet * 2)
-        elif choice == "seven" and total == 7:
-            won = True
-            payout = int(self.bet * 5)
+        if choice == "low" and total < 7: won = True; payout = int(self.bet * 2)
+        elif choice == "high" and total > 7: won = True; payout = int(self.bet * 2)
+        elif choice == "seven" and total == 7: won = True; payout = int(self.bet * 5)
         
         if won:
             update_balance(str(self.user_id), payout)
@@ -1956,8 +1885,14 @@ async def gamble(ctx):
 @bot.slash_command(name="duel", description="Duel user")
 async def duel(ctx, opponent: discord.Member, amount: str):
     if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
-    if amount == "all": bet = get_balance(str(ctx.author.id))
-    else: bet = int(amount)
+    
+    # FIX: Robust parsing
+    try:
+        if amount.lower() == "all": bet = get_balance(str(ctx.author.id))
+        else: bet = int(amount)
+        if bet <= 0: raise ValueError
+    except: return await safe_reply(ctx, "❌ Invalid amount. Use a number or 'all'.", ephemeral=True)
+
     embed = discord.Embed(title="⚔️ DUEL", description=f"{ctx.author.mention} vs {opponent.mention}\nPot: {bet*2}", color=discord.Color.red())
     await safe_reply(ctx, content=opponent.mention, embed=embed, view=DuelAcceptView(ctx.author, opponent, bet))
 
