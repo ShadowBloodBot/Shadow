@@ -1,11 +1,10 @@
-# bot.py — ShadowSyn (Master: v6.3 - Stable Gold Standard)
+# bot.py — ShadowSyn (Master: v6.4 - Casino Fixes)
 #
 # === FEATURES ===
-# [x] 🛡️ FIX: "bot not defined" crash resolved.
-# [x] 🎒 RPG: Full UI Inventory, Stats (STR/VIT/AGI/INT), Shop, Loot.
-# [x] 🎰 CASINO: Slots, Chicken, Dice, Duels (RESTORED).
-# [x] 🎛️ VOICEMASTER: JTC + Control Panel (RESTORED).
-# [x] 🎵 MUSIC: Play/Skip/Queue/Join (RESTORED).
+# [x] 🎰 CASINO FIX: "Spin Again" button typo fixed (AttributeError).
+# [x] 🛡️ STABILITY: Bot definition crash remains fixed.
+# [x] 🎒 RPG: Inventory, Loot, Shop, Stats all present.
+# [x] 🎛️ VOICEMASTER & MUSIC: All present.
 #
 # LIBRARY: py-cord[voice]
 
@@ -37,7 +36,6 @@ import yt_dlp
 
 # =========================== CONSTANTS ===========================
 
-VANITY_INVITE   = "https://discord.gg/shadowsyn"
 THEME_PRIMARY   = 0x2B0B35
 THEME_WIN       = 0x43B581 
 THEME_LOSS      = 0xF04747 
@@ -362,14 +360,13 @@ async def _apply_invite_role(member, used_code):
         return True, role.name
     except Exception as e: return False, str(e)
 
-# ==================== BOT INSTANCE CREATION (FIX) ====================
+# ==================== BOT INSTANCE ====================
 
 class ShadowSynBot(discord.Bot):
     def __init__(self):
         super().__init__(intents=discord.Intents.all())
         self.audio_queues = {}
 
-# CRITICAL FIX: Define bot instance BEFORE using @bot.slash_command
 bot = ShadowSynBot()
 
 # ==================== MUSIC LOGIC ====================
@@ -430,7 +427,7 @@ class MusicSelectionView(View):
         super().__init__(timeout=60)
         self.add_item(MusicSelect(entries, ctx, vc))
 
-# ==================== SHADOW TOWER 6.3 (STABILITY + UI POLISH) ====================
+# ==================== SHADOW TOWER 6.4 (STABLE) ====================
 
 def get_tower_data(user_id):
     uid = str(user_id)
@@ -864,7 +861,7 @@ class TowerGameView(View):
             save_tower_data(self.user_id, self.data)
             await interaction.edit_original_response(embed=self.update_embed("Combat", "Fighting..."), view=self)
 
-# ==================== CASINO LOGIC (RESTORED) ====================
+# ==================== CASINO LOGIC (FIXED) ====================
 
 def generate_slot_result(user, bet):
     user_id = str(user.id)
@@ -899,11 +896,12 @@ class RepeatSpinView(View):
 
     @discord.ui.button(label="Spin Again", style=ButtonStyle.primary, emoji="🔄")
     async def spin_btn(self, button, interaction: Interaction):
-        if interaction.user.id != self.user.id:
+        # FIX: Check self.user_id, not self.user.id
+        if interaction.user.id != self.user_id:
             return await interaction.response.send_message("🚫 Not your game.", ephemeral=True)
         try:
             await interaction.response.defer(ephemeral=True) 
-            bal = get_balance(str(self.user.id))
+            bal = get_balance(str(self.user_id))
             if bal < self.bet:
                 return await interaction.followup.send(f"❌ Insufficient funds ({bal} < {self.bet}).", ephemeral=True)
             embed, is_jackpot, win_amount = generate_slot_result(interaction.user, self.bet)
