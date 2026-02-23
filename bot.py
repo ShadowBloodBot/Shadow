@@ -1,6 +1,7 @@
-# bot.py — ShadowSyn (Master: v6.4 - Casino Fixes)
+# bot.py — ShadowSyn (Master: v6.5 - Quinfall War Roster Added)
 #
 # === FEATURES ===
+# [x] ⚔️ WAR ROSTER: /create_war with HammerTime sync, Dropdown Classes, and JSON Persistence.
 # [x] 🎰 CASINO FIX: "Spin Again" button typo fixed (AttributeError).
 # [x] 🛡️ STABILITY: Bot definition crash remains fixed.
 # [x] 🎒 RPG: Inventory, Loot, Shop, Stats all present.
@@ -105,6 +106,22 @@ BIOMES = {
     "Void": {"range": (61, 999), "color": 0x8E44AD, "emoji": "🔮", "effect": "Void: Enemies deal True Damage."}
 }
 
+# --- WAR ROSTER CONFIG ---
+WAR_THREAD_ID = 1438439671532224572
+WAR_ROLE_ID = 955600320287887400
+QUINFALL_CLASSES = [
+    ("Sword / Shield", "🛡️"),
+    ("Life Staff", "🪄"),
+    ("Two-Handed Sword", "🗡️"),
+    ("Spear", "🍢"),
+    ("Dual Axe", "🪓"),
+    ("Dual Dagger", "⚔️"),
+    ("War Hammer", "🔨"),
+    ("Bow", "🏹"),
+    ("Dual Crossbow", "🎯"),
+    ("Arcane Staff", "🔮")
+]
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN: raise SystemExit("❌ DISCORD_TOKEN is not set.")
 
@@ -119,10 +136,12 @@ ACTIVE_VCS_STORE = (PERSIST_ROOT / "active_vcs.json")
 HASTE_FACTS_STORE = (PERSIST_ROOT / "haste_facts.json")
 SCOINS_STORE = (PERSIST_ROOT / "scoins.json")
 TOWER_STORE = (PERSIST_ROOT / "tower_v6.json")
+WAR_STORE = (PERSIST_ROOT / "wars.json")
 
 active_haste_facts = []
 scoins_db = {}
 tower_db = {}
+war_db = {}
 
 def _atomic_write(file_path: Path, data: Union[dict, list, set]):
     try:
@@ -134,7 +153,7 @@ def _atomic_write(file_path: Path, data: Union[dict, list, set]):
         print(f"⚠️ Persistence Error [{file_path.name}]: {e}")
 
 def _load_persistence():
-    global active_haste_facts, scoins_db, tower_db
+    global active_haste_facts, scoins_db, tower_db, war_db
     if HASTE_FACTS_STORE.exists():
         try: active_haste_facts = json.loads(HASTE_FACTS_STORE.read_text())
         except: active_haste_facts = []
@@ -146,10 +165,15 @@ def _load_persistence():
     if TOWER_STORE.exists():
         try: tower_db = json.loads(TOWER_STORE.read_text())
         except: tower_db = {}
+        
+    if WAR_STORE.exists():
+        try: war_db = json.loads(WAR_STORE.read_text())
+        except: war_db = {}
 
 def _save_haste_facts(): _atomic_write(HASTE_FACTS_STORE, active_haste_facts)
 def _save_scoins(): _atomic_write(SCOINS_STORE, scoins_db)
 def _save_tower(): _atomic_write(TOWER_STORE, tower_db)
+def _save_wars(): _atomic_write(WAR_STORE, war_db)
 
 def get_balance(user_id: str) -> int:
     return scoins_db.get(str(user_id), {}).get("balance", 0)
@@ -183,6 +207,10 @@ def owner_only():
 def is_gambler(user):
     if not isinstance(user, discord.Member): return False
     return any(r.id == GAMBLER_ROLE_ID for r in user.roles)
+    
+def is_war_role(user):
+    if not isinstance(user, discord.Member): return False
+    return any(r.id == WAR_ROLE_ID for r in user.roles)
 
 def _load_active_vcs() -> Set[int]:
     if ACTIVE_VCS_STORE.exists():
@@ -368,6 +396,72 @@ class ShadowSynBot(discord.Bot):
         self.audio_queues = {}
 
 bot = ShadowSynBot()
+
+# ==================== WAR ROSTER LOGIC ====================
+
+def generate_war_embed(data):
+    embed = discord.Embed(title=f"⚔️ {data['title']}", description=f"**Time:** {data['time']}\nSelect your class below to join the war roster!", color=THEME_COMBAT)
+    
+    class_counts = {c[0]: [] for c in QUINFALL_CLASSES}
+    for uid, cls in data.get("roster", {}).items():
+        if cls in class_counts:
+            class_counts[cls].append(f"<@{uid}>")
+            
+    total_confirmed = 0
+    for class_name, emoji in QUINFALL_CLASSES:
+        users = class_counts.get(class_name, [])
+        if users:
+            embed.add_field(name=f"{emoji} {class_name} ({len(users)})", value="\n".join(users), inline=True)
+            total_confirmed += len(users)
+            
+    embed.set_footer(text=f"Total Confirmed: {total_confirmed}")
+    return embed
+
+class WarClassSelect(Select):
+    def __init__(self):
+        options = [SelectOption(label=name, value=name, emoji=emoji) for name, emoji in QUINFALL_CLASSES]
+        super().__init__(placeholder="Select Class to Join...", options=options, custom_id="war_class_select", min_values=1, max_values=1)
+        
+    async def callback(self, interaction: Interaction):
+        msg_id = str(interaction.message.id)
+        if msg_id not in war_db:
+            return await interaction.response.send_message("❌ War not found in database.", ephemeral=True)
+        
+        selected_class = self.values[0]
+        uid = str(interaction.user.id)
+        
+        if "roster" not in war_db[msg_id]:
+            war_db[msg_id]["roster"] = {}
+            
+        war_db[msg_id]["roster"][uid] = selected_class
+        _save_wars()
+        
+        embed = generate_war_embed(war_db[msg_id])
+        await interaction.response.edit_message(embed=embed)
+
+class WarLeaveButton(Button):
+    def __init__(self):
+        super().__init__(label="Leave Roster", style=ButtonStyle.danger, custom_id="war_leave_btn", emoji="🚪")
+        
+    async def callback(self, interaction: Interaction):
+        msg_id = str(interaction.message.id)
+        if msg_id not in war_db:
+            return await interaction.response.send_message("❌ War not found.", ephemeral=True)
+            
+        uid = str(interaction.user.id)
+        if uid in war_db[msg_id].get("roster", {}):
+            del war_db[msg_id]["roster"][uid]
+            _save_wars()
+            embed = generate_war_embed(war_db[msg_id])
+            await interaction.response.edit_message(embed=embed)
+        else:
+            await interaction.response.send_message("⚠️ You aren't on the roster.", ephemeral=True)
+
+class WarRosterView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(WarClassSelect())
+        self.add_item(WarLeaveButton())
 
 # ==================== MUSIC LOGIC ====================
 
@@ -593,14 +687,14 @@ class TowerGameView(View):
             e_bar = draw_bar(self.enemy['hp'], self.enemy['max_hp'], "🟥")
             intent = self.enemy.get("intent", "Unknown")
             embed.add_field(name=f"🆚 {self.enemy['name']}", 
-                           value=f"{e_bar} {self.enemy['hp']} HP\n⚠️ **Intent:** {intent}", inline=False)
+                            value=f"{e_bar} {self.enemy['hp']} HP\n⚠️ **Intent:** {intent}", inline=False)
             if self.combat_log:
                 log_text = "\n".join(self.combat_log[-6:])
                 embed.add_field(name="📜 Combat Log", value=f"```ansi\n{log_text}\n```", inline=False)
 
         stats_disp = f"⚔️{self.stats['atk']} 🛡️{self.stats['vit']//2} 💰{self.data['gold']}"
         embed.add_field(name=f"👤 {self.user.display_name} (Lvl {self.data['level']})", 
-                       value=f"{p_bar} {self.data['hp']} HP\n{a_bar} Limit Break\n{stats_disp}", inline=False)
+                        value=f"{p_bar} {self.data['hp']} HP\n{a_bar} Limit Break\n{stats_disp}", inline=False)
         
         embed.set_footer(text=f"{b_name}: {b_data['effect']}")
         return embed
@@ -861,7 +955,7 @@ class TowerGameView(View):
             save_tower_data(self.user_id, self.data)
             await interaction.edit_original_response(embed=self.update_embed("Combat", "Fighting..."), view=self)
 
-# ==================== CASINO LOGIC (FIXED) ====================
+# ==================== CASINO LOGIC ====================
 
 def generate_slot_result(user, bet):
     user_id = str(user.id)
@@ -896,7 +990,6 @@ class RepeatSpinView(View):
 
     @discord.ui.button(label="Spin Again", style=ButtonStyle.primary, emoji="🔄")
     async def spin_btn(self, button, interaction: Interaction):
-        # FIX: Check self.user_id, not self.user.id
         if interaction.user.id != self.user_id:
             return await interaction.response.send_message("🚫 Not your game.", ephemeral=True)
         try:
@@ -1258,6 +1351,7 @@ async def on_ready():
     _load_persistence()
     for guild in bot.guilds:
         await _prime_invites_cache(guild)
+    bot.add_view(WarRosterView()) # Re-register persistent war view
 
 @bot.event
 async def on_guild_join(guild):
@@ -1437,6 +1531,35 @@ async def on_voice_state_update(member, before, after):
         except: pass
 
 # ==================== COMMANDS ====================
+
+@bot.slash_command(name="create_war", description="Create a Quinfall War Roster (requires War Role)")
+async def create_war(
+    ctx, 
+    title: Option(str, description="Title of the war"), 
+    hammer_time: Option(str, description="Paste timestamp from HammerTime (e.g., <t:170000000:F>)")
+):
+    if not is_war_role(ctx.author):
+        return await safe_reply(ctx, "⛔ Restricted. You must have the required role.", ephemeral=True)
+        
+    target_channel = bot.get_channel(WAR_THREAD_ID) or await bot.fetch_channel(WAR_THREAD_ID)
+    if not target_channel:
+        return await safe_reply(ctx, "❌ War channel thread not found.", ephemeral=True)
+        
+    war_data = {
+        "title": title,
+        "time": hammer_time,
+        "roster": {}
+    }
+    
+    embed = generate_war_embed(war_data)
+    view = WarRosterView()
+    
+    msg = await target_channel.send(content="@everyone New War Scheduled!", embed=embed, view=view)
+    
+    war_db[str(msg.id)] = war_data
+    _save_wars()
+    
+    await safe_reply(ctx, f"✅ War roster created in {target_channel.mention}", ephemeral=True)
 
 @bot.slash_command(name="tower", description="Play RPG Tower")
 async def tower(ctx):
