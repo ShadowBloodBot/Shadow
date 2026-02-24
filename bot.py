@@ -1,7 +1,7 @@
-# bot.py — ShadowSyn (Master: v6.5 - Quinfall War Roster Added)
+# bot.py — ShadowSyn (Master: v6.6 - Quinfall War Roster Attendance Expansion)
 #
 # === FEATURES ===
-# [x] ⚔️ WAR ROSTER: /create_war with HammerTime sync, Dropdown Classes, and JSON Persistence.
+# [x] ⚔️ WAR ROSTER: Multi-select attendance added (Fights 1-5).
 # [x] 🎰 CASINO FIX: "Spin Again" button typo fixed (AttributeError).
 # [x] 🛡️ STABILITY: Bot definition crash remains fixed.
 # [x] 🎒 RPG: Inventory, Loot, Shop, Stats all present.
@@ -107,7 +107,7 @@ BIOMES = {
 }
 
 # --- WAR ROSTER CONFIG ---
-WAR_THREAD_ID = 1438439671532224572
+WAR_THREAD_ID = 1475981718904242309
 WAR_ROLE_ID = 955600320287887400
 QUINFALL_CLASSES = [
     ("Sword / Shield", "🛡️"),
@@ -400,18 +400,34 @@ bot = ShadowSynBot()
 # ==================== WAR ROSTER LOGIC ====================
 
 def generate_war_embed(data):
-    embed = discord.Embed(title=f"⚔️ {data['title']}", description=f"**Time:** {data['time']}\nSelect your class below to join the war roster!", color=THEME_COMBAT)
+    embed = discord.Embed(title=f"⚔️ {data['title']}", description=f"**Time:** {data['time']}\nSelect your class and attendance below!", color=THEME_COMBAT)
     
     class_counts = {c[0]: [] for c in QUINFALL_CLASSES}
-    for uid, cls in data.get("roster", {}).items():
+    
+    for uid, info in data.get("roster", {}).items():
+        # Handle data migration from v6.5 format safely
+        if isinstance(info, str):
+            cls = info
+            fights = ["1", "2", "3", "4", "5"]
+        else:
+            cls = info.get("class")
+            fights = info.get("fights", ["1", "2", "3", "4", "5"])
+            
+        # Format the fights display string
+        if len(fights) == 5:
+            fight_str = "[All Fights]"
+        else:
+            sorted_fights = sorted(fights)
+            fight_str = f"[Fights: {', '.join(sorted_fights)}]"
+            
         if cls in class_counts:
-            class_counts[cls].append(f"<@{uid}>")
+            class_counts[cls].append(f"<@{uid}> {fight_str}")
             
     total_confirmed = 0
     for class_name, emoji in QUINFALL_CLASSES:
         users = class_counts.get(class_name, [])
         if users:
-            embed.add_field(name=f"{emoji} {class_name} ({len(users)})", value="\n".join(users), inline=True)
+            embed.add_field(name=f"{emoji} {class_name} ({len(users)})", value="\n".join(users), inline=False)
             total_confirmed += len(users)
             
     embed.set_footer(text=f"Total Confirmed: {total_confirmed}")
@@ -420,7 +436,7 @@ def generate_war_embed(data):
 class WarClassSelect(Select):
     def __init__(self):
         options = [SelectOption(label=name, value=name, emoji=emoji) for name, emoji in QUINFALL_CLASSES]
-        super().__init__(placeholder="Select Class to Join...", options=options, custom_id="war_class_select", min_values=1, max_values=1)
+        super().__init__(placeholder="1. Select Class to Join...", options=options, custom_id="war_class_select", min_values=1, max_values=1, row=0)
         
     async def callback(self, interaction: Interaction):
         msg_id = str(interaction.message.id)
@@ -433,7 +449,50 @@ class WarClassSelect(Select):
         if "roster" not in war_db[msg_id]:
             war_db[msg_id]["roster"] = {}
             
-        war_db[msg_id]["roster"][uid] = selected_class
+        if uid not in war_db[msg_id]["roster"]:
+            # New user joining -> Default to all 5 fights
+            war_db[msg_id]["roster"][uid] = {"class": selected_class, "fights": ["1", "2", "3", "4", "5"]}
+        else:
+            # Handle old string format if it exists, otherwise update class
+            if isinstance(war_db[msg_id]["roster"][uid], str):
+                war_db[msg_id]["roster"][uid] = {"class": selected_class, "fights": ["1", "2", "3", "4", "5"]}
+            else:
+                war_db[msg_id]["roster"][uid]["class"] = selected_class
+                
+        _save_wars()
+        
+        embed = generate_war_embed(war_db[msg_id])
+        await interaction.response.edit_message(embed=embed)
+
+class WarAttendanceSelect(Select):
+    def __init__(self):
+        options = [
+            SelectOption(label="Fight 1", value="1", emoji="⚔️"),
+            SelectOption(label="Fight 2", value="2", emoji="⚔️"),
+            SelectOption(label="Fight 3", value="3", emoji="⚔️"),
+            SelectOption(label="Fight 4", value="4", emoji="⚔️"),
+            SelectOption(label="Fight 5", value="5", emoji="⚔️")
+        ]
+        super().__init__(placeholder="2. Select Fights (Default is All 5)...", options=options, custom_id="war_attendance_select", min_values=1, max_values=5, row=1)
+        
+    async def callback(self, interaction: Interaction):
+        msg_id = str(interaction.message.id)
+        if msg_id not in war_db:
+            return await interaction.response.send_message("❌ War not found in database.", ephemeral=True)
+            
+        uid = str(interaction.user.id)
+        
+        # Must select a class first to be on the roster
+        if uid not in war_db[msg_id].get("roster", {}):
+            return await interaction.response.send_message("❌ Please select a Class from the top dropdown first!", ephemeral=True)
+            
+        # Legacy migration check
+        if isinstance(war_db[msg_id]["roster"][uid], str):
+            cls = war_db[msg_id]["roster"][uid]
+            war_db[msg_id]["roster"][uid] = {"class": cls, "fights": self.values}
+        else:
+            war_db[msg_id]["roster"][uid]["fights"] = self.values
+            
         _save_wars()
         
         embed = generate_war_embed(war_db[msg_id])
@@ -441,7 +500,7 @@ class WarClassSelect(Select):
 
 class WarLeaveButton(Button):
     def __init__(self):
-        super().__init__(label="Leave Roster", style=ButtonStyle.danger, custom_id="war_leave_btn", emoji="🚪")
+        super().__init__(label="Leave Roster", style=ButtonStyle.danger, custom_id="war_leave_btn", emoji="🚪", row=2)
         
     async def callback(self, interaction: Interaction):
         msg_id = str(interaction.message.id)
@@ -461,6 +520,7 @@ class WarRosterView(View):
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(WarClassSelect())
+        self.add_item(WarAttendanceSelect())
         self.add_item(WarLeaveButton())
 
 # ==================== MUSIC LOGIC ====================
