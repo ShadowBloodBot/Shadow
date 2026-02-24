@@ -1,7 +1,7 @@
-# bot.py — ShadowSyn (Master: v6.6 - Quinfall War Roster Attendance Expansion)
+# bot.py — ShadowSyn (Master: v6.6.1 - Quinfall War Roster Absent Update)
 #
 # === FEATURES ===
-# [x] ⚔️ WAR ROSTER: Multi-select attendance added (Fights 1-5).
+# [x] ⚔️ WAR ROSTER: Attendance converted to "Absent" tracking (Fights 1-5).
 # [x] 🎰 CASINO FIX: "Spin Again" button typo fixed (AttributeError).
 # [x] 🛡️ STABILITY: Bot definition crash remains fixed.
 # [x] 🎒 RPG: Inventory, Loot, Shop, Stats all present.
@@ -400,28 +400,35 @@ bot = ShadowSynBot()
 # ==================== WAR ROSTER LOGIC ====================
 
 def generate_war_embed(data):
-    embed = discord.Embed(title=f"⚔️ {data['title']}", description=f"**Time:** {data['time']}\nSelect your class and attendance below!", color=THEME_COMBAT)
+    embed = discord.Embed(title=f"⚔️ {data['title']}", description=f"**Time:** {data['time']}\nSelect your class and if you'll miss any fights below!", color=THEME_COMBAT)
     
     class_counts = {c[0]: [] for c in QUINFALL_CLASSES}
     
     for uid, info in data.get("roster", {}).items():
-        # Handle data migration from v6.5 format safely
+        # Handle data migration from v6.5 format gracefully
         if isinstance(info, str):
             cls = info
-            fights = ["1", "2", "3", "4", "5"]
+            absences = []
         else:
             cls = info.get("class")
-            fights = info.get("fights", ["1", "2", "3", "4", "5"])
             
-        # Format the fights display string
-        if len(fights) == 5:
-            fight_str = "[All Fights]"
+            # Convert previous "fights attending" format to "absences" safely
+            if "absences" in info:
+                absences = info["absences"]
+            elif "fights" in info:
+                absences = [f for f in ["1", "2", "3", "4", "5"] if f not in info["fights"]]
+            else:
+                absences = []
+            
+        # Format the absences display string
+        if absences:
+            sorted_abs = sorted(absences)
+            fight_str = f" *(Absent Round {', '.join(sorted_abs)})*"
         else:
-            sorted_fights = sorted(fights)
-            fight_str = f"[Fights: {', '.join(sorted_fights)}]"
+            fight_str = ""
             
         if cls in class_counts:
-            class_counts[cls].append(f"<@{uid}> {fight_str}")
+            class_counts[cls].append(f"<@{uid}>{fight_str}")
             
     total_confirmed = 0
     for class_name, emoji in QUINFALL_CLASSES:
@@ -450,12 +457,12 @@ class WarClassSelect(Select):
             war_db[msg_id]["roster"] = {}
             
         if uid not in war_db[msg_id]["roster"]:
-            # New user joining -> Default to all 5 fights
-            war_db[msg_id]["roster"][uid] = {"class": selected_class, "fights": ["1", "2", "3", "4", "5"]}
+            # New user joining -> Default to missing 0 fights
+            war_db[msg_id]["roster"][uid] = {"class": selected_class, "absences": []}
         else:
-            # Handle old string format if it exists, otherwise update class
+            # Handle old string format if it exists, otherwise just update class
             if isinstance(war_db[msg_id]["roster"][uid], str):
-                war_db[msg_id]["roster"][uid] = {"class": selected_class, "fights": ["1", "2", "3", "4", "5"]}
+                war_db[msg_id]["roster"][uid] = {"class": selected_class, "absences": []}
             else:
                 war_db[msg_id]["roster"][uid]["class"] = selected_class
                 
@@ -467,13 +474,14 @@ class WarClassSelect(Select):
 class WarAttendanceSelect(Select):
     def __init__(self):
         options = [
-            SelectOption(label="Fight 1", value="1", emoji="⚔️"),
-            SelectOption(label="Fight 2", value="2", emoji="⚔️"),
-            SelectOption(label="Fight 3", value="3", emoji="⚔️"),
-            SelectOption(label="Fight 4", value="4", emoji="⚔️"),
-            SelectOption(label="Fight 5", value="5", emoji="⚔️")
+            SelectOption(label="Absent Fight 1", value="1", emoji="❌"),
+            SelectOption(label="Absent Fight 2", value="2", emoji="❌"),
+            SelectOption(label="Absent Fight 3", value="3", emoji="❌"),
+            SelectOption(label="Absent Fight 4", value="4", emoji="❌"),
+            SelectOption(label="Absent Fight 5", value="5", emoji="❌")
         ]
-        super().__init__(placeholder="2. Select Fights (Default is All 5)...", options=options, custom_id="war_attendance_select", min_values=1, max_values=5, row=1)
+        # min_values=0 allows players to uncheck everything if they are no longer absent
+        super().__init__(placeholder="2. Select Fights to MISS (Leave empty if attending all)", options=options, custom_id="war_attendance_select", min_values=0, max_values=5, row=1)
         
     async def callback(self, interaction: Interaction):
         msg_id = str(interaction.message.id)
@@ -486,12 +494,15 @@ class WarAttendanceSelect(Select):
         if uid not in war_db[msg_id].get("roster", {}):
             return await interaction.response.send_message("❌ Please select a Class from the top dropdown first!", ephemeral=True)
             
-        # Legacy migration check
+        # Legacy migration check & apply absences
         if isinstance(war_db[msg_id]["roster"][uid], str):
             cls = war_db[msg_id]["roster"][uid]
-            war_db[msg_id]["roster"][uid] = {"class": cls, "fights": self.values}
+            war_db[msg_id]["roster"][uid] = {"class": cls, "absences": self.values}
         else:
-            war_db[msg_id]["roster"][uid]["fights"] = self.values
+            war_db[msg_id]["roster"][uid]["absences"] = self.values
+            # Clean up old "fights" key if it was created in the brief window
+            if "fights" in war_db[msg_id]["roster"][uid]:
+                del war_db[msg_id]["roster"][uid]["fights"]
             
         _save_wars()
         
