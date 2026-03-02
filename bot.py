@@ -1,7 +1,7 @@
-# bot.py — ShadowSyn (Master: v6.6.1 - Quinfall War Roster Absent Update)
+# bot.py — ShadowSyn (Master: v6.7 - Quinfall War Roster Not Attending Update)
 #
 # === FEATURES ===
-# [x] ⚔️ WAR ROSTER: Attendance converted to "Absent" tracking (Fights 1-5).
+# [x] ⚔️ WAR ROSTER: Added "Not Attending" status and separate embed category.
 # [x] 🎰 CASINO FIX: "Spin Again" button typo fixed (AttributeError).
 # [x] 🛡️ STABILITY: Bot definition crash remains fixed.
 # [x] 🎒 RPG: Inventory, Loot, Shop, Stats all present.
@@ -436,8 +436,13 @@ def generate_war_embed(data):
         if users:
             embed.add_field(name=f"{emoji} {class_name} ({len(users)})", value="\n".join(users), inline=False)
             total_confirmed += len(users)
+
+    # Display Not Attending List
+    not_attending = data.get("not_attending", [])
+    if not_attending:
+        embed.add_field(name=f"❌ Not Attending ({len(not_attending)})", value="\n".join([f"<@{uid}>" for uid in not_attending]), inline=False)
             
-    embed.set_footer(text=f"Total Confirmed: {total_confirmed}")
+    embed.set_footer(text=f"Total Confirmed: {total_confirmed} | Not Attending: {len(not_attending)}")
     return embed
 
 class WarClassSelect(Select):
@@ -455,6 +460,12 @@ class WarClassSelect(Select):
         
         if "roster" not in war_db[msg_id]:
             war_db[msg_id]["roster"] = {}
+        if "not_attending" not in war_db[msg_id]:
+            war_db[msg_id]["not_attending"] = []
+            
+        # Remove from not attending if they were there
+        if uid in war_db[msg_id]["not_attending"]:
+            war_db[msg_id]["not_attending"].remove(uid)
             
         if uid not in war_db[msg_id]["roster"]:
             # New user joining -> Default to missing 0 fights
@@ -509,9 +520,9 @@ class WarAttendanceSelect(Select):
         embed = generate_war_embed(war_db[msg_id])
         await interaction.response.edit_message(embed=embed)
 
-class WarLeaveButton(Button):
+class WarNotAttendingButton(Button):
     def __init__(self):
-        super().__init__(label="Leave Roster", style=ButtonStyle.danger, custom_id="war_leave_btn", emoji="🚪", row=2)
+        super().__init__(label="Not Attending", style=ButtonStyle.danger, custom_id="war_not_attending_btn", emoji="❌", row=2)
         
     async def callback(self, interaction: Interaction):
         msg_id = str(interaction.message.id)
@@ -519,19 +530,55 @@ class WarLeaveButton(Button):
             return await interaction.response.send_message("❌ War not found.", ephemeral=True)
             
         uid = str(interaction.user.id)
+        
+        if "not_attending" not in war_db[msg_id]:
+            war_db[msg_id]["not_attending"] = []
+            
+        # Remove from active roster if they were attending
         if uid in war_db[msg_id].get("roster", {}):
             del war_db[msg_id]["roster"][uid]
+            
+        # Add to not attending list
+        if uid not in war_db[msg_id]["not_attending"]:
+            war_db[msg_id]["not_attending"].append(uid)
+            
+        _save_wars()
+        embed = generate_war_embed(war_db[msg_id])
+        await interaction.response.edit_message(embed=embed)
+
+class WarLeaveButton(Button):
+    def __init__(self):
+        super().__init__(label="Clear My Status", style=ButtonStyle.secondary, custom_id="war_leave_btn", emoji="🗑️", row=2)
+        
+    async def callback(self, interaction: Interaction):
+        msg_id = str(interaction.message.id)
+        if msg_id not in war_db:
+            return await interaction.response.send_message("❌ War not found.", ephemeral=True)
+            
+        uid = str(interaction.user.id)
+        modified = False
+        
+        if uid in war_db[msg_id].get("roster", {}):
+            del war_db[msg_id]["roster"][uid]
+            modified = True
+            
+        if uid in war_db[msg_id].get("not_attending", []):
+            war_db[msg_id]["not_attending"].remove(uid)
+            modified = True
+            
+        if modified:
             _save_wars()
             embed = generate_war_embed(war_db[msg_id])
             await interaction.response.edit_message(embed=embed)
         else:
-            await interaction.response.send_message("⚠️ You aren't on the roster.", ephemeral=True)
+            await interaction.response.send_message("⚠️ You haven't selected a status yet.", ephemeral=True)
 
 class WarRosterView(View):
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(WarClassSelect())
         self.add_item(WarAttendanceSelect())
+        self.add_item(WarNotAttendingButton())
         self.add_item(WarLeaveButton())
 
 # ==================== MUSIC LOGIC ====================
@@ -1619,7 +1666,8 @@ async def create_war(
     war_data = {
         "title": title,
         "time": hammer_time,
-        "roster": {}
+        "roster": {},
+        "not_attending": []
     }
     
     embed = generate_war_embed(war_data)
