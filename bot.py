@@ -7,7 +7,7 @@
 #     - SLOTS: 18% House Edge + Public Jackpot Alert.
 #     - LOCKED: Only works in channel 1468766727134249091.
 # [x] Departures: Rich Embeds (Account Age, Kick Detection).
-# [x] Speak: Auto-Translates text before speaking.
+# [x] Speak: Auto-Translates text before speaking. (Fixed Voice connections, File Locks, & Translator Leaks)
 # [x] Embeds: /send_custom & /edit_custom.
 # [x] Music, VoiceMaster, Logs: Preserved.
 #
@@ -72,7 +72,6 @@ SCOIN_PULL_AMOUNT = 5
 SCOIN_COOLDOWN_HOURS = 3
 
 # --- TTS CONFIG ---
-translator = Translator()
 LANG_CHOICES = ["English", "Japanese", "German", "Spanish", "French", "Italian", "Portuguese", "Russian", "Korean", "Chinese", "Hindi", "Indonesian", "Thai", "Vietnamese", "Tagalog"]
 LANG_CODES = {
     "English": "en", "Japanese": "ja", "German": "de", "Spanish": "es", "French": "fr", 
@@ -112,6 +111,15 @@ SCOINS_STORE = (PERSIST_ROOT / "scoins.json")
 active_haste_facts = []
 scoins_db = {} 
 
+def _atomic_save(target_path: Path, data):
+    """Safely saves data to a JSON file using an atomic write-then-rename approach."""
+    try:
+        tmp_path = target_path.with_suffix('.tmp')
+        tmp_path.write_text(json.dumps(data, indent=2))
+        tmp_path.replace(target_path)
+    except Exception as e:
+        print(f"Failed to save {target_path}: {e}")
+
 def _load_persistence():
     global active_haste_facts, scoins_db
     if HASTE_FACTS_STORE.exists():
@@ -125,12 +133,10 @@ def _load_persistence():
     else: scoins_db = {}
 
 def _save_haste_facts():
-    try: HASTE_FACTS_STORE.write_text(json.dumps(active_haste_facts))
-    except: pass
+    _atomic_save(HASTE_FACTS_STORE, active_haste_facts)
 
 def _save_scoins():
-    try: SCOINS_STORE.write_text(json.dumps(scoins_db))
-    except: pass
+    _atomic_save(SCOINS_STORE, scoins_db)
 
 def get_balance(user_id: str) -> int:
     return scoins_db.get(user_id, {}).get("balance", 0)
@@ -174,8 +180,7 @@ def _load_active_vcs() -> Set[int]:
     return set()
 
 def _save_active_vcs(vcs: Set[int]) -> None:
-    try: ACTIVE_VCS_STORE.write_text(json.dumps(list(vcs)))
-    except: pass
+    _atomic_save(ACTIVE_VCS_STORE, list(vcs))
 
 active_temp_vcs: Set[int] = _load_active_vcs()
 
@@ -195,7 +200,9 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
     except: return None
 
 async def safe_defer(ctx, ephemeral=False):
-    try: await ctx.defer(ephemeral=ephemeral)
+    try:
+        if hasattr(ctx, 'defer'): await ctx.defer(ephemeral=ephemeral)
+        elif hasattr(ctx, 'response') and hasattr(ctx.response, 'defer'): await ctx.response.defer(ephemeral=ephemeral)
     except: pass
 
 async def resolve_target(client: discord.Client, target_id: int):
@@ -220,17 +227,21 @@ async def ensure_voice_simple(ctx):
         return None
     channel = user.voice.channel
     vc = ctx.guild.voice_client
+    
     try:
-        if vc and not vc.is_connected():
-            try: await vc.disconnect(force=True)
-            except: pass
-            vc = None
         if vc:
-            if vc.channel.id != channel.id: await vc.move_to(channel)
-        else: vc = await channel.connect(timeout=10, reconnect=True)
-        
+            if not vc.is_connected():
+                # Cleanup broken voice sockets reliably before reconnecting
+                await vc.disconnect(force=True)
+                await asyncio.sleep(0.5) 
+                vc = await channel.connect(timeout=10, reconnect=True)
+            elif vc.channel.id != channel.id:
+                await vc.move_to(channel)
+        else:
+            vc = await channel.connect(timeout=10, reconnect=True)
         return vc
     except Exception as e:
+        print(f"Voice Connection Error: {e}")
         await safe_reply(ctx, f"❌ Voice Error: {e}", ephemeral=True)
         return None
 
@@ -261,8 +272,7 @@ def _load_invite_role_store():
     return {}
 
 def _save_invite_role_store(data):
-    try: INVITE_ROLE_STORE.write_text(json.dumps(data, indent=2))
-    except: pass
+    _atomic_save(INVITE_ROLE_STORE, data)
 
 def get_invite_role_map(guild_id):
     store = _load_invite_role_store()
@@ -812,12 +822,14 @@ class CasinoDashboard(View):
     async def duel(self, button, interaction: Interaction):
         if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
         await interaction.response.send_message("⚔️ To duel, use: `/duel @user [amount]`", ephemeral=True)
+
     @discord.ui.button(label="Shop", style=ButtonStyle.secondary, emoji="🛒", row=1)
     async def shop(self, button, interaction: Interaction):
         if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
         view = View()
         view.add_item(ShopSelect())
         await interaction.response.send_message("🛒 **Scoin Shop**", view=view, ephemeral=True)
+
     @discord.ui.button(label="Wallet", style=ButtonStyle.secondary, emoji="💳", row=1)
     async def wallet_btn(self, button, interaction: Interaction):
         if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
@@ -1121,49 +1133,81 @@ async def on_voice_state_update(member, before, after):
 
 # ==================== COMMANDS ====================
 
+def _process_tts(text_val: str, lang_val: str):
+    """Safely runs translation and TTS creation synchronously without deadlocking loops."""
+    final_text = text_val
+    if lang_val != 'en':
+        try:
+            # Safely get or create an event loop for the current ThreadPool executor thread 
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            t = Translator()
+            res = t.translate(text_val, dest=lang_val)
+            if res and res.text: final_text = res.text
+        except Exception as e:
+            print(f"Translation Exception: {e}")
+            
+    # Fallback in case translation drops entirely
+    if not final_text.strip(): final_text = text_val
+    
+    # Safely create file without retaining locks that crash OS/FFmpeg
+    fd, path = tempfile.mkstemp(suffix=".mp3")
+    os.close(fd)
+    
+    try:
+        tts = gTTS(text=final_text, lang=lang_val)
+        tts.save(path)
+    except Exception as e:
+        print(f"TTS Engine Exception: {e}")
+        
+    return final_text, path
+
+
 @bot.slash_command(name="speak", description="Text to Speech (Auto-Translates)")
 @dj_or_admin()
 async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, default="English")):
+    # Defers the command instantly so we don't drop the interaction over 3 seconds.
+    await safe_defer(ctx, ephemeral=True)
+    
     vc = await ensure_voice_simple(ctx)
     if not vc: return
 
-    try:
-        # 1. Resolve Language Code
-        lang_code = LANG_CODES.get(language, 'en')
-        
-        # 2. Translate if not English
-        text_to_speak = text
-        if lang_code != 'en':
-            # Run translation in executor to prevent blocking
-            try:
-                # Note: Assuming standard googletrans. If it fails, falls back to text.
-                translation = await bot.loop.run_in_executor(None, lambda: translator.translate(text, dest=lang_code))
-                text_to_speak = translation.text
-            except Exception as tr_err:
-                print(f"Translation Error: {tr_err}")
-                # Fallback to original text if translation fails
-                text_to_speak = text 
+    # Prevent pycord/FFmpeg crash by ensuring audio isn't already playing on the connection
+    if vc.is_playing():
+        return await safe_reply(ctx, "❌ Cannot speak while audio is already playing. Stop the music first.", ephemeral=True)
 
-        # 3. Notify User
+    lang_code = LANG_CODES.get(language, 'en')
+
+    try:
+        text_to_speak, filepath = await bot.loop.run_in_executor(None, _process_tts, text, lang_code)
+
         await safe_reply(ctx, f"🗣️ **{language}:** {text_to_speak}", ephemeral=True)
 
-        # LOGGING
         log_ch = bot.get_channel(SPEAK_LOG_THREAD_ID)
         if log_ch:
             try: await log_ch.send(f"🗣️ **{ctx.author.display_name}** ({language}): {text_to_speak}")
             except: pass
 
-        # 4. Generate Audio
-        tts = gTTS(text=text_to_speak, lang=lang_code)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
-            tts.save(fp.name)
-            temp_path = fp.name
-        
-        # 5. Play
-        vc.play(discord.FFmpegPCMAudio(temp_path), after=lambda e: os.remove(temp_path))
+        def _after_play(error):
+            if error: print(f"Speak Playback Error: {error}")
+            try:
+                if os.path.exists(filepath):
+                    os.remove(filepath)
+            except Exception as ex:
+                print(f"File Cleanup Error: {ex}")
+
+        # Note: We do NOT pass **FFMPEG_OPTIONS here because they contain streaming logic (-reconnect)
+        # which automatically kills local file streams in FFmpeg.
+        vc.play(discord.FFmpegPCMAudio(filepath), after=_after_play)
 
     except Exception as e:
+        traceback.print_exc()
         await safe_reply(ctx, f"❌ Error: {e}", ephemeral=True)
+
 
 @bot.slash_command(name="haste", description="Random Haste Fact")
 async def haste(ctx):
