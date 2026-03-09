@@ -7,7 +7,7 @@
 #     - SLOTS: 18% House Edge + Public Jackpot Alert.
 #     - LOCKED: Only works in channel 1468766727134249091.
 # [x] Departures: Rich Embeds (Account Age, Kick Detection).
-# [x] Speak: Auto-Translates text before speaking. (Fixed Voice connections, File Locks, & Translator Leaks)
+# [x] Speak: Auto-Translates text before speaking. (Fixed Voice connections & Disconnects during processing)
 # [x] Embeds: /send_custom & /edit_custom.
 # [x] Music, VoiceMaster, Logs: Preserved.
 #
@@ -201,8 +201,11 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
 
 async def safe_defer(ctx, ephemeral=False):
     try:
-        if hasattr(ctx, 'defer'): await ctx.defer(ephemeral=ephemeral)
-        elif hasattr(ctx, 'response') and hasattr(ctx.response, 'defer'): await ctx.response.defer(ephemeral=ephemeral)
+        if hasattr(ctx, 'defer'):
+            await ctx.defer(ephemeral=ephemeral)
+        elif hasattr(ctx, 'response') and hasattr(ctx.response, 'defer'):
+            if not ctx.response.is_done():
+                await ctx.response.defer(ephemeral=ephemeral)
     except: pass
 
 async def resolve_target(client: discord.Client, target_id: int):
@@ -222,21 +225,22 @@ async def resolve_target(client: discord.Client, target_id: int):
 
 async def ensure_voice_simple(ctx):
     user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
-    if not user.voice:
+    if not user.voice or not user.voice.channel:
         await safe_reply(ctx, "❌ Join a VC first!", ephemeral=True)
         return None
+        
     channel = user.voice.channel
     vc = ctx.guild.voice_client
     
     try:
         if vc:
+            if vc.channel.id != channel.id:
+                await vc.move_to(channel)
             if not vc.is_connected():
                 # Cleanup broken voice sockets reliably before reconnecting
                 await vc.disconnect(force=True)
                 await asyncio.sleep(0.5) 
                 vc = await channel.connect(timeout=10, reconnect=True)
-            elif vc.channel.id != channel.id:
-                await vc.move_to(channel)
         else:
             vc = await channel.connect(timeout=10, reconnect=True)
         return vc
@@ -1170,13 +1174,13 @@ def _process_tts(text_val: str, lang_val: str):
 @bot.slash_command(name="speak", description="Text to Speech (Auto-Translates)")
 @dj_or_admin()
 async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, default="English")):
-    # Defers the command instantly so we don't drop the interaction over 3 seconds.
+    # 1. Defers the command instantly so we don't drop the interaction over 3 seconds.
     await safe_defer(ctx, ephemeral=True)
     
     vc = await ensure_voice_simple(ctx)
     if not vc: return
 
-    # Prevent pycord/FFmpeg crash by ensuring audio isn't already playing on the connection
+    # 2. Prevent pycord/FFmpeg crash by ensuring audio isn't already playing on the connection
     if vc.is_playing():
         return await safe_reply(ctx, "❌ Cannot speak while audio is already playing. Stop the music first.", ephemeral=True)
 
@@ -1184,6 +1188,22 @@ async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, defa
 
     try:
         text_to_speak, filepath = await bot.loop.run_in_executor(None, _process_tts, text, lang_code)
+
+        # 3. CRITICAL FIX: Re-verify voice connection AFTER the blocking TTS generation
+        if not vc.is_connected():
+            print("[Speak] VC disconnected during TTS generation. Attempting reconnect...")
+            try:
+                user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
+                if user.voice and user.voice.channel:
+                    if vc:
+                        try: await vc.disconnect(force=True)
+                        except: pass
+                    vc = await user.voice.channel.connect(timeout=10, reconnect=True)
+                else:
+                    return await safe_reply(ctx, "❌ Lost voice connection (User left VC).", ephemeral=True)
+            except Exception as reconnect_err:
+                print(f"Reconnect failed: {reconnect_err}")
+                return await safe_reply(ctx, "❌ Lost voice connection and could not reconnect.", ephemeral=True)
 
         await safe_reply(ctx, f"🗣️ **{language}:** {text_to_speak}", ephemeral=True)
 
@@ -1200,8 +1220,7 @@ async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, defa
             except Exception as ex:
                 print(f"File Cleanup Error: {ex}")
 
-        # Note: We do NOT pass **FFMPEG_OPTIONS here because they contain streaming logic (-reconnect)
-        # which automatically kills local file streams in FFmpeg.
+        # Note: We do NOT pass FFMPEG streaming reconnect options here because they automatically kill local files.
         vc.play(discord.FFmpegPCMAudio(filepath), after=_after_play)
 
     except Exception as e:
