@@ -1,11 +1,11 @@
-# bot.py — ShadowSyn (Master: Unified v7.1 - Voice Connection Overhaul)
+# bot.py — ShadowSyn (Master: Unified v7.3 - Voice Logic Perfection)
 #
 # === FEATURES ===
 # [x] ⚔️ WAR ROSTER: "Not Attending" status and separate embed category.
 # [x] 🎰 CASINO: Dice (High/Low/7), Chicken, Slots, Duels, Shop.
 # [x] 🎒 RPG TOWER: Inventory, Loot, Shop, Stats.
 # [x] 🎛️ VOICEMASTER & MUSIC: All present.
-# [x] 🗣️ VOICE FIX: Bulletproof Zombie VC detection, dynamic state fetching, and forced socket reconnections for both /speak and /play.
+# [x] 🗣️ VOICE FIX (v7.3): Connects AFTER TTS generation. No more infinite reconnect loops. Forceful Gateway resets for phantom VCs.
 #
 # LIBRARY: py-cord[voice]
 
@@ -275,40 +275,38 @@ async def resolve_target(client: discord.Client, target_id: int):
         return ch, parent
     return None, None
 
-async def ensure_voice_simple(ctx):
-    user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
-    if not user.voice or not user.voice.channel:
-        await safe_reply(ctx, "❌ Join a VC first!", ephemeral=True)
-        return None
-        
-    channel = user.voice.channel
-    vc = ctx.guild.voice_client
+
+# --- BULLETPROOF VOICE CONNECTION ---
+async def ensure_voice_ready(guild: discord.Guild, channel: discord.VoiceChannel):
+    """
+    Guarantees a clean voice connection by clearing Zombie VCs and avoiding reconnect loops.
+    """
+    vc = guild.voice_client
     
     try:
         if vc:
-            if vc.channel.id != channel.id:
-                await vc.move_to(channel)
-            # Zombie VC Fix: Disconnect forced if it's dead internally
-            if not vc.is_connected():
+            if vc.is_connected():
+                if vc.channel.id != channel.id:
+                    await vc.move_to(channel)
+                return vc
+            else:
+                # It's a Zombie. Clean it up gently but firmly.
                 try: await vc.disconnect(force=True)
                 except: pass
-                await asyncio.sleep(0.5) 
-                vc = await channel.connect(timeout=10, reconnect=True)
-        else:
-            vc = await channel.connect(timeout=10, reconnect=True)
-        return vc
+                try: vc.cleanup()
+                except: pass
+                
+        # Force Discord API to clear the bot's voice state to prevent cache sticking
+        try: await guild.change_voice_state(channel=None)
+        except: pass
+        
+        await asyncio.sleep(0.5) 
+        
+        # Connect freshly
+        return await channel.connect(timeout=10, reconnect=True)
     except Exception as e:
-        # Final nuke and retry for persistent Ghost VCs
-        print(f"Voice Connection Primary Try Failed: {e}. Retrying.")
-        if ctx.guild.voice_client:
-            try: await ctx.guild.voice_client.disconnect(force=True)
-            except: pass
-        try:
-            vc = await channel.connect(timeout=10, reconnect=True)
-            return vc
-        except Exception as retry_e:
-            await safe_reply(ctx, f"❌ Voice Error: {retry_e}", ephemeral=True)
-            return None
+        print(f"[Voice] Ensure Voice Failed: {e}")
+        return None
 
 def safe_avatar_url(member):
     try: return member.display_avatar.url
@@ -593,19 +591,15 @@ def check_queue(gid, channel=None):
 
 async def play_track(url, title, gid, channel):
     try:
+        guild = bot.get_guild(gid)
+        if not guild or not channel: return
+        
+        # 1. Download/Process Stream link first
         player = await YTDLSource.from_url(url, loop=bot.loop, stream=True)
         
-        guild = bot.get_guild(gid)
-        if not guild: return
-        vc = guild.voice_client
-        
-        # Check connection specifically right before playing
-        if not vc or not vc.is_connected():
-            if vc:
-                try: await vc.disconnect(force=True)
-                except: pass
-            if channel: vc = await channel.connect(timeout=10, reconnect=True)
-            else: return
+        # 2. Get connection AFTER processing
+        vc = await ensure_voice_ready(guild, channel)
+        if not vc: return
 
         def _play_after(error):
             if error: print(f"Audio Playback Error: {error}")
@@ -615,11 +609,10 @@ async def play_track(url, title, gid, channel):
             vc.play(player, after=_play_after)
         except Exception as play_error:
             if "Not connected to voice" in str(play_error):
-                print("Zombie VC detected during /play. Nuking and reconnecting...")
-                try: await vc.disconnect(force=True)
+                # Clean up phantom connection gracefully. DO NOT LOOP. 
+                try: await guild.change_voice_state(channel=None)
                 except: pass
-                vc = await channel.connect(timeout=10, reconnect=True)
-                vc.play(player, after=_play_after)
+                print("[Music] Phantom Voice Session dropped. Required reset.")
             else:
                 raise play_error
 
@@ -1561,161 +1554,63 @@ def _process_tts(text_val: str, lang_val: str):
         
     return final_text, path
 
+
 @bot.slash_command(name="speak", description="Text to Speech (Auto-Translates)")
 @dj_or_admin()
 async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, default="English")):
+    # Check if user is in voice first before doing ANY processing
+    user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
+    channel = user.voice.channel if user.voice else None
+    if not channel:
+        return await safe_reply(ctx, "❌ Join a VC first!", ephemeral=True)
+        
     await safe_defer(ctx, ephemeral=True)
-    
-    vc = await ensure_voice_simple(ctx)
-    if not vc: return
-    if vc.is_playing(): return await safe_reply(ctx, "❌ Cannot speak while audio is already playing. Stop the music first.", ephemeral=True)
-
     lang_code = LANG_CODES.get(language, 'en')
 
     try:
+        # 1. Generate audio in background (This takes time, so we DO NOT connect yet)
         text_to_speak, filepath = await bot.loop.run_in_executor(None, _process_tts, text, lang_code)
 
-        # Zombie VC Fix
-        vc = ctx.guild.voice_client
-        if not vc or not vc.is_connected():
-            user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
-            if user.voice and user.voice.channel:
-                if vc:
-                    try: await vc.disconnect(force=True)
-                    except: pass
-                vc = await user.voice.channel.connect(timeout=10, reconnect=True)
-            else:
-                return await safe_reply(ctx, "❌ Lost voice connection (User left VC).", ephemeral=True)
+        # 2. Audio is ready! Now secure the connection to the voice channel
+        vc = await ensure_voice_ready(ctx.guild, channel)
+        if not vc:
+            return await safe_reply(ctx, "❌ Could not establish a stable voice connection.", ephemeral=True)
 
-        await safe_reply(ctx, f"🗣️ **{language}:** {text_to_speak}", ephemeral=True)
+        if vc.is_playing():
+            return await safe_reply(ctx, "❌ Audio is already playing. Stop it first.", ephemeral=True)
 
-        log_ch = bot.get_channel(SPEAK_LOG_THREAD_ID)
-        if log_ch:
-            try: await log_ch.send(f"🗣️ **{ctx.author.display_name}** ({language}): {text_to_speak}")
-            except: pass
-
+        # 3. Define Cleanup
         def _after_play(error):
             if error: print(f"Speak Playback Error: {error}")
             try:
                 if os.path.exists(filepath): os.remove(filepath)
             except Exception as ex: print(f"File Cleanup Error: {ex}")
 
+        # 4. Play it
         try:
             vc.play(discord.FFmpegPCMAudio(filepath), after=_after_play)
-        except Exception as play_error:
-            if "Not connected to voice" in str(play_error):
-                print("Zombie VC detected during /speak. Nuking and reconnecting...")
-                try: await vc.disconnect(force=True)
+            await safe_reply(ctx, f"🗣️ **{language}:** {text_to_speak}", ephemeral=True)
+            
+            # Send log text
+            log_ch = bot.get_channel(SPEAK_LOG_THREAD_ID)
+            if log_ch:
+                try: await log_ch.send(f"🗣️ **{ctx.author.display_name}** ({language}): {text_to_speak}")
                 except: pass
-                user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
-                vc = await user.voice.channel.connect(timeout=10, reconnect=True)
-                vc.play(discord.FFmpegPCMAudio(filepath), after=_after_play)
+
+        except discord.errors.ClientException as e:
+            if "Not connected to voice" in str(e):
+                print("[Speak] Caught 'Not connected to voice' during playback.")
+                # We force discord to dump the dead cache so next command works, but we DO NOT retry instantly to prevent loops.
+                try: await ctx.guild.change_voice_state(channel=None)
+                except: pass
+                await safe_reply(ctx, "❌ Discord dropped the voice connection. I have forcefully reset it. Please run the command again.", ephemeral=True)
             else:
-                raise play_error
+                raise e
 
     except Exception as e:
         traceback.print_exc()
-        await safe_reply(ctx, f"❌ Error: {e}", ephemeral=True)
+        await safe_reply(ctx, f"❌ Voice Error: {e}", ephemeral=True)
 
-
-@bot.slash_command(name="play")
-@dj_or_admin()
-async def play(ctx, search: str):
-    await safe_defer(ctx)
-    vc = await ensure_voice_simple(ctx)
-    if not vc: return
-    info = await bot.loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(YTDL_SEARCH_OPTIONS).extract_info(f"ytsearch5:{search}", download=False))
-    if not info or 'entries' not in info or not info['entries']:
-        return await safe_reply(ctx, "❌ No results found.", ephemeral=True)
-    view = MusicSelectionView(info['entries'], ctx)
-    await safe_reply(ctx, "🔎 **Select a track:**", view=view)
-
-@bot.slash_command(name="queue")
-async def queue(ctx):
-    if ctx.guild.id not in bot.audio_queues or not bot.audio_queues[ctx.guild.id]:
-        return await safe_reply(ctx, "Queue is empty.")
-    lines = [f"{i+1}. {title}" for i, (url, title) in enumerate(bot.audio_queues[ctx.guild.id])]
-    await safe_reply(ctx, "\n".join(lines[:10]))
-
-@bot.slash_command(name="skip")
-@dj_or_admin()
-async def skip(ctx):
-    if ctx.guild.voice_client: ctx.guild.voice_client.stop(); await safe_reply(ctx, "⏭️ Skipped.")
-
-@bot.slash_command(name="stop")
-@dj_or_admin()
-async def stop(ctx):
-    if ctx.guild.id in bot.audio_queues: bot.audio_queues[ctx.guild.id].clear()
-    if ctx.guild.voice_client: ctx.guild.voice_client.stop(); await safe_reply(ctx, "⏹️ Stopped.")
-
-@bot.slash_command(name="join")
-@dj_or_admin()
-async def join(ctx):
-    await ensure_voice_simple(ctx); await safe_reply(ctx, "✅ Joined.")
-
-# ==================== COMMANDS: MISC & ECONOMY ====================
-
-@bot.slash_command(name="tower", description="Play RPG Tower")
-async def tower(ctx):
-    view = TowerGameView(ctx.author)
-    await safe_reply(ctx, embed=view.update_embed("Tower Entrance", "Begin your journey."), view=view, ephemeral=True)
-
-@bot.slash_command(name="haste", description="Random Haste Fact")
-async def haste(ctx):
-    if not active_haste_facts: return await safe_reply(ctx, "No facts yet.")
-    await safe_reply(ctx, f"🍌 **Fact:** {random.choice(active_haste_facts)}")
-
-@bot.slash_command(name="morehaste", description="Add Haste Fact")
-@admin_only()
-async def morehaste(ctx, fact: str):
-    active_haste_facts.append(fact); _save_haste_facts()
-    await safe_reply(ctx, "✅ Added.")
-
-@bot.slash_command(name="gamble", description="Open Casino")
-async def gamble(ctx):
-    if ctx.channel.id != CASINO_CHANNEL_ID: return await safe_reply(ctx, f"❌ Go to <#{CASINO_CHANNEL_ID}> to gamble.", ephemeral=True)
-    if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
-    embed = discord.Embed(title="🎰 ShadowSyn Casino", description="Welcome.", color=THEME_PRIMARY)
-    embed.set_footer(text=f"Balance: {get_balance(str(ctx.author.id))}")
-    await safe_reply(ctx, embed=embed, view=CasinoDashboard(), ephemeral=True)
-
-@bot.slash_command(name="duel", description="Duel user")
-async def duel(ctx, opponent: discord.Member, amount: str):
-    if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
-    try:
-        if amount.lower() == "all": bet = get_balance(str(ctx.author.id))
-        else: bet = int(amount)
-        if bet <= 0: raise ValueError
-    except: return await safe_reply(ctx, "❌ Invalid amount. Use a number or 'all'.", ephemeral=True)
-    embed = discord.Embed(title="⚔️ DUEL", description=f"{ctx.author.mention} vs {opponent.mention}\nPot: {bet*2}", color=discord.Color.red())
-    await safe_reply(ctx, content=opponent.mention, embed=embed, view=DuelAcceptView(ctx.author, opponent, bet))
-
-@bot.slash_command(name="wallet", description="Check balance")
-async def wallet(ctx, user: Option(discord.User, required=False)):
-    if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
-    t = user or ctx.author
-    await safe_reply(ctx, f"💳 {t.display_name}: {get_balance(str(t.id))} Scoins")
-
-@bot.slash_command(name="give_scoins", description="Owner Only")
-@owner_only()
-async def give_scoins(ctx, user: discord.Member, amount: int):
-    update_balance(str(user.id), amount)
-    await safe_reply(ctx, f"✅ Done. New balance: {get_balance(str(user.id))}", ephemeral=True)
-
-@bot.slash_command(name="silence", description="Pay 2000 Scoins to Timeout someone for 60s")
-async def silence(ctx, user: discord.Member):
-    if ctx.channel.id != CASINO_CHANNEL_ID: return await safe_reply(ctx, "❌ Wrong channel.", ephemeral=True)
-    cost = 2000
-    bal = get_balance(str(ctx.author.id))
-    if bal < cost: return await safe_reply(ctx, f"❌ You need {cost} Scoins.", ephemeral=True)
-    if user.guild_permissions.administrator: return await safe_reply(ctx, "❌ You cannot silence an Admin.", ephemeral=True)
-    update_balance(str(ctx.author.id), -cost)
-    try:
-        await user.timeout_for(timedelta(seconds=60), reason=f"Paid Silence by {ctx.author.display_name}")
-        await safe_reply(ctx, f"🤫 **Shhh!** {user.mention} has been silenced for 60s.")
-    except Exception as e:
-        update_balance(str(ctx.author.id), cost)
-        await safe_reply(ctx, f"❌ Failed: {e}", ephemeral=True)
 
 class EasyEmbedModal(Modal):
     def __init__(self, channel, edit_msg=None):
@@ -1762,6 +1657,62 @@ async def edit_custom(ctx, message_id: str, channel: Option(discord.TextChannel,
         if msg.author != ctx.bot.user: return await ctx.respond("❌ I can only edit my own messages.", ephemeral=True)
         await ctx.send_modal(EasyEmbedModal(target_channel, edit_msg=msg))
     except Exception as e: await ctx.respond(f"❌ Error finding message: {e}", ephemeral=True)
+
+
+@bot.slash_command(name="play")
+@dj_or_admin()
+async def play(ctx, search: str):
+    user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
+    channel = user.voice.channel if user.voice else None
+    if not channel:
+        return await safe_reply(ctx, "❌ Join a VC first!", ephemeral=True)
+        
+    await safe_defer(ctx)
+    
+    # Extract search (takes time)
+    info = await bot.loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(YTDL_SEARCH_OPTIONS).extract_info(f"ytsearch5:{search}", download=False))
+    if not info or 'entries' not in info or not info['entries']:
+        return await safe_reply(ctx, "❌ No results found.", ephemeral=True)
+        
+    # Get secure voice connection
+    vc = await ensure_voice_ready(ctx.guild, channel)
+    if not vc:
+        return await safe_reply(ctx, "❌ Failed to connect to Voice.", ephemeral=True)
+        
+    view = MusicSelectionView(info['entries'], ctx)
+    await safe_reply(ctx, "🔎 **Select a track:**", view=view)
+
+@bot.slash_command(name="queue")
+async def queue(ctx):
+    if ctx.guild.id not in bot.audio_queues or not bot.audio_queues[ctx.guild.id]:
+        return await safe_reply(ctx, "Queue is empty.")
+    lines = [f"{i+1}. {title}" for i, (url, title) in enumerate(bot.audio_queues[ctx.guild.id])]
+    await safe_reply(ctx, "\n".join(lines[:10]))
+
+@bot.slash_command(name="skip")
+@dj_or_admin()
+async def skip(ctx):
+    if ctx.guild.voice_client: ctx.guild.voice_client.stop(); await safe_reply(ctx, "⏭️ Skipped.")
+
+@bot.slash_command(name="stop")
+@dj_or_admin()
+async def stop(ctx):
+    if ctx.guild.id in bot.audio_queues: bot.audio_queues[ctx.guild.id].clear()
+    if ctx.guild.voice_client: ctx.guild.voice_client.stop(); await safe_reply(ctx, "⏹️ Stopped.")
+
+@bot.slash_command(name="join")
+@dj_or_admin()
+async def join(ctx):
+    user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
+    channel = user.voice.channel if user.voice else None
+    if not channel:
+        return await safe_reply(ctx, "❌ Join a VC first!", ephemeral=True)
+        
+    vc = await ensure_voice_ready(ctx.guild, channel)
+    if vc:
+        await safe_reply(ctx, "✅ Joined.")
+    else:
+        await safe_reply(ctx, "❌ Failed to connect to Voice.", ephemeral=True)
 
 # --- RUN ---
 if __name__ == "__main__":
