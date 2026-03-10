@@ -1,11 +1,14 @@
-# bot.py — ShadowSyn (Master: Unified v7.3 - Voice Logic Perfection)
+# bot.py — ShadowSyn (Master: Unified v7.4 - Perfect Voice & TTS Safeguards)
 #
 # === FEATURES ===
 # [x] ⚔️ WAR ROSTER: "Not Attending" status and separate embed category.
 # [x] 🎰 CASINO: Dice (High/Low/7), Chicken, Slots, Duels, Shop.
 # [x] 🎒 RPG TOWER: Inventory, Loot, Shop, Stats.
 # [x] 🎛️ VOICEMASTER & MUSIC: All present.
-# [x] 🗣️ VOICE FIX (v7.3): Connects AFTER TTS generation. No more infinite reconnect loops. Forceful Gateway resets for phantom VCs.
+# [x] 🗣️ VOICE FIX (v7.4): 
+#     - Cleaned up "Unclosed connection" console spam.
+#     - 'get_healthy_vc' directly inspects websocket health to prevent zombie sockets.
+#     - Halts and warns if gTTS generates an empty file (prevents silent failures).
 #
 # LIBRARY: py-cord[voice]
 
@@ -18,6 +21,7 @@ import time
 import traceback
 import random
 import uuid
+import logging
 from pathlib import Path
 from typing import Optional, List, Set, Union
 from datetime import datetime, timezone, timedelta
@@ -33,6 +37,9 @@ from shutil import which
 from googletrans import Translator
 from discord.utils import get
 import yt_dlp
+
+# Suppress the annoying 'Unclosed client session' spam from googletrans
+logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 
 # =========================== CONSTANTS ===========================
 
@@ -275,38 +282,34 @@ async def resolve_target(client: discord.Client, target_id: int):
         return ch, parent
     return None, None
 
-
 # --- BULLETPROOF VOICE CONNECTION ---
-async def ensure_voice_ready(guild: discord.Guild, channel: discord.VoiceChannel):
+async def get_healthy_vc(guild: discord.Guild, channel: discord.VoiceChannel):
     """
-    Guarantees a clean voice connection by clearing Zombie VCs and avoiding reconnect loops.
+    Absolute foolproof method to get a VoiceClient. 
+    It explicitly checks the websocket state so Pycord can't hand back a dead connection.
     """
     vc = guild.voice_client
+    if vc:
+        is_healthy = True
+        if not vc.is_connected():
+            is_healthy = False
+        elif not hasattr(vc, 'ws') or vc.ws is None or not getattr(vc.ws, 'open', False):
+            # Websocket is dead, but pycord thinks it's alive. This prevents the crash.
+            is_healthy = False
+
+        if not is_healthy:
+            print(f"[Voice] Dead socket detected in {guild.id}. Force purging and reconnecting.")
+            try: await vc.disconnect(force=True)
+            except: pass
+            try: vc.cleanup()
+            except: pass
+            vc = await channel.connect(timeout=10, reconnect=True)
+        elif vc.channel.id != channel.id:
+            await vc.move_to(channel)
+    else:
+        vc = await channel.connect(timeout=10, reconnect=True)
     
-    try:
-        if vc:
-            if vc.is_connected():
-                if vc.channel.id != channel.id:
-                    await vc.move_to(channel)
-                return vc
-            else:
-                # It's a Zombie. Clean it up gently but firmly.
-                try: await vc.disconnect(force=True)
-                except: pass
-                try: vc.cleanup()
-                except: pass
-                
-        # Force Discord API to clear the bot's voice state to prevent cache sticking
-        try: await guild.change_voice_state(channel=None)
-        except: pass
-        
-        await asyncio.sleep(0.5) 
-        
-        # Connect freshly
-        return await channel.connect(timeout=10, reconnect=True)
-    except Exception as e:
-        print(f"[Voice] Ensure Voice Failed: {e}")
-        return None
+    return vc
 
 def safe_avatar_url(member):
     try: return member.display_avatar.url
@@ -594,27 +597,18 @@ async def play_track(url, title, gid, channel):
         guild = bot.get_guild(gid)
         if not guild or not channel: return
         
-        # 1. Download/Process Stream link first
+        # Stream processing
         player = await YTDLSource.from_url(url, loop=bot.loop, stream=True)
         
-        # 2. Get connection AFTER processing
-        vc = await ensure_voice_ready(guild, channel)
+        # Ensure connection precisely before playback
+        vc = await get_healthy_vc(guild, channel)
         if not vc: return
 
         def _play_after(error):
             if error: print(f"Audio Playback Error: {error}")
             check_queue(gid, channel)
 
-        try:
-            vc.play(player, after=_play_after)
-        except Exception as play_error:
-            if "Not connected to voice" in str(play_error):
-                # Clean up phantom connection gracefully. DO NOT LOOP. 
-                try: await guild.change_voice_state(channel=None)
-                except: pass
-                print("[Music] Phantom Voice Session dropped. Required reset.")
-            else:
-                raise play_error
+        vc.play(player, after=_play_after)
 
     except Exception as e:
         print(f"[Music] Playback Error: {e}")
@@ -641,9 +635,11 @@ class MusicSelect(Select):
         if not url: return await self.ctx.send("❌ Error: Could not resolve URL.")
 
         gid = self.ctx.guild.id
-        vc = self.ctx.guild.voice_client
         user_channel = interaction.user.voice.channel if interaction.user.voice else None
-        
+        if not user_channel: return await self.ctx.send("❌ Join a Voice Channel first.")
+
+        # Inspect current state dynamically
+        vc = self.ctx.guild.voice_client
         if vc and vc.is_playing():
             if gid not in bot.audio_queues: bot.audio_queues[gid] = deque()
             bot.audio_queues[gid].append((url, title))
@@ -1532,10 +1528,11 @@ async def on_voice_state_update(member, before, after):
 # ==================== COMMANDS: TTS & AUDIO ====================
 
 def _process_tts(text_val: str, lang_val: str):
-    """Safely runs translation and TTS creation synchronously without locking the main thread."""
+    """Safely runs translation and generates TTS without locking threads."""
     final_text = text_val
     if lang_val != 'en':
         try:
+            # Force run inside its own event loop boundary
             try: loop = asyncio.get_event_loop()
             except RuntimeError: loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
             
@@ -1549,16 +1546,21 @@ def _process_tts(text_val: str, lang_val: str):
     fd, path = tempfile.mkstemp(suffix=".mp3")
     os.close(fd)
     
-    try: tts = gTTS(text=final_text, lang=lang_val); tts.save(path)
-    except Exception as e: print(f"TTS Engine Exception: {e}")
+    try: 
+        tts = gTTS(text=final_text, lang=lang_val)
+        tts.save(path)
+        # CRITICAL FIX: If gTTS failed to connect to Google, it creates a 0-byte file.
+        # Playing a 0-byte file causes FFmpeg to exit instantly in silence.
+        if os.path.getsize(path) == 0:
+            raise Exception("gTTS returned an empty audio file. (Possible API block).")
+    except Exception as e: 
+        raise Exception(f"TTS Engine Error: {e}")
         
     return final_text, path
-
 
 @bot.slash_command(name="speak", description="Text to Speech (Auto-Translates)")
 @dj_or_admin()
 async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, default="English")):
-    # Check if user is in voice first before doing ANY processing
     user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
     channel = user.voice.channel if user.voice else None
     if not channel:
@@ -1568,49 +1570,33 @@ async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, defa
     lang_code = LANG_CODES.get(language, 'en')
 
     try:
-        # 1. Generate audio in background (This takes time, so we DO NOT connect yet)
+        # Generate the audio file FIRST
         text_to_speak, filepath = await bot.loop.run_in_executor(None, _process_tts, text, lang_code)
 
-        # 2. Audio is ready! Now secure the connection to the voice channel
-        vc = await ensure_voice_ready(ctx.guild, channel)
-        if not vc:
-            return await safe_reply(ctx, "❌ Could not establish a stable voice connection.", ephemeral=True)
+        # Confirm connection perfectly right before playing
+        vc = await get_healthy_vc(ctx.guild, channel)
+        if not vc: return await safe_reply(ctx, "❌ Could not establish a stable voice connection.", ephemeral=True)
 
         if vc.is_playing():
             return await safe_reply(ctx, "❌ Audio is already playing. Stop it first.", ephemeral=True)
 
-        # 3. Define Cleanup
         def _after_play(error):
             if error: print(f"Speak Playback Error: {error}")
             try:
                 if os.path.exists(filepath): os.remove(filepath)
-            except Exception as ex: print(f"File Cleanup Error: {ex}")
+            except: pass
 
-        # 4. Play it
-        try:
-            vc.play(discord.FFmpegPCMAudio(filepath), after=_after_play)
-            await safe_reply(ctx, f"🗣️ **{language}:** {text_to_speak}", ephemeral=True)
-            
-            # Send log text
-            log_ch = bot.get_channel(SPEAK_LOG_THREAD_ID)
-            if log_ch:
-                try: await log_ch.send(f"🗣️ **{ctx.author.display_name}** ({language}): {text_to_speak}")
-                except: pass
+        vc.play(discord.FFmpegPCMAudio(filepath), after=_after_play)
+        await safe_reply(ctx, f"🗣️ **{language}:** {text_to_speak}", ephemeral=True)
 
-        except discord.errors.ClientException as e:
-            if "Not connected to voice" in str(e):
-                print("[Speak] Caught 'Not connected to voice' during playback.")
-                # We force discord to dump the dead cache so next command works, but we DO NOT retry instantly to prevent loops.
-                try: await ctx.guild.change_voice_state(channel=None)
-                except: pass
-                await safe_reply(ctx, "❌ Discord dropped the voice connection. I have forcefully reset it. Please run the command again.", ephemeral=True)
-            else:
-                raise e
+        log_ch = bot.get_channel(SPEAK_LOG_THREAD_ID)
+        if log_ch:
+            try: await log_ch.send(f"🗣️ **{ctx.author.display_name}** ({language}): {text_to_speak}")
+            except: pass
 
     except Exception as e:
         traceback.print_exc()
         await safe_reply(ctx, f"❌ Voice Error: {e}", ephemeral=True)
-
 
 class EasyEmbedModal(Modal):
     def __init__(self, channel, edit_msg=None):
@@ -1658,7 +1644,6 @@ async def edit_custom(ctx, message_id: str, channel: Option(discord.TextChannel,
         await ctx.send_modal(EasyEmbedModal(target_channel, edit_msg=msg))
     except Exception as e: await ctx.respond(f"❌ Error finding message: {e}", ephemeral=True)
 
-
 @bot.slash_command(name="play")
 @dj_or_admin()
 async def play(ctx, search: str):
@@ -1668,16 +1653,9 @@ async def play(ctx, search: str):
         return await safe_reply(ctx, "❌ Join a VC first!", ephemeral=True)
         
     await safe_defer(ctx)
-    
-    # Extract search (takes time)
     info = await bot.loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(YTDL_SEARCH_OPTIONS).extract_info(f"ytsearch5:{search}", download=False))
     if not info or 'entries' not in info or not info['entries']:
         return await safe_reply(ctx, "❌ No results found.", ephemeral=True)
-        
-    # Get secure voice connection
-    vc = await ensure_voice_ready(ctx.guild, channel)
-    if not vc:
-        return await safe_reply(ctx, "❌ Failed to connect to Voice.", ephemeral=True)
         
     view = MusicSelectionView(info['entries'], ctx)
     await safe_reply(ctx, "🔎 **Select a track:**", view=view)
@@ -1708,7 +1686,7 @@ async def join(ctx):
     if not channel:
         return await safe_reply(ctx, "❌ Join a VC first!", ephemeral=True)
         
-    vc = await ensure_voice_ready(ctx.guild, channel)
+    vc = await get_healthy_vc(ctx.guild, channel)
     if vc:
         await safe_reply(ctx, "✅ Joined.")
     else:
