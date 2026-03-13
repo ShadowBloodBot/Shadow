@@ -1,14 +1,14 @@
-# bot.py — ShadowSyn (Master: Unified v7.4 - Perfect Voice & TTS Safeguards)
+# bot.py — ShadowSyn (Master: Unified v7.6 - Graceful Voice & Log Perfection)
 #
 # === FEATURES ===
 # [x] ⚔️ WAR ROSTER: "Not Attending" status and separate embed category.
 # [x] 🎰 CASINO: Dice (High/Low/7), Chicken, Slots, Duels, Shop.
 # [x] 🎒 RPG TOWER: Inventory, Loot, Shop, Stats.
 # [x] 🎛️ VOICEMASTER & MUSIC: All present.
-# [x] 🗣️ VOICE FIX (v7.4): 
-#     - Cleaned up "Unclosed connection" console spam.
-#     - 'get_healthy_vc' directly inspects websocket health to prevent zombie sockets.
-#     - Halts and warns if gTTS generates an empty file (prevents silent failures).
+# [x] 🗣️ VOICE FIX (v7.6): 
+#     - Suppresses 'ResourceWarning' to permanently hide googletrans "Unclosed connection" console spam.
+#     - Fixes '_MissingSentinel' crash by using graceful disconnects instead of internal state hacking.
+#     - Halts and warns if gTTS generates an empty file (prevents silent FFmpeg failures).
 #
 # LIBRARY: py-cord[voice]
 
@@ -21,7 +21,7 @@ import time
 import traceback
 import random
 import uuid
-import logging
+import warnings
 from pathlib import Path
 from typing import Optional, List, Set, Union
 from datetime import datetime, timezone, timedelta
@@ -38,8 +38,8 @@ from googletrans import Translator
 from discord.utils import get
 import yt_dlp
 
-# Suppress the annoying 'Unclosed client session' spam from googletrans
-logging.getLogger("asyncio").setLevel(logging.CRITICAL)
+# Suppress the annoying 'Unclosed client session / connection' spam from googletrans/aiohttp in threads
+warnings.simplefilter("ignore", ResourceWarning)
 
 # =========================== CONSTANTS ===========================
 
@@ -285,31 +285,49 @@ async def resolve_target(client: discord.Client, target_id: int):
 # --- BULLETPROOF VOICE CONNECTION ---
 async def get_healthy_vc(guild: discord.Guild, channel: discord.VoiceChannel):
     """
-    Absolute foolproof method to get a VoiceClient. 
-    It explicitly checks the websocket state so Pycord can't hand back a dead connection.
+    Safely retrieves a VoiceClient. Reconnects gracefully without hacking Pycord internals
+    to completely avoid the '_MissingSentinel' polling crash.
     """
     vc = guild.voice_client
     if vc:
         is_healthy = True
         if not vc.is_connected():
             is_healthy = False
-        elif not hasattr(vc, 'ws') or vc.ws is None or not getattr(vc.ws, 'open', False):
-            # Websocket is dead, but pycord thinks it's alive. This prevents the crash.
-            is_healthy = False
+        elif hasattr(vc, 'ws') and vc.ws:
+            if getattr(vc.ws, 'open', False) == False:
+                is_healthy = False
 
         if not is_healthy:
-            print(f"[Voice] Dead socket detected in {guild.id}. Force purging and reconnecting.")
-            try: await vc.disconnect(force=True)
+            print(f"[Voice] Stale socket detected in {guild.id}. Reconnecting cleanly...")
+            # force=False allows the background polling task to shut down gracefully
+            try: await vc.disconnect(force=False)
             except: pass
-            try: vc.cleanup()
-            except: pass
-            vc = await channel.connect(timeout=10, reconnect=True)
+            
+            # Give background tasks 1 second to clear out the disconnected socket properly
+            await asyncio.sleep(1.0)
+            
+            try:
+                vc = await channel.connect(timeout=10, reconnect=True)
+            except Exception as e:
+                print(f"[Voice] Reconnect failed: {e}")
+                return None
         elif vc.channel.id != channel.id:
             await vc.move_to(channel)
     else:
-        vc = await channel.connect(timeout=10, reconnect=True)
-    
+        try:
+            vc = await channel.connect(timeout=10, reconnect=True)
+        except Exception as e:
+            print(f"[Voice] Initial connect failed: {e}")
+            return None
+            
     return vc
+
+async def ensure_voice_simple(ctx):
+    user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
+    if not user.voice or not user.voice.channel:
+        await safe_reply(ctx, "❌ Join a VC first!", ephemeral=True)
+        return None
+    return await get_healthy_vc(ctx.guild, user.voice.channel)
 
 def safe_avatar_url(member):
     try: return member.display_avatar.url
@@ -1532,7 +1550,6 @@ def _process_tts(text_val: str, lang_val: str):
     final_text = text_val
     if lang_val != 'en':
         try:
-            # Force run inside its own event loop boundary
             try: loop = asyncio.get_event_loop()
             except RuntimeError: loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
             
