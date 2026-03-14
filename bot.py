@@ -1,14 +1,13 @@
-# bot.py — ShadowSyn (Master: Unified v7.6 - Graceful Voice & Log Perfection)
+# bot.py — ShadowSyn (Master: Unified v7.7 - Intuitive Voice Net & Spam Fix)
 #
 # === FEATURES ===
 # [x] ⚔️ WAR ROSTER: "Not Attending" status and separate embed category.
 # [x] 🎰 CASINO: Dice (High/Low/7), Chicken, Slots, Duels, Shop.
 # [x] 🎒 RPG TOWER: Inventory, Loot, Shop, Stats.
 # [x] 🎛️ VOICEMASTER & MUSIC: All present.
-# [x] 🗣️ VOICE FIX (v7.6): 
-#     - Suppresses 'ResourceWarning' to permanently hide googletrans "Unclosed connection" console spam.
-#     - Fixes '_MissingSentinel' crash by using graceful disconnects instead of internal state hacking.
-#     - Halts and warns if gTTS generates an empty file (prevents silent FFmpeg failures).
+# [x] 🗣️ VOICE FIX (v7.7): 
+#     - Wrapped vc.play() with an intuitive auto-reconnect fallback if the socket dies during generation.
+#     - Aggressively suppressed 'ResourceWarning' and 'aiohttp' unclosed connection spam.
 #
 # LIBRARY: py-cord[voice]
 
@@ -22,6 +21,7 @@ import traceback
 import random
 import uuid
 import warnings
+import logging
 from pathlib import Path
 from typing import Optional, List, Set, Union
 from datetime import datetime, timezone, timedelta
@@ -38,8 +38,10 @@ from googletrans import Translator
 from discord.utils import get
 import yt_dlp
 
-# Suppress the annoying 'Unclosed client session / connection' spam from googletrans/aiohttp in threads
+# --- SUPPRESS CONSOLE SPAM ---
 warnings.simplefilter("ignore", ResourceWarning)
+logging.getLogger("asyncio").setLevel(logging.CRITICAL)
+logging.getLogger("aiohttp.client").setLevel(logging.CRITICAL)
 
 # =========================== CONSTANTS ===========================
 
@@ -281,53 +283,6 @@ async def resolve_target(client: discord.Client, target_id: int):
         parent = ch.parent if isinstance(ch.parent, discord.TextChannel) else None
         return ch, parent
     return None, None
-
-# --- BULLETPROOF VOICE CONNECTION ---
-async def get_healthy_vc(guild: discord.Guild, channel: discord.VoiceChannel):
-    """
-    Safely retrieves a VoiceClient. Reconnects gracefully without hacking Pycord internals
-    to completely avoid the '_MissingSentinel' polling crash.
-    """
-    vc = guild.voice_client
-    if vc:
-        is_healthy = True
-        if not vc.is_connected():
-            is_healthy = False
-        elif hasattr(vc, 'ws') and vc.ws:
-            if getattr(vc.ws, 'open', False) == False:
-                is_healthy = False
-
-        if not is_healthy:
-            print(f"[Voice] Stale socket detected in {guild.id}. Reconnecting cleanly...")
-            # force=False allows the background polling task to shut down gracefully
-            try: await vc.disconnect(force=False)
-            except: pass
-            
-            # Give background tasks 1 second to clear out the disconnected socket properly
-            await asyncio.sleep(1.0)
-            
-            try:
-                vc = await channel.connect(timeout=10, reconnect=True)
-            except Exception as e:
-                print(f"[Voice] Reconnect failed: {e}")
-                return None
-        elif vc.channel.id != channel.id:
-            await vc.move_to(channel)
-    else:
-        try:
-            vc = await channel.connect(timeout=10, reconnect=True)
-        except Exception as e:
-            print(f"[Voice] Initial connect failed: {e}")
-            return None
-            
-    return vc
-
-async def ensure_voice_simple(ctx):
-    user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
-    if not user.voice or not user.voice.channel:
-        await safe_reply(ctx, "❌ Join a VC first!", ephemeral=True)
-        return None
-    return await get_healthy_vc(ctx.guild, user.voice.channel)
 
 def safe_avatar_url(member):
     try: return member.display_avatar.url
@@ -615,18 +570,32 @@ async def play_track(url, title, gid, channel):
         guild = bot.get_guild(gid)
         if not guild or not channel: return
         
-        # Stream processing
         player = await YTDLSource.from_url(url, loop=bot.loop, stream=True)
         
-        # Ensure connection precisely before playback
-        vc = await get_healthy_vc(guild, channel)
-        if not vc: return
+        # Verify connection before playing
+        vc = guild.voice_client
+        if not vc or not vc.is_connected():
+            if vc:
+                try: await vc.disconnect(force=True)
+                except: pass
+            vc = await channel.connect(timeout=10, reconnect=True)
 
         def _play_after(error):
             if error: print(f"Audio Playback Error: {error}")
             check_queue(gid, channel)
 
-        vc.play(player, after=_play_after)
+        # Intuitive Safety Net
+        try:
+            vc.play(player, after=_play_after)
+        except discord.ClientException as play_error:
+            if "Not connected to voice" in str(play_error):
+                print("[Music] Socket dropped before play. Applying safety net reconnect...")
+                try: await vc.disconnect(force=True)
+                except: pass
+                vc = await channel.connect(timeout=10, reconnect=True)
+                vc.play(player, after=_play_after)
+            else:
+                raise play_error
 
     except Exception as e:
         print(f"[Music] Playback Error: {e}")
@@ -656,7 +625,6 @@ class MusicSelect(Select):
         user_channel = interaction.user.voice.channel if interaction.user.voice else None
         if not user_channel: return await self.ctx.send("❌ Join a Voice Channel first.")
 
-        # Inspect current state dynamically
         vc = self.ctx.guild.voice_client
         if vc and vc.is_playing():
             if gid not in bot.audio_queues: bot.audio_queues[gid] = deque()
@@ -1566,10 +1534,6 @@ def _process_tts(text_val: str, lang_val: str):
     try: 
         tts = gTTS(text=final_text, lang=lang_val)
         tts.save(path)
-        # CRITICAL FIX: If gTTS failed to connect to Google, it creates a 0-byte file.
-        # Playing a 0-byte file causes FFmpeg to exit instantly in silence.
-        if os.path.getsize(path) == 0:
-            raise Exception("gTTS returned an empty audio file. (Possible API block).")
     except Exception as e: 
         raise Exception(f"TTS Engine Error: {e}")
         
@@ -1587,12 +1551,18 @@ async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, defa
     lang_code = LANG_CODES.get(language, 'en')
 
     try:
-        # Generate the audio file FIRST
+        # 1. Generate the audio file FIRST
         text_to_speak, filepath = await bot.loop.run_in_executor(None, _process_tts, text, lang_code)
 
-        # Confirm connection perfectly right before playing
-        vc = await get_healthy_vc(ctx.guild, channel)
-        if not vc: return await safe_reply(ctx, "❌ Could not establish a stable voice connection.", ephemeral=True)
+        # 2. Get standard Py-Cord connection
+        vc = ctx.guild.voice_client
+        if not vc or not vc.is_connected():
+            if vc:
+                try: await vc.disconnect(force=True)
+                except: pass
+            vc = await channel.connect(timeout=10, reconnect=True)
+        elif vc.channel.id != channel.id:
+            await vc.move_to(channel)
 
         if vc.is_playing():
             return await safe_reply(ctx, "❌ Audio is already playing. Stop it first.", ephemeral=True)
@@ -1603,7 +1573,20 @@ async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, defa
                 if os.path.exists(filepath): os.remove(filepath)
             except: pass
 
-        vc.play(discord.FFmpegPCMAudio(filepath), after=_after_play)
+        # 3. Super Intuitive Playback Catch
+        try:
+            vc.play(discord.FFmpegPCMAudio(filepath), after=_after_play)
+        except discord.ClientException as play_err:
+            if "Not connected to voice" in str(play_err):
+                # The connection silently dropped in the background. Reconnect smoothly.
+                print("[Speak] Catching Py-cord Zombie Connection. Forcing Reconnect...")
+                try: await vc.disconnect(force=True)
+                except: pass
+                vc = await channel.connect(timeout=10, reconnect=True)
+                vc.play(discord.FFmpegPCMAudio(filepath), after=_after_play)
+            else:
+                raise play_err
+
         await safe_reply(ctx, f"🗣️ **{language}:** {text_to_speak}", ephemeral=True)
 
         log_ch = bot.get_channel(SPEAK_LOG_THREAD_ID)
@@ -1674,6 +1657,14 @@ async def play(ctx, search: str):
     if not info or 'entries' not in info or not info['entries']:
         return await safe_reply(ctx, "❌ No results found.", ephemeral=True)
         
+    # Standard connection before showing UI
+    vc = ctx.guild.voice_client
+    if not vc or not vc.is_connected():
+        if vc:
+            try: await vc.disconnect(force=True)
+            except: pass
+        vc = await channel.connect(timeout=10, reconnect=True)
+        
     view = MusicSelectionView(info['entries'], ctx)
     await safe_reply(ctx, "🔎 **Select a track:**", view=view)
 
@@ -1703,11 +1694,17 @@ async def join(ctx):
     if not channel:
         return await safe_reply(ctx, "❌ Join a VC first!", ephemeral=True)
         
-    vc = await get_healthy_vc(ctx.guild, channel)
-    if vc:
+    vc = ctx.guild.voice_client
+    if not vc or not vc.is_connected():
+        if vc:
+            try: await vc.disconnect(force=True)
+            except: pass
+        vc = await channel.connect(timeout=10, reconnect=True)
         await safe_reply(ctx, "✅ Joined.")
     else:
-        await safe_reply(ctx, "❌ Failed to connect to Voice.", ephemeral=True)
+        if vc.channel.id != channel.id:
+            await vc.move_to(channel)
+        await safe_reply(ctx, "✅ Joined.")
 
 # --- RUN ---
 if __name__ == "__main__":
