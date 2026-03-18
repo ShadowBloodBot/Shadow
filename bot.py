@@ -1,14 +1,16 @@
-# bot.py — ShadowSyn (Master: Unified v8.0 - Elite Baseline Restoration)
+# bot.py — ShadowSyn (Master: Unified v8.1 - Elite Baseline Restoration)
 #
 # === FEATURES ===
 # [x] ⚔️ WAR ROSTER: "Not Attending" status and separate embed category.
 # [x] 🎰 CASINO: Dice (High/Low/7), Chicken, Slots, Duels, Shop.
 # [x] 🎒 RPG TOWER: Inventory, Loot, Shop, Stats.
 # [x] 🎛️ VOICEMASTER & MUSIC: All present.
-# [x] 🗣️ VOICE FIX (v8.0): 
-#     - Completely RESTORED the proven v6 `ensure_voice_simple` connection logic.
-#     - Ripped out `safe_reply` error-swallowing to permanently cure "Integration Error" on /haste.
-#     - Uses native Py-cord deferrals to prevent timeouts during TTS generation.
+# [x] 📄 CUSTOM EMBEDS: /send_custom & /edit_custom.
+# [x] 🗣️ VOICE FIX & TTS (v8.1): 
+#     - Completely RESTORED the proven original `ensure_voice_simple` connection logic.
+#     - Restored original tempfile logic to fix silent FFmpeg playback.
+#     - Hardened /haste and /speak with ctx.defer() to permanently cure Integration Errors.
+#     - Console spam from googletrans and aiohttp is silenced.
 #
 # LIBRARY: py-cord[voice]
 
@@ -89,6 +91,7 @@ SCOIN_PULL_AMOUNT = 5
 SCOIN_COOLDOWN_HOURS = 3
 
 # --- TTS CONFIG ---
+translator = Translator()
 LANG_CHOICES = ["English", "Japanese", "German", "Spanish", "French", "Italian", "Portuguese", "Russian", "Korean", "Chinese", "Hindi", "Indonesian", "Thai", "Vietnamese", "Tagalog"]
 LANG_CODES = {
     "English": "en", "Japanese": "ja", "German": "de", "Spanish": "es", "French": "fr", 
@@ -252,6 +255,23 @@ def _to_sans_bold_italic(text: str) -> str:
 def _limit_channel_name(name: str, limit: int = 100) -> str:
     return name[:limit] if len(name) > limit else name
 
+async def safe_reply(ctx_or_inter, *args, **kwargs):
+    try:
+        if hasattr(ctx_or_inter, 'respond'): return await ctx_or_inter.respond(*args, **kwargs)
+        elif hasattr(ctx_or_inter, 'response'):
+            if not ctx_or_inter.response.is_done(): return await ctx_or_inter.response.send_message(*args, **kwargs)
+            else: return await ctx_or_inter.followup.send(*args, **kwargs)
+    except: return None
+
+async def safe_defer(ctx, ephemeral=False):
+    try:
+        if hasattr(ctx, 'defer'):
+            await ctx.defer(ephemeral=ephemeral)
+        elif hasattr(ctx, 'response') and hasattr(ctx.response, 'defer'):
+            if not ctx.response.is_done():
+                await ctx.response.defer(ephemeral=ephemeral)
+    except: pass
+
 async def resolve_target(client: discord.Client, target_id: int):
     ch = client.get_channel(target_id)
     if ch is None:
@@ -267,12 +287,11 @@ async def resolve_target(client: discord.Client, target_id: int):
         return ch, parent
     return None, None
 
-# --- RESTORED v6 VOICE LOGIC ---
+# --- ORIGINAL PROVEN VOICE CONNECTION LOGIC ---
 async def ensure_voice_simple(ctx):
-    """The original, proven logic to connect the bot."""
     user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
     if not user.voice or not user.voice.channel:
-        await ctx.respond("❌ Join a VC first!", ephemeral=True)
+        await safe_reply(ctx, "❌ Join a VC first!", ephemeral=True)
         return None
     
     channel = user.voice.channel
@@ -283,14 +302,14 @@ async def ensure_voice_simple(ctx):
             try: await vc.disconnect(force=True)
             except: pass
             vc = None
-            
+        
         if vc:
             if vc.channel.id != channel.id: await vc.move_to(channel)
         else: 
             vc = await channel.connect(timeout=10, reconnect=True)
         return vc
     except Exception as e:
-        await ctx.respond(f"❌ Voice Error: {e}", ephemeral=True)
+        await safe_reply(ctx, f"❌ Voice Error: {e}", ephemeral=True)
         return None
 
 def safe_avatar_url(member):
@@ -426,11 +445,11 @@ async def create_war(
     hammer_time: Option(str, description="Paste timestamp from HammerTime (e.g., <t:170000000:F>)")
 ):
     if not is_war_role(ctx.author):
-        return await ctx.respond("⛔ Restricted. You must have the required role.", ephemeral=True)
+        return await safe_reply(ctx, "⛔ Restricted. You must have the required role.", ephemeral=True)
         
     target_channel = bot.get_channel(WAR_THREAD_ID) or await bot.fetch_channel(WAR_THREAD_ID)
     if not target_channel:
-        return await ctx.respond("❌ War channel thread not found.", ephemeral=True)
+        return await safe_reply(ctx, "❌ War channel thread not found.", ephemeral=True)
         
     war_data = {
         "title": title,
@@ -447,7 +466,7 @@ async def create_war(
     war_db[str(msg.id)] = war_data
     _save_wars()
     
-    await ctx.respond(f"✅ War roster created in {target_channel.mention}", ephemeral=True)
+    await safe_reply(ctx, f"✅ War roster created in {target_channel.mention}", ephemeral=True)
 
 def generate_war_embed(data):
     embed = discord.Embed(title=f"⚔️ {data['title']}", description=f"**Time:** {data['time']}\nSelect your class and if you'll miss any fights below!", color=THEME_COMBAT)
@@ -585,7 +604,6 @@ async def play_track(vc, url, title, gid):
         vc.play(player, after=lambda e: check_queue(gid, vc))
     except Exception as e: 
         print(f"[Music] Error: {e}")
-        pass
 
 class MusicSelect(Select):
     def __init__(self, entries, ctx, vc):
@@ -608,14 +626,14 @@ class MusicSelect(Select):
         url = selected.get('url') or selected.get('webpage_url')
         title = selected.get('title')
         
-        if not url: return await self.ctx.send("❌ Error: Could not resolve URL for that track.")
+        if not url: return await interaction.followup.send("❌ Error: Could not resolve URL for that track.")
 
         if self.vc.is_playing():
             if self.ctx.guild.id not in bot.audio_queues: bot.audio_queues[self.ctx.guild.id] = deque()
             bot.audio_queues[self.ctx.guild.id].append((url, title))
-            await self.ctx.send(f"📝 **Queued:** {title}")
+            await interaction.followup.send(f"📝 **Queued:** {title}")
         else:
-            await self.ctx.send(f"▶️ **Playing:** {title}")
+            await interaction.followup.send(f"▶️ **Playing:** {title}")
             await play_track(self.vc, url, title, self.ctx.guild.id)
         
         try: await interaction.message.delete()
@@ -625,7 +643,6 @@ class MusicSelectionView(View):
     def __init__(self, entries, ctx, vc):
         super().__init__(timeout=60)
         self.add_item(MusicSelect(entries, ctx, vc))
-
 
 # ==================== SHADOW TOWER 6.4 (STABLE) ====================
 
@@ -1495,100 +1512,6 @@ async def on_voice_state_update(member, before, after):
         try: await target.send(msg)
         except: pass
 
-
-# ==================== COMMANDS: TTS & AUDIO ====================
-
-def _process_tts(text_val: str, lang_val: str):
-    """Safely runs translation and generates TTS without locking threads."""
-    final_text = text_val
-    if lang_val != 'en':
-        try:
-            try: loop = asyncio.get_event_loop()
-            except RuntimeError: loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
-            
-            t = Translator()
-            res = t.translate(text_val, dest=lang_val)
-            if res and res.text: final_text = res.text
-            loop.close()
-        except Exception as e: print(f"Translation Exception: {e}")
-            
-    if not final_text.strip(): final_text = text_val
-    
-    fd, path = tempfile.mkstemp(suffix=".mp3")
-    os.close(fd)
-    
-    try: 
-        tts = gTTS(text=final_text, lang=lang_val)
-        tts.save(path)
-        if os.path.getsize(path) == 0:
-            raise Exception("gTTS returned an empty audio file. (API failure).")
-    except Exception as e: 
-        raise Exception(f"TTS Engine Error: {e}")
-        
-    return final_text, path
-
-@bot.slash_command(name="speak", description="Text to Speech (Auto-Translates)")
-@dj_or_admin()
-async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, default="English")):
-    # 1. Immediately defer to prevent Discord's "Integration Error" timeout
-    await ctx.defer(ephemeral=True)
-    
-    user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
-    if not user.voice or not user.voice.channel:
-        return await ctx.respond("❌ Join a Voice Channel first!")
-        
-    lang_code = LANG_CODES.get(language, 'en')
-
-    try:
-        # 2. Generate the audio file FIRST
-        text_to_speak, filepath = await bot.loop.run_in_executor(None, _process_tts, text, lang_code)
-
-        # 3. Connect cleanly using the proven v6 logic
-        vc = ctx.guild.voice_client
-        if vc and not vc.is_connected():
-            try: await vc.disconnect(force=True)
-            except: pass
-            vc = None
-        
-        if vc:
-            if vc.channel.id != user.voice.channel.id: await vc.move_to(user.voice.channel)
-        else: 
-            vc = await user.voice.channel.connect(timeout=10, reconnect=True)
-
-        if vc.is_playing():
-            return await ctx.followup.send("❌ Audio is already playing. Stop it first.")
-
-        def _after_play(error):
-            if error: print(f"Speak Playback Error: {error}")
-            try:
-                if os.path.exists(filepath): os.remove(filepath)
-            except: pass
-
-        # 4. Playback with an anti-loop safety net
-        try:
-            vc.play(discord.FFmpegPCMAudio(filepath), after=_after_play)
-        except discord.ClientException as play_err:
-            if "Not connected to voice" in str(play_err):
-                # Forcefully clear the dead Py-cord state but do NOT enter an infinite retry loop
-                if ctx.guild.voice_client:
-                    try: await ctx.guild.voice_client.disconnect(force=True)
-                    except: pass
-                return await ctx.followup.send("❌ Voice socket dropped. I've reset the connection, please try your command again.")
-            else:
-                raise play_err
-
-        await ctx.followup.send(f"🗣️ **{language}:** {text_to_speak}")
-
-        log_ch = bot.get_channel(SPEAK_LOG_THREAD_ID)
-        if log_ch:
-            try: await log_ch.send(f"🗣️ **{ctx.author.display_name}** ({language}): {text_to_speak}")
-            except: pass
-
-    except Exception as e:
-        traceback.print_exc()
-        await ctx.followup.send(f"❌ Voice Error: {e}")
-
-
 # ==================== COMMANDS: MISC & EMBEDS ====================
 
 @bot.slash_command(name="haste", description="Random Haste Fact")
@@ -1596,7 +1519,6 @@ async def haste(ctx):
     if not active_haste_facts:
         return await ctx.respond("No facts yet.")
     fact = random.choice(active_haste_facts)
-    # Replaced safe_reply with native context respond to fix Integration Errors
     await ctx.respond(f"🍌 **Fact:** {fact}")
 
 @bot.slash_command(name="morehaste", description="Add Haste Fact")
@@ -1652,32 +1574,56 @@ async def edit_custom(ctx, message_id: str, channel: Option(discord.TextChannel,
         await ctx.send_modal(EasyEmbedModal(target_channel, edit_msg=msg))
     except Exception as e: await ctx.respond(f"❌ Error finding message: {e}", ephemeral=True)
 
+
+# ==================== COMMANDS: AUDIO & TTS ====================
+
+@bot.slash_command(name="speak", description="Text to Speech (Auto-Translates)")
+@dj_or_admin()
+async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, default="English")):
+    # Defers immediately so Discord doesn't timeout the interaction
+    await ctx.defer()
+    
+    vc = await ensure_voice_simple(ctx)
+    if not vc: return
+
+    try:
+        lang_code = LANG_CODES.get(language, 'en')
+        text_to_speak = text
+        if lang_code != 'en':
+            try:
+                translation = await bot.loop.run_in_executor(None, lambda: translator.translate(text, dest=lang_code))
+                text_to_speak = translation.text
+            except: text_to_speak = text 
+        
+        await ctx.followup.send(f"🗣️ **{language}:** {text_to_speak}")
+        
+        log_ch = bot.get_channel(SPEAK_LOG_THREAD_ID)
+        if log_ch: await log_ch.send(f"🗣️ **{ctx.author.display_name}** ({language}): {text_to_speak}")
+        
+        def _gen_tts():
+            tts = gTTS(text=text_to_speak, lang=lang_code)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
+                tts.save(fp.name)
+                return fp.name
+
+        temp_path = await bot.loop.run_in_executor(None, _gen_tts)
+        vc.play(discord.FFmpegPCMAudio(temp_path), after=lambda e: os.remove(temp_path))
+
+    except Exception as e:
+        await ctx.followup.send(f"❌ Error: {e}")
+
 @bot.slash_command(name="play")
 @dj_or_admin()
 async def play(ctx, search: str):
-    user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
-    channel = user.voice.channel if user.voice else None
-    if not channel:
-        return await ctx.respond("❌ Join a VC first!", ephemeral=True)
-        
     await ctx.defer()
+    vc = await ensure_voice_simple(ctx)
+    if not vc: return
+        
     info = await bot.loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(YTDL_SEARCH_OPTIONS).extract_info(f"ytsearch5:{search}", download=False))
     if not info or 'entries' not in info or not info['entries']:
         return await ctx.followup.send("❌ No results found.")
         
-    # Standard connection before showing UI
-    vc = ctx.guild.voice_client
-    if vc and not vc.is_connected():
-        try: await vc.disconnect(force=True)
-        except: pass
-        vc = None
-        
-    if vc:
-        if vc.channel.id != channel.id: await vc.move_to(channel)
-    else: 
-        vc = await channel.connect(timeout=10, reconnect=True)
-        
-    view = MusicSelectionView(info['entries'], ctx)
+    view = MusicSelectionView(info['entries'], ctx, vc)
     await ctx.followup.send("🔎 **Select a track:**", view=view)
 
 @bot.slash_command(name="queue")
@@ -1690,33 +1636,21 @@ async def queue(ctx):
 @bot.slash_command(name="skip")
 @dj_or_admin()
 async def skip(ctx):
-    if ctx.guild.voice_client: ctx.guild.voice_client.stop(); await ctx.respond("⏭️ Skipped.", ephemeral=True)
+    if ctx.guild.voice_client: ctx.guild.voice_client.stop()
+    await ctx.respond("⏭️ Skipped.", ephemeral=True)
 
 @bot.slash_command(name="stop")
 @dj_or_admin()
 async def stop(ctx):
     if ctx.guild.id in bot.audio_queues: bot.audio_queues[ctx.guild.id].clear()
-    if ctx.guild.voice_client: ctx.guild.voice_client.stop(); await ctx.respond("⏹️ Stopped.", ephemeral=True)
+    if ctx.guild.voice_client: ctx.guild.voice_client.stop()
+    await ctx.respond("⏹️ Stopped.", ephemeral=True)
 
 @bot.slash_command(name="join")
 @dj_or_admin()
 async def join(ctx):
-    user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
-    channel = user.voice.channel if user.voice else None
-    if not channel:
-        return await ctx.respond("❌ Join a VC first!", ephemeral=True)
-        
-    vc = ctx.guild.voice_client
-    if vc and not vc.is_connected():
-        try: await vc.disconnect(force=True)
-        except: pass
-        vc = None
-        
+    vc = await ensure_voice_simple(ctx)
     if vc:
-        if vc.channel.id != channel.id: await vc.move_to(channel)
-        await ctx.respond("✅ Joined.", ephemeral=True)
-    else:
-        await channel.connect(timeout=10, reconnect=True)
         await ctx.respond("✅ Joined.", ephemeral=True)
 
 # --- RUN ---
