@@ -1,4 +1,4 @@
-# bot.py — ShadowSyn (Master: Unified v8.1 - Elite Baseline Restoration)
+# bot.py — ShadowSyn (Master: Unified v8.3 - Elite Baseline Restoration + Owner Bypass)
 #
 # === FEATURES ===
 # [x] ⚔️ WAR ROSTER: "Not Attending" status and separate embed category.
@@ -11,6 +11,10 @@
 #     - Restored original tempfile logic to fix silent FFmpeg playback.
 #     - Hardened /haste and /speak with ctx.defer() to permanently cure Integration Errors.
 #     - Console spam from googletrans and aiohttp is silenced.
+# [x] 🔒 VC LOCK FIX & BYPASS (v8.3):
+#     - Fixed issue where users could bypass VC locks if they had category-level "Member" roles.
+#     - Locking now explicitly blocks category role overrides and whitelists current members.
+#     - Explicit bypass hardcoded for master owners during role restrictions and general locks.
 #
 # LIBRARY: py-cord[voice]
 
@@ -77,6 +81,7 @@ CASINO_CHANNEL_ID       = 1468766727134249091
 ROLE_ADMIN_ID           = 1214794734770323466 
 ROLE_DJ_ID              = 955600320287887400
 OWNER_ID                = 482463400929263627
+MASTER_OWNERS           = [132451058961219584, 482463400929263627]
 GAMBLER_ROLE_ID         = 955600320287887400  
 
 # --- VOICEMASTER ---
@@ -1293,11 +1298,16 @@ class RoleRestrictSelect(Select):
         roles = sorted([r for r in vc.guild.roles if r != vc.guild.default_role and not r.managed], key=lambda r: r.position, reverse=True)[:24]
         for r in roles: options.append(SelectOption(label=(r.name or "Role")[:100], value=str(r.id)))
         super().__init__(placeholder="Restrict VC...", options=options, min_values=1, max_values=1, custom_id="restrict_role_select")
+        
     async def callback(self, interaction: Interaction):
         if interaction.user.id != self.creator.id: return await interaction.response.send_message("🚫 Only creator.", ephemeral=True)
         try:
             if self.values[0] == "everyone":
-                await self.vc.set_permissions(interaction.guild.default_role, connect=True)
+                await self.vc.set_permissions(interaction.guild.default_role, connect=None)
+                if self.vc.category:
+                    for target, overwrite in self.vc.category.overwrites.items():
+                        if isinstance(target, discord.Role) and target != interaction.guild.default_role:
+                            await self.vc.set_permissions(target, connect=None)
                 await interaction.response.send_message("✅ Restriction cleared.", ephemeral=True)
             else:
                 role = interaction.guild.get_role(int(self.values[0]))
@@ -1305,6 +1315,19 @@ class RoleRestrictSelect(Select):
                     await self.vc.set_permissions(interaction.guild.default_role, connect=False)
                     await self.vc.set_permissions(role, connect=True)
                     await self.vc.set_permissions(self.creator, connect=True)
+                    
+                    # Grant explicit bypass to master owners
+                    for oid in MASTER_OWNERS:
+                        owner = interaction.guild.get_member(oid)
+                        if owner:
+                            await self.vc.set_permissions(owner, connect=True)
+                    
+                    # Deny category roles from bypassing this specific role lock
+                    if self.vc.category:
+                        for target, overwrite in self.vc.category.overwrites.items():
+                            if isinstance(target, discord.Role) and target != interaction.guild.default_role and target.id != role.id:
+                                if not target.permissions.administrator:
+                                    await self.vc.set_permissions(target, connect=False)
                     await interaction.response.send_message(f"🔐 Restricted to {role.name}.", ephemeral=True)
         except: await interaction.response.send_message("❌ Failed.", ephemeral=True)
 
@@ -1314,37 +1337,76 @@ class VCControlPanel(View):
         self.vc = vc; self.creator = creator
         try: self.add_item(RoleRestrictSelect(vc, creator))
         except: pass
+        
     async def _check(self, i):
         if i.user.id == self.creator.id: return True
         if i.data.get("custom_id") == "delete_vc" and any(r.name == ADMIN_ROLE_NAME or r.id == ROLE_ADMIN_ID for r in i.user.roles): return True
         await i.response.send_message("🚫 Only creator.", ephemeral=True); return False
+        
     @discord.ui.button(label="🔒 Lock", style=ButtonStyle.danger, custom_id="lock_vc")
     async def lock(self, button, i):
         if not await self._check(i): return
-        await self.vc.set_permissions(i.guild.default_role, connect=False); await i.response.send_message("🔒 Locked.", ephemeral=True)
+        
+        # Whitelist current members so they don't get accidentally locked out
+        for m in self.vc.members:
+            await self.vc.set_permissions(m, connect=True)
+            
+        # Explicitly whitelist Master Owners so they bypass the lock
+        for oid in MASTER_OWNERS:
+            owner = i.guild.get_member(oid)
+            if owner and owner not in self.vc.members:
+                await self.vc.set_permissions(owner, connect=True)
+            
+        # Deny @everyone
+        await self.vc.set_permissions(i.guild.default_role, connect=False)
+        
+        # Fix: Deny category-level role overrides (prevents "Member" roles from bypassing lock)
+        if self.vc.category:
+            for target, overwrite in self.vc.category.overwrites.items():
+                if isinstance(target, discord.Role) and target != i.guild.default_role:
+                    if not target.permissions.administrator:
+                        await self.vc.set_permissions(target, connect=False)
+                        
+        await i.response.send_message("🔒 Locked securely.", ephemeral=True)
+        
     @discord.ui.button(label="🔓 Unlock", style=ButtonStyle.success, custom_id="unlock_vc")
     async def unlock(self, button, i):
         if not await self._check(i): return
-        await self.vc.set_permissions(i.guild.default_role, connect=True); await i.response.send_message("🔓 Unlocked.", ephemeral=True)
+        
+        # Reset default role to category inherit
+        await self.vc.set_permissions(i.guild.default_role, connect=None)
+        
+        # Clear any role overwrites added by the lock
+        if self.vc.category:
+            for target, overwrite in self.vc.category.overwrites.items():
+                if isinstance(target, discord.Role) and target != i.guild.default_role:
+                    await self.vc.set_permissions(target, connect=None)
+                    
+        await i.response.send_message("🔓 Unlocked.", ephemeral=True)
+        
     @discord.ui.button(label="❌ Delete", style=ButtonStyle.red, custom_id="delete_vc")
     async def delete(self, button, i):
         if not await self._check(i): return
         await self.vc.delete(); await i.response.send_message("🗑️ Deleted.", ephemeral=True)
+        
     @discord.ui.button(label="✏️ Rename", style=ButtonStyle.blurple, custom_id="rename_vc")
     async def rename(self, button, i):
         if not await self._check(i): return
         await i.response.send_modal(VCNameModal(self.vc))
+        
     @discord.ui.button(label="👢 Kick", style=ButtonStyle.gray, custom_id="kick_members")
     async def kick(self, button, i):
         if not await self._check(i): return
         m = [m for m in self.vc.members if m != i.guild.me]
         if not m: return await i.response.send_message("⚠️ No one to kick.", ephemeral=True)
         await i.response.send_message("Select:", view=KickMemberView(self.vc, m), ephemeral=True)
+        
     @discord.ui.select(placeholder="Bitrate", options=[SelectOption(label="64k", value="64000"), SelectOption(label="384k", value="384000")], custom_id="bitrate_select")
     async def bitrate(self, select, i):
         if not await self._check(i): return
         try: await self.vc.edit(bitrate=int(select.values[0])); await i.response.send_message(f"📶 Set.", ephemeral=True)
         except: await i.response.send_message("❌ Failed.", ephemeral=True)
+        
     @discord.ui.select(placeholder="Limit", options=[SelectOption(label="Unl", value="0"), SelectOption(label="5", value="5"), SelectOption(label="10", value="10")], custom_id="limit_select")
     async def limit(self, select, i):
         if not await self._check(i): return
