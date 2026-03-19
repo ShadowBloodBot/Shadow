@@ -1,4 +1,4 @@
-# bot.py — ShadowSyn (Master: Unified v8.3 - Elite Baseline Restoration + Owner Bypass)
+# bot.py — ShadowSyn (Master: Unified v8.4 - Elite Baseline Restoration + Owner VC Bypass + TTS Rewrite)
 #
 # === FEATURES ===
 # [x] ⚔️ WAR ROSTER: "Not Attending" status and separate embed category.
@@ -6,15 +6,12 @@
 # [x] 🎒 RPG TOWER: Inventory, Loot, Shop, Stats.
 # [x] 🎛️ VOICEMASTER & MUSIC: All present.
 # [x] 📄 CUSTOM EMBEDS: /send_custom & /edit_custom.
-# [x] 🗣️ VOICE FIX & TTS (v8.1): 
-#     - Completely RESTORED the proven original `ensure_voice_simple` connection logic.
-#     - Restored original tempfile logic to fix silent FFmpeg playback.
-#     - Hardened /haste and /speak with ctx.defer() to permanently cure Integration Errors.
-#     - Console spam from googletrans and aiohttp is silenced.
-# [x] 🔒 VC LOCK FIX & BYPASS (v8.3):
-#     - Fixed issue where users could bypass VC locks if they had category-level "Member" roles.
-#     - Locking now explicitly blocks category role overrides and whitelists current members.
-#     - Explicit bypass hardcoded for master owners during role restrictions and general locks.
+# [x] 🔒 VC LOCK FIX & BYPASS (v8.3/v8.4):
+#     - Locking safely denies "Member" role category overrides.
+#     - ONLY whitelist: current active members and the 2 Master Owners (132451058961219584 & 482463400929263627).
+# [x] 🗣️ TTS REWRITE (v8.4): 
+#     - Completely rewritten `/speak` logic from the ground up to prevent silent failures.
+#     - Fixes translation fallbacks, prevents music queue overlap crashes, and cures file locking errors.
 #
 # LIBRARY: py-cord[voice]
 
@@ -1367,7 +1364,7 @@ class VCControlPanel(View):
                     if not target.permissions.administrator:
                         await self.vc.set_permissions(target, connect=False)
                         
-        await i.response.send_message("🔒 Locked securely.", ephemeral=True)
+        await i.response.send_message("🔒 Locked securely. (Owners bypass active)", ephemeral=True)
         
     @discord.ui.button(label="🔓 Unlock", style=ButtonStyle.success, custom_id="unlock_vc")
     async def unlock(self, button, i):
@@ -1642,7 +1639,6 @@ async def edit_custom(ctx, message_id: str, channel: Option(discord.TextChannel,
 @bot.slash_command(name="speak", description="Text to Speech (Auto-Translates)")
 @dj_or_admin()
 async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, default="English")):
-    # Defers immediately so Discord doesn't timeout the interaction
     await ctx.defer()
     
     vc = await ensure_voice_simple(ctx)
@@ -1651,28 +1647,55 @@ async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, defa
     try:
         lang_code = LANG_CODES.get(language, 'en')
         text_to_speak = text
+        
+        # 1. Translate securely without stalling the bot
         if lang_code != 'en':
             try:
                 translation = await bot.loop.run_in_executor(None, lambda: translator.translate(text, dest=lang_code))
                 text_to_speak = translation.text
-            except: text_to_speak = text 
+            except Exception as e:
+                print(f"[TTS] Translation Error: {e}")
+                text_to_speak = text 
         
         await ctx.followup.send(f"🗣️ **{language}:** {text_to_speak}")
         
         log_ch = bot.get_channel(SPEAK_LOG_THREAD_ID)
-        if log_ch: await log_ch.send(f"🗣️ **{ctx.author.display_name}** ({language}): {text_to_speak}")
+        if log_ch: 
+            try: await log_ch.send(f"🗣️ **{ctx.author.display_name}** ({language}): {text_to_speak}")
+            except: pass
         
-        def _gen_tts():
-            tts = gTTS(text=text_to_speak, lang=lang_code)
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
-                tts.save(fp.name)
-                return fp.name
+        # 2. Use a safe unique file path to prevent locking overlap errors
+        tts_dir = Path(tempfile.gettempdir()) / "shadowsyn_tts"
+        tts_dir.mkdir(exist_ok=True, parents=True)
+        temp_path = str(tts_dir / f"tts_{uuid.uuid4().hex}.mp3")
 
-        temp_path = await bot.loop.run_in_executor(None, _gen_tts)
-        vc.play(discord.FFmpegPCMAudio(temp_path), after=lambda e: os.remove(temp_path))
+        def _gen_tts():
+            tts = gTTS(text=text_to_speak, lang=lang_code, slow=False)
+            tts.save(temp_path)
+
+        await bot.loop.run_in_executor(None, _gen_tts)
+
+        # 3. Stop existing audio SAFELY so music queues don't cause ClientExceptions
+        if vc.is_playing():
+            vc.stop()
+            await asyncio.sleep(0.5) # Wait for the queue's 'after' callback to possibly fire
+            if vc.is_playing(): 
+                vc.stop() # Force stop again if the music queue started the next track
+
+        # 4. Clean up safely afterward so we don't spam errors if the OS holds the lock
+        def cleanup_file(error):
+            if error: print(f"[TTS] Audio Error: {error}")
+            try:
+                if os.path.exists(temp_path): os.remove(temp_path)
+            except Exception as e: 
+                print(f"[TTS] Cleanup Warning: {e}")
+
+        # 5. Play it
+        vc.play(discord.FFmpegPCMAudio(temp_path), after=cleanup_file)
 
     except Exception as e:
-        await ctx.followup.send(f"❌ Error: {e}")
+        traceback.print_exc()
+        await ctx.followup.send(f"❌ TTS Error: {str(e)[:1900]}")
 
 @bot.slash_command(name="play")
 @dj_or_admin()
