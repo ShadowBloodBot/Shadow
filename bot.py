@@ -1344,6 +1344,9 @@ class VCControlPanel(View):
     async def lock(self, button, i):
         if not await self._check(i): return
         
+        # Immediate defer prevents the 10062 Unknown Interaction error when API rate limits are hit
+        await i.response.defer(ephemeral=True)
+        
         # Whitelist current members so they don't get accidentally locked out
         for m in self.vc.members:
             await self.vc.set_permissions(m, connect=True)
@@ -1364,11 +1367,14 @@ class VCControlPanel(View):
                     if not target.permissions.administrator:
                         await self.vc.set_permissions(target, connect=False)
                         
-        await i.response.send_message("🔒 Locked securely. (Owners bypass active)", ephemeral=True)
+        await i.followup.send("🔒 Locked securely. (Owners bypass active)", ephemeral=True)
         
     @discord.ui.button(label="🔓 Unlock", style=ButtonStyle.success, custom_id="unlock_vc")
     async def unlock(self, button, i):
         if not await self._check(i): return
+        
+        # Immediate defer to prevent timeout errors
+        await i.response.defer(ephemeral=True)
         
         # Reset default role to category inherit
         await self.vc.set_permissions(i.guild.default_role, connect=None)
@@ -1379,7 +1385,7 @@ class VCControlPanel(View):
                 if isinstance(target, discord.Role) and target != i.guild.default_role:
                     await self.vc.set_permissions(target, connect=None)
                     
-        await i.response.send_message("🔓 Unlocked.", ephemeral=True)
+        await i.followup.send("🔓 Unlocked.", ephemeral=True)
         
     @discord.ui.button(label="❌ Delete", style=ButtonStyle.red, custom_id="delete_vc")
     async def delete(self, button, i):
@@ -1690,8 +1696,12 @@ async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, defa
             except Exception as e: 
                 print(f"[TTS] Cleanup Warning: {e}")
 
-        # 5. Play it
-        vc.play(discord.FFmpegPCMAudio(temp_path), after=cleanup_file)
+        # 5. Play it - Verifying connection first to solve the ClientException error 
+        if vc.is_connected():
+            vc.play(discord.FFmpegPCMAudio(temp_path), after=cleanup_file)
+        else:
+            cleanup_file(None)
+            await ctx.followup.send("❌ Voice Error: Disconnected from voice channel before speaking.")
 
     except Exception as e:
         traceback.print_exc()
