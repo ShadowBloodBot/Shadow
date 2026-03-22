@@ -1,7 +1,7 @@
 # bot.py — ShadowSyn (Master: Unified v8.4 - Elite Baseline Restoration + Owner VC Bypass + TTS Rewrite)
 #
 # === FEATURES ===
-# [x] ⚔️ WAR ROSTER: "Not Attending" status and separate embed category.
+# [x] ⚔️ WAR ROSTER: "Not Attending" status, separate embed category, and AP/DP/MDP stat tracking.
 # [x] 🎰 CASINO: Dice (High/Low/7), Chicken, Slots, Duels, Shop.
 # [x] 🎒 RPG TOWER: Inventory, Loot, Shop, Stats.
 # [x] 🎛️ VOICEMASTER & MUSIC: All present.
@@ -475,6 +475,7 @@ def generate_war_embed(data):
     class_counts = {c[0]: [] for c in QUINFALL_CLASSES}
     
     for uid, info in data.get("roster", {}).items():
+        stats_str = ""
         if isinstance(info, str):
             cls = info; absences = []
         else:
@@ -483,8 +484,14 @@ def generate_war_embed(data):
             elif "fights" in info: absences = [f for f in ["1", "2", "3", "4", "5"] if f not in info["fights"]]
             else: absences = []
             
+            ap = info.get("ap")
+            dp = info.get("dp")
+            mdp = info.get("mdp")
+            if ap and dp and mdp:
+                stats_str = f" `[AP: {ap} | DP: {dp} | MDP: {mdp}]`"
+            
         fight_str = f" *(Absent Round {', '.join(sorted(absences))})*" if absences else ""
-        if cls in class_counts: class_counts[cls].append(f"<@{uid}>{fight_str}")
+        if cls in class_counts: class_counts[cls].append(f"<@{uid}>{stats_str}{fight_str}")
             
     total_confirmed = 0
     for class_name, emoji in QUINFALL_CLASSES:
@@ -500,6 +507,50 @@ def generate_war_embed(data):
     embed.set_footer(text=f"Total Confirmed: {total_confirmed} | Not Attending: {len(not_attending)}")
     return embed
 
+class WarStatsModal(Modal):
+    def __init__(self, msg_id, selected_class):
+        super().__init__(title="Enter Your Quinfall Stats")
+        self.msg_id = msg_id
+        self.selected_class = selected_class
+        
+        self.add_item(TextInput(label="AP (Attack Power)", placeholder="e.g., 250", required=True, max_length=5))
+        self.add_item(TextInput(label="DP (Defense Power)", placeholder="e.g., 300", required=True, max_length=5))
+        self.add_item(TextInput(label="MDP (Magic Defense)", placeholder="e.g., 280", required=True, max_length=5))
+
+    async def callback(self, interaction: Interaction):
+        ap = self.children[0].value
+        dp = self.children[1].value
+        mdp = self.children[2].value
+        uid = str(interaction.user.id)
+
+        if self.msg_id not in war_db: 
+            return await interaction.response.send_message("❌ War not found in database.", ephemeral=True)
+        
+        if "roster" not in war_db[self.msg_id]: war_db[self.msg_id]["roster"] = {}
+        if "not_attending" not in war_db[self.msg_id]: war_db[self.msg_id]["not_attending"] = []
+        if uid in war_db[self.msg_id]["not_attending"]: war_db[self.msg_id]["not_attending"].remove(uid)
+
+        # Preserve previous absences if they already made a submission
+        absences = []
+        if uid in war_db[self.msg_id]["roster"] and isinstance(war_db[self.msg_id]["roster"][uid], dict):
+            absences = war_db[self.msg_id]["roster"][uid].get("absences", [])
+
+        war_db[self.msg_id]["roster"][uid] = {
+            "class": self.selected_class, 
+            "absences": absences,
+            "ap": ap,
+            "dp": dp,
+            "mdp": mdp
+        }
+        _save_wars()
+
+        try:
+            msg = await interaction.channel.fetch_message(int(self.msg_id))
+            await msg.edit(embed=generate_war_embed(war_db[self.msg_id]))
+            await interaction.response.send_message("✅ Class and Stats updated successfully!", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"⚠️ Saved, but failed to update embed: {e}", ephemeral=True)
+
 class WarClassSelect(Select):
     def __init__(self):
         options = [SelectOption(label=name, value=name, emoji=emoji) for name, emoji in QUINFALL_CLASSES]
@@ -509,18 +560,9 @@ class WarClassSelect(Select):
         msg_id = str(interaction.message.id)
         if msg_id not in war_db: return await interaction.response.send_message("❌ War not found in database.", ephemeral=True)
         selected_class = self.values[0]
-        uid = str(interaction.user.id)
         
-        if "roster" not in war_db[msg_id]: war_db[msg_id]["roster"] = {}
-        if "not_attending" not in war_db[msg_id]: war_db[msg_id]["not_attending"] = []
-        if uid in war_db[msg_id]["not_attending"]: war_db[msg_id]["not_attending"].remove(uid)
-            
-        if uid not in war_db[msg_id]["roster"] or isinstance(war_db[msg_id]["roster"][uid], str):
-            war_db[msg_id]["roster"][uid] = {"class": selected_class, "absences": []}
-        else: war_db[msg_id]["roster"][uid]["class"] = selected_class
-                
-        _save_wars()
-        await interaction.response.edit_message(embed=generate_war_embed(war_db[msg_id]))
+        # Pop the Modal for Stats instead of immediately updating
+        await interaction.response.send_modal(WarStatsModal(msg_id, selected_class))
 
 class WarAttendanceSelect(Select):
     def __init__(self):
@@ -533,7 +575,8 @@ class WarAttendanceSelect(Select):
         uid = str(interaction.user.id)
         
         if uid not in war_db[msg_id].get("roster", {}): return await interaction.response.send_message("❌ Select a Class first!", ephemeral=True)
-        if isinstance(war_db[msg_id]["roster"][uid], str): war_db[msg_id]["roster"][uid] = {"class": war_db[msg_id]["roster"][uid], "absences": self.values}
+        if isinstance(war_db[msg_id]["roster"][uid], str): 
+            war_db[msg_id]["roster"][uid] = {"class": war_db[msg_id]["roster"][uid], "absences": self.values}
         else:
             war_db[msg_id]["roster"][uid]["absences"] = self.values
             if "fights" in war_db[msg_id]["roster"][uid]: del war_db[msg_id]["roster"][uid]["fights"]
