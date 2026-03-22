@@ -513,9 +513,9 @@ class WarStatsModal(Modal):
         self.msg_id = msg_id
         self.selected_class = selected_class
         
-        self.add_item(TextInput(label="AP (Attack Power)", placeholder="e.g., 250", required=True, max_length=5))
-        self.add_item(TextInput(label="DP (Defense Power)", placeholder="e.g., 300", required=True, max_length=5))
-        self.add_item(TextInput(label="MDP (Magic Defense)", placeholder="e.g., 280", required=True, max_length=5))
+        self.add_item(TextInput(label="AP (Attack Power)", placeholder="e.g., 4500", required=True, max_length=5))
+        self.add_item(TextInput(label="DP (Defense Power)", placeholder="e.g., 3000", required=True, max_length=5))
+        self.add_item(TextInput(label="MDP (Magic Defense)", placeholder="e.g., 2800", required=True, max_length=5))
 
     async def callback(self, interaction: Interaction):
         ap = self.children[0].value
