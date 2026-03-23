@@ -1,6 +1,7 @@
-# bot.py — ShadowSyn (Master: Unified v8.4 - Elite Baseline Restoration + Owner VC Bypass + TTS Rewrite)
+# bot.py — ShadowSyn (Master: Unified v8.5 - Elite Baseline Restoration + Owner VC Bypass + TTS Rewrite + FTC Calc)
 #
 # === FEATURES ===
+# [x] 📊 FTC: /ftc Mortgage Calculator (Owner Only).
 # [x] ⚔️ WAR ROSTER: "Not Attending" status, separate embed category, and AP/DP/MDP stat tracking.
 # [x] 🎰 CASINO: Dice (High/Low/7), Chicken, Slots, Duels, Shop.
 # [x] 🎒 RPG TOWER: Inventory, Loot, Shop, Stats.
@@ -1621,6 +1622,75 @@ async def on_voice_state_update(member, before, after):
         except: pass
 
 # ==================== COMMANDS: MISC & EMBEDS ====================
+
+def estimate_stamp_duty(price: float, state: str, fhb: bool) -> float:
+    # A simplified/approximate stamp duty rate mapping per state for robust live estimation
+    rates = {"NSW": 0.04, "VIC": 0.055, "QLD": 0.035, "WA": 0.04, "SA": 0.045, "TAS": 0.04, "ACT": 0.03, "NT": 0.05}
+    rate = rates.get(state.upper(), 0.04)
+    
+    # Rough FHB concession approximations
+    if fhb:
+        if price <= 600000:
+            return 0.0
+        elif price <= 800000:
+            return price * (rate * 0.5) 
+            
+    return price * rate
+
+@bot.slash_command(name="ftc", description="Funds to Complete Calculator (Owner Only)")
+@owner_only()
+async def ftc(
+    ctx,
+    savings: Option(int, description="Client savings amount"),
+    purchase_price: Option(int, description="Target purchase price"),
+    state: Option(str, description="Australian State", choices=["NSW", "VIC", "QLD", "WA", "SA", "TAS", "ACT", "NT"]),
+    fhb: Option(bool, description="First Home Buyer (True/False)")
+):
+    # Scenario 1: 10% Deposit (90% LVR)
+    dep_10 = int(purchase_price * 0.10)
+    loan_amount_10 = purchase_price - dep_10
+    lmi_10 = int(loan_amount_10 * 0.02)
+    sd_10 = int(estimate_stamp_duty(purchase_price, state, fhb))
+    fees = 2500
+    
+    cash_needed_10 = dep_10 + sd_10 + fees
+    diff_10 = savings - cash_needed_10
+    status_10 = f"Surplus of ${diff_10:,.0f}" if diff_10 >= 0 else f"Shortfall of ${abs(diff_10):,.0f}"
+
+    # Scenario 2: 20% Deposit (80% LVR)
+    dep_20 = int(purchase_price * 0.20)
+    cash_needed_20 = dep_20 + sd_10 + fees
+    diff_20 = savings - cash_needed_20
+    status_20 = f"Surplus of ${diff_20:,.0f}" if diff_20 >= 0 else f"Shortfall of ${abs(diff_20):,.0f}"
+
+    # Dynamic Talking Point Generation
+    if diff_20 >= 0:
+        talking_point = "Great news! We comfortably have the cash for a 20% deposit, meaning we can avoid LMI entirely."
+    elif diff_10 >= 0:
+        talking_point = "We are a bit short for the 20% right now, but we comfortably have the cash to get you into the market at 90% LVR if you're happy to capitalize the LMI."
+    else:
+        talking_point = f"We're currently short for both scenarios. We'll need to save an additional ${abs(diff_10):,.0f} to reach the 10% entry point."
+
+    # Formatted Embed Output
+    desc = (
+        f"**Target Purchase Price:** ${purchase_price:,.0f} | **State:** {state} | **Savings:** ${savings:,.0f}\n\n"
+        f"👉 **SCENARIO 1: 10% Deposit (90% LVR)**\n"
+        f"**Deposit Required:** ${dep_10:,.0f}\n"
+        f"**Est. Stamp Duty & Fees:** ${(sd_10 + fees):,.0f}\n"
+        f"**Total Cash Needed (Funds to Complete):** ${cash_needed_10:,.0f}\n"
+        f"**Surplus/Shortfall:** {status_10}\n"
+        f"*Note: Est. LMI of ${lmi_10:,.0f} to be capitalized into the loan.*\n\n"
+        f"👉 **SCENARIO 2: 20% Deposit (80% LVR) - No LMI**\n"
+        f"**Deposit Required:** ${dep_20:,.0f}\n"
+        f"**Est. Stamp Duty & Fees:** ${(sd_10 + fees):,.0f}\n"
+        f"**Total Cash Needed (Funds to Complete):** ${cash_needed_20:,.0f}\n"
+        f"**Surplus/Shortfall:** {status_20}\n"
+        f"*Note: Avoids LMI entirely.*\n\n"
+        f"🗣️ **Broker Talking Point:**\n_{talking_point}_"
+    )
+
+    embed = discord.Embed(title="📊 Funds to Complete (FTC)", description=desc, color=THEME_GOLD)
+    await safe_reply(ctx, embed=embed)
 
 @bot.slash_command(name="haste", description="Random Haste Fact")
 async def haste(ctx):
