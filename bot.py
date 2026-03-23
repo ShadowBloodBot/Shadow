@@ -1,7 +1,7 @@
-# bot.py — ShadowSyn (Master: Unified v8.5 - Elite Baseline Restoration + Owner VC Bypass + TTS Rewrite + FTC Calc)
+# bot.py — ShadowSyn (Master: Unified v8.6 - Elite Baseline Restoration + Interactive FTC Engine)
 #
 # === FEATURES ===
-# [x] 📊 FTC: /ftc Mortgage Calculator (Owner Only).
+# [x] 📊 FTC v2.0: /ftc Mortgage Calculator (Owner Only). Reverse-engineering buying power & Live Edit UI.
 # [x] ⚔️ WAR ROSTER: "Not Attending" status, separate embed category, and AP/DP/MDP stat tracking.
 # [x] 🎰 CASINO: Dice (High/Low/7), Chicken, Slots, Duels, Shop.
 # [x] 🎒 RPG TOWER: Inventory, Loot, Shop, Stats.
@@ -425,7 +425,225 @@ async def _apply_invite_role(member, used_code):
         return True, role.name
     except Exception as e: return False, str(e)
 
-# ==================== BOT INSTANCE ====================
+
+# ==================== FTC ENGINE ====================
+
+def estimate_stamp_duty(price: float, state: str, fhb: bool) -> float:
+    """Up-to-date accurate approximation for AU Stamp Duty 2024/2025."""
+    state = state.upper()
+    sd = 0.0
+
+    if state == "NSW":
+        sd = price * 0.04 if price <= 1000000 else price * 0.045
+        if fhb:
+            if price <= 800000: return 0.0
+            elif price <= 1000000: return sd * ((price - 800000) / 200000)
+    elif state == "VIC":
+        sd = price * 0.055
+        if fhb:
+            if price <= 600000: return 0.0
+            elif price <= 750000: return sd * ((price - 600000) / 150000)
+    elif state == "QLD":
+        # QLD recently raised FHB to 700k
+        sd = price * 0.035 if price <= 1000000 else price * 0.045
+        if fhb:
+            if price <= 700000: return 0.0
+            elif price <= 800000: return sd * ((price - 700000) / 100000)
+    elif state == "WA":
+        sd = price * 0.04
+        if fhb:
+            if price <= 450000: return 0.0
+            elif price <= 600000: return sd * ((price - 450000) / 150000)
+    elif state == "SA":
+        sd = price * 0.045
+        if fhb and price <= 650000: return 0.0
+    else:
+        # TAS, ACT, NT generic approximation
+        sd = price * 0.045
+        if fhb and price <= 500000: return 0.0
+
+    return sd
+
+def find_max_purchase_price(savings: int, lvr_target: float, state: str, fhb: bool) -> int:
+    """Binary searches the maximum purchase price someone can afford with current savings."""
+    low = 50000
+    high = 5000000
+    best_price = 0
+    fees = 2500
+    for _ in range(50): 
+        mid = (low + high) / 2
+        dep = mid * (1 - lvr_target)
+        sd = estimate_stamp_duty(mid, state, fhb)
+        total_needed = dep + sd + fees
+        if total_needed <= savings:
+            best_price = mid
+            low = mid
+        else:
+            high = mid
+    return int(best_price)
+
+def generate_ftc_embed(savings: Optional[int], price: Optional[int], state: str, fhb: bool) -> discord.Embed:
+    fees = 2500
+    state = state.upper()
+    fhb_str = "Yes" if fhb else "No"
+    
+    # 1. BOTH PROVIDED or ONLY PRICE PROVIDED (Forward Mode)
+    if price:
+        dep_10 = int(price * 0.10)
+        loan_10 = price - dep_10
+        lmi_10 = int(loan_10 * 0.02)
+        sd_10 = int(estimate_stamp_duty(price, state, fhb))
+        cash_needed_10 = dep_10 + sd_10 + fees
+        
+        dep_20 = int(price * 0.20)
+        cash_needed_20 = dep_20 + sd_10 + fees
+        
+        desc = f"**Target Purchase Price:** ${price:,.0f} | **State:** {state} | **FHB:** {fhb_str}"
+        if savings: desc += f" | **Savings:** ${savings:,.0f}"
+        desc += "\n\n"
+        
+        # 10% Scenario
+        desc += f"👉 **SCENARIO 1: 10% Deposit (90% LVR)**\n"
+        desc += f"**Deposit Required:** ${dep_10:,.0f}\n"
+        desc += f"**Est. Stamp Duty & Fees:** ${(sd_10 + fees):,.0f}\n"
+        desc += f"**Total Cash Needed (Funds to Complete):** ${cash_needed_10:,.0f}\n"
+        
+        if savings:
+            diff_10 = savings - cash_needed_10
+            status_10 = f"Surplus of ${diff_10:,.0f}" if diff_10 >= 0 else f"Shortfall of ${abs(diff_10):,.0f}"
+            desc += f"**Surplus/Shortfall:** {status_10}\n"
+        desc += f"*Note: Est. LMI of ${lmi_10:,.0f} to be capitalized into the loan.*\n\n"
+
+        # 20% Scenario
+        desc += f"👉 **SCENARIO 2: 20% Deposit (80% LVR) - No LMI**\n"
+        desc += f"**Deposit Required:** ${dep_20:,.0f}\n"
+        desc += f"**Est. Stamp Duty & Fees:** ${(sd_10 + fees):,.0f}\n"
+        desc += f"**Total Cash Needed (Funds to Complete):** ${cash_needed_20:,.0f}\n"
+        
+        if savings:
+            diff_20 = savings - cash_needed_20
+            status_20 = f"Surplus of ${diff_20:,.0f}" if diff_20 >= 0 else f"Shortfall of ${abs(diff_20):,.0f}"
+            desc += f"**Surplus/Shortfall:** {status_20}\n"
+        desc += f"*Note: Avoids LMI entirely.*\n\n"
+        
+        # Dynamic Talking Point (if savings provided)
+        if savings:
+            if diff_20 >= 0: tp = "Great news! We comfortably have the cash for a 20% deposit, meaning we can avoid LMI entirely."
+            elif diff_10 >= 0: tp = "We are a bit short for the 20% right now, but we comfortably have the cash to get you into the market at 90% LVR if you're happy to capitalize the LMI."
+            else: tp = f"We're currently short for both scenarios. We'll need to save an additional ${abs(diff_10):,.0f} to reach the 10% entry point."
+            desc += f"🗣️ **Broker Talking Point:**\n_{tp}_"
+            
+        return discord.Embed(title="📊 Funds to Complete (FTC)", description=desc, color=THEME_GOLD)
+
+    # 2. ONLY SAVINGS PROVIDED (Reverse Mode - Buying Power)
+    elif savings:
+        max_10 = find_max_purchase_price(savings, 0.90, state, fhb)
+        max_20 = find_max_purchase_price(savings, 0.80, state, fhb)
+        
+        sd_10 = int(estimate_stamp_duty(max_10, state, fhb))
+        sd_20 = int(estimate_stamp_duty(max_20, state, fhb))
+        
+        dep_10 = int(max_10 * 0.10)
+        dep_20 = int(max_20 * 0.20)
+        lmi_10 = int((max_10 * 0.90) * 0.02)
+        
+        desc = f"**Savings:** ${savings:,.0f} | **State:** {state} | **FHB:** {fhb_str}\n"
+        desc += "*Displaying Maximum Buying Power based on available cash.*\n\n"
+        
+        desc += f"👉 **SCENARIO 1: Max Power at 10% Deposit (90% LVR)**\n"
+        desc += f"**Max Purchase Price:** ${max_10:,.0f}\n"
+        desc += f"**Deposit Required:** ${dep_10:,.0f}\n"
+        desc += f"**Est. Stamp Duty & Fees:** ${(sd_10 + fees):,.0f}\n"
+        desc += f"*Note: Est. LMI of ${lmi_10:,.0f} to be capitalized into the loan.*\n\n"
+        
+        desc += f"👉 **SCENARIO 2: Max Power at 20% Deposit (80% LVR)**\n"
+        desc += f"**Max Purchase Price:** ${max_20:,.0f}\n"
+        desc += f"**Deposit Required:** ${dep_20:,.0f}\n"
+        desc += f"**Est. Stamp Duty & Fees:** ${(sd_20 + fees):,.0f}\n"
+        desc += f"*Note: Avoids LMI entirely.*\n\n"
+        
+        tp = f"Based on your savings of ${savings:,.0f}, the absolute maximum we can purchase is roughly ${max_10:,.0f} using a 10% deposit strategy. Or, if you want to avoid LMI entirely, your cap is ${max_20:,.0f}."
+        desc += f"🗣️ **Broker Talking Point:**\n_{tp}_"
+        
+        return discord.Embed(title="📊 Buying Power Calculator", description=desc, color=THEME_WIN)
+
+class FTCEditModal(Modal):
+    def __init__(self, view, mode):
+        super().__init__(title="Edit Savings" if mode == "savings" else "Edit Purchase Price")
+        self.view_ref = view
+        self.mode = mode
+        
+        val = str(view.savings or "") if mode == "savings" else str(view.price or "")
+        self.add_item(TextInput(label="Amount ($)", placeholder="e.g., 85000", value=val, required=False))
+
+    async def callback(self, interaction: Interaction):
+        raw = self.children[0].value.replace(",", "").replace("$", "").strip()
+        try: 
+            val = int(raw) if raw else None
+        except: 
+            return await interaction.response.send_message("❌ Invalid number.", ephemeral=True)
+            
+        if self.mode == "savings": self.view_ref.savings = val
+        else: self.view_ref.price = val
+            
+        embed = generate_ftc_embed(self.view_ref.savings, self.view_ref.price, self.view_ref.state, self.view_ref.fhb)
+        await interaction.response.edit_message(embed=embed, view=self.view_ref)
+
+class FTCStateSelect(Select):
+    def __init__(self, current_state):
+        options = [SelectOption(label=s, default=(s==current_state)) for s in ["NSW", "VIC", "QLD", "WA", "SA", "TAS", "ACT", "NT"]]
+        super().__init__(placeholder="Change State...", options=options, row=1)
+    async def callback(self, interaction: Interaction):
+        self.view.state = self.values[0]
+        for opt in self.options: opt.default = (opt.label == self.view.state)
+        embed = generate_ftc_embed(self.view.savings, self.view.price, self.view.state, self.view.fhb)
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+class FTCControlView(View):
+    def __init__(self, savings, price, state, fhb, user_id):
+        super().__init__(timeout=900)
+        self.savings = savings
+        self.price = price
+        self.state = state
+        self.fhb = fhb
+        self.user_id = user_id
+        
+        self.add_item(FTCStateSelect(state))
+
+    @discord.ui.button(label="Edit Savings", style=ButtonStyle.primary, emoji="💵", row=0)
+    async def edit_sav(self, button, i):
+        if i.user.id != self.user_id: return
+        await i.response.send_modal(FTCEditModal(self, "savings"))
+
+    @discord.ui.button(label="Edit Price", style=ButtonStyle.primary, emoji="🏠", row=0)
+    async def edit_pri(self, button, i):
+        if i.user.id != self.user_id: return
+        await i.response.send_modal(FTCEditModal(self, "price"))
+        
+    @discord.ui.button(label="Toggle FHB", style=ButtonStyle.success, emoji="🔄", row=0)
+    async def toggle_fhb(self, button, i):
+        if i.user.id != self.user_id: return
+        self.fhb = not self.fhb
+        embed = generate_ftc_embed(self.savings, self.price, self.state, self.fhb)
+        await i.response.edit_message(embed=embed, view=self)
+
+@bot.slash_command(name="ftc", description="Interactive FTC & Buying Power Calculator (Owner Only)")
+@owner_only()
+async def ftc(
+    ctx,
+    state: Option(str, description="Australian State", choices=["NSW", "VIC", "QLD", "WA", "SA", "TAS", "ACT", "NT"]),
+    savings: Option(int, description="Client savings amount", required=False),
+    purchase_price: Option(int, description="Target purchase price", required=False),
+    fhb: Option(bool, description="First Home Buyer?", default=False)
+):
+    if not savings and not purchase_price:
+        return await safe_reply(ctx, "❌ You must provide at least `savings` or `purchase_price`.", ephemeral=True)
+        
+    embed = generate_ftc_embed(savings, purchase_price, state, fhb)
+    view = FTCControlView(savings, purchase_price, state, fhb, ctx.author.id)
+    await safe_reply(ctx, embed=embed, view=view)
+
+# ==================== BOT INSTANCE & STARTUP ====================
 
 class ShadowSynBot(discord.Bot):
     def __init__(self):
@@ -1623,75 +1841,6 @@ async def on_voice_state_update(member, before, after):
 
 # ==================== COMMANDS: MISC & EMBEDS ====================
 
-def estimate_stamp_duty(price: float, state: str, fhb: bool) -> float:
-    # A simplified/approximate stamp duty rate mapping per state for robust live estimation
-    rates = {"NSW": 0.04, "VIC": 0.055, "QLD": 0.035, "WA": 0.04, "SA": 0.045, "TAS": 0.04, "ACT": 0.03, "NT": 0.05}
-    rate = rates.get(state.upper(), 0.04)
-    
-    # Rough FHB concession approximations
-    if fhb:
-        if price <= 600000:
-            return 0.0
-        elif price <= 800000:
-            return price * (rate * 0.5) 
-            
-    return price * rate
-
-@bot.slash_command(name="ftc", description="Funds to Complete Calculator (Owner Only)")
-@owner_only()
-async def ftc(
-    ctx,
-    savings: Option(int, description="Client savings amount"),
-    purchase_price: Option(int, description="Target purchase price"),
-    state: Option(str, description="Australian State", choices=["NSW", "VIC", "QLD", "WA", "SA", "TAS", "ACT", "NT"]),
-    fhb: Option(bool, description="First Home Buyer (True/False)")
-):
-    # Scenario 1: 10% Deposit (90% LVR)
-    dep_10 = int(purchase_price * 0.10)
-    loan_amount_10 = purchase_price - dep_10
-    lmi_10 = int(loan_amount_10 * 0.02)
-    sd_10 = int(estimate_stamp_duty(purchase_price, state, fhb))
-    fees = 2500
-    
-    cash_needed_10 = dep_10 + sd_10 + fees
-    diff_10 = savings - cash_needed_10
-    status_10 = f"Surplus of ${diff_10:,.0f}" if diff_10 >= 0 else f"Shortfall of ${abs(diff_10):,.0f}"
-
-    # Scenario 2: 20% Deposit (80% LVR)
-    dep_20 = int(purchase_price * 0.20)
-    cash_needed_20 = dep_20 + sd_10 + fees
-    diff_20 = savings - cash_needed_20
-    status_20 = f"Surplus of ${diff_20:,.0f}" if diff_20 >= 0 else f"Shortfall of ${abs(diff_20):,.0f}"
-
-    # Dynamic Talking Point Generation
-    if diff_20 >= 0:
-        talking_point = "Great news! We comfortably have the cash for a 20% deposit, meaning we can avoid LMI entirely."
-    elif diff_10 >= 0:
-        talking_point = "We are a bit short for the 20% right now, but we comfortably have the cash to get you into the market at 90% LVR if you're happy to capitalize the LMI."
-    else:
-        talking_point = f"We're currently short for both scenarios. We'll need to save an additional ${abs(diff_10):,.0f} to reach the 10% entry point."
-
-    # Formatted Embed Output
-    desc = (
-        f"**Target Purchase Price:** ${purchase_price:,.0f} | **State:** {state} | **Savings:** ${savings:,.0f}\n\n"
-        f"👉 **SCENARIO 1: 10% Deposit (90% LVR)**\n"
-        f"**Deposit Required:** ${dep_10:,.0f}\n"
-        f"**Est. Stamp Duty & Fees:** ${(sd_10 + fees):,.0f}\n"
-        f"**Total Cash Needed (Funds to Complete):** ${cash_needed_10:,.0f}\n"
-        f"**Surplus/Shortfall:** {status_10}\n"
-        f"*Note: Est. LMI of ${lmi_10:,.0f} to be capitalized into the loan.*\n\n"
-        f"👉 **SCENARIO 2: 20% Deposit (80% LVR) - No LMI**\n"
-        f"**Deposit Required:** ${dep_20:,.0f}\n"
-        f"**Est. Stamp Duty & Fees:** ${(sd_10 + fees):,.0f}\n"
-        f"**Total Cash Needed (Funds to Complete):** ${cash_needed_20:,.0f}\n"
-        f"**Surplus/Shortfall:** {status_20}\n"
-        f"*Note: Avoids LMI entirely.*\n\n"
-        f"🗣️ **Broker Talking Point:**\n_{talking_point}_"
-    )
-
-    embed = discord.Embed(title="📊 Funds to Complete (FTC)", description=desc, color=THEME_GOLD)
-    await safe_reply(ctx, embed=embed)
-
 @bot.slash_command(name="haste", description="Random Haste Fact")
 async def haste(ctx):
     if not active_haste_facts:
@@ -1751,7 +1900,6 @@ async def edit_custom(ctx, message_id: str, channel: Option(discord.TextChannel,
         if msg.author != ctx.bot.user: return await ctx.respond("❌ I can only edit my own messages.", ephemeral=True)
         await ctx.send_modal(EasyEmbedModal(target_channel, edit_msg=msg))
     except Exception as e: await ctx.respond(f"❌ Error finding message: {e}", ephemeral=True)
-
 
 # ==================== COMMANDS: AUDIO & TTS ====================
 
