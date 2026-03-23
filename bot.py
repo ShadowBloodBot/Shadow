@@ -1,17 +1,14 @@
-# bot.py — ShadowSyn (Master: Unified v8.6.1 - Elite Baseline Restoration + Interactive FTC Engine Fix)
+# bot.py — ShadowSyn (Master: Unified v8.6.2 - FTC UI Clean-up)
 #
 # === FEATURES ===
-# [x] 📊 FTC v2.0: /ftc Mortgage Calculator (Owner Only). Reverse-engineering buying power & Live Edit UI.
+# [x] 📊 FTC v2.1: /ftc Mortgage Calculator. Cleaned up, scannable layout for live calls.
 # [x] ⚔️ WAR ROSTER: "Not Attending" status, separate embed category, and AP/DP/MDP stat tracking.
 # [x] 🎰 CASINO: Dice (High/Low/7), Chicken, Slots, Duels, Shop.
 # [x] 🎒 RPG TOWER: Inventory, Loot, Shop, Stats.
 # [x] 🎛️ VOICEMASTER & MUSIC: All present.
 # [x] 📄 CUSTOM EMBEDS: /send_custom & /edit_custom.
-# [x] 🔒 VC LOCK FIX & BYPASS (v8.3/v8.4):
-#     - Locking safely denies "Member" role category overrides.
-#     - ONLY whitelist: current active members and the 2 Master Owners.
-# [x] 🗣️ TTS REWRITE (v8.4): 
-#     - Completely rewritten `/speak` logic from the ground up to prevent silent failures.
+# [x] 🔒 VC LOCK FIX & BYPASS: Active members + Master Owners.
+# [x] 🗣️ TTS REWRITE: Prevents silent failures & overlap crashes.
 #
 # LIBRARY: py-cord[voice]
 
@@ -352,6 +349,17 @@ def set_invite_role_map(guild_id, mapping):
     store[str(guild_id)] = {str(k).lower(): int(v) for k, v in (mapping or {}).items()}
     _save_invite_role_store(store)
 
+_INVITE_CODE_RX = re.compile(r"(?:discord\.gg/|discord\.com/invite/)(?P<code>[A-Za-z0-9-]+)", re.I)
+def normalize_invite_code(text):
+    s = (text or "").strip()
+    if not s: return None
+    low = s.lower()
+    if low in {"vanity", "vanity_url", "vanityurl"}: return "vanity"
+    m = _INVITE_CODE_RX.search(s)
+    if m: return m.group("code").lower()
+    if re.fullmatch(r"[A-Za-z0-9-]{2,}", s): return s.lower()
+    return None
+
 _INVITES_CACHE = {}
 def _can_track_invites(guild): return bool(guild.me and guild.me.guild_permissions.manage_guild)
 
@@ -414,8 +422,6 @@ async def _apply_invite_role(member, used_code):
 
 
 # ==================== BOT INSTANCE & STARTUP ====================
-# Instantiating the bot here prevents NameErrors on the commands below
-
 class ShadowSynBot(discord.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -447,7 +453,6 @@ def estimate_stamp_duty(price: float, state: str, fhb: bool) -> float:
             if price <= 600000: return 0.0
             elif price <= 750000: return sd * ((price - 600000) / 150000)
     elif state == "QLD":
-        # QLD recently raised FHB to 700k
         sd = price * 0.035 if price <= 1000000 else price * 0.045
         if fhb:
             if price <= 700000: return 0.0
@@ -461,7 +466,6 @@ def estimate_stamp_duty(price: float, state: str, fhb: bool) -> float:
         sd = price * 0.045
         if fhb and price <= 650000: return 0.0
     else:
-        # TAS, ACT, NT generic approximation
         sd = price * 0.045
         if fhb and price <= 500000: return 0.0
 
@@ -501,42 +505,45 @@ def generate_ftc_embed(savings: Optional[int], price: Optional[int], state: str,
         dep_20 = int(price * 0.20)
         cash_needed_20 = dep_20 + sd_10 + fees
         
-        desc = f"**Target Purchase Price:** ${price:,.0f} | **State:** {state} | **FHB:** {fhb_str}"
-        if savings: desc += f" | **Savings:** ${savings:,.0f}"
+        # Header Info
+        desc = f"**Target:** `${price:,.0f}` | **State:** `{state}` | **FHB:** `{fhb_str}`"
+        if savings: desc += f" | **Savings:** `${savings:,.0f}`"
         desc += "\n\n"
         
-        # 10% Scenario
-        desc += f"👉 **SCENARIO 1: 10% Deposit (90% LVR)**\n"
-        desc += f"**Deposit Required:** ${dep_10:,.0f}\n"
-        desc += f"**Est. Stamp Duty & Fees:** ${(sd_10 + fees):,.0f}\n"
-        desc += f"**Total Cash Needed (Funds to Complete):** ${cash_needed_10:,.0f}\n"
+        # 10% Scenario Block
+        desc += "**10% Deposit (90% LVR)**\n"
+        desc += f"> 💵 **Deposit:** `${dep_10:,.0f}`\n"
+        desc += f"> 🏛️ **Govt & Fees:** `${(sd_10 + fees):,.0f}`\n"
+        desc += f"> 💰 **Cash Needed:** `${cash_needed_10:,.0f}`\n"
+        desc += f"> 📈 **LMI (Capitalized):** `${lmi_10:,.0f}`\n"
         
         if savings:
             diff_10 = savings - cash_needed_10
-            status_10 = f"Surplus of ${diff_10:,.0f}" if diff_10 >= 0 else f"Shortfall of ${abs(diff_10):,.0f}"
-            desc += f"**Surplus/Shortfall:** {status_10}\n"
-        desc += f"*Note: Est. LMI of ${lmi_10:,.0f} to be capitalized into the loan.*\n\n"
+            status_10 = f"🟢 Surplus `${diff_10:,.0f}`" if diff_10 >= 0 else f"🔴 Shortfall `${abs(diff_10):,.0f}`"
+            desc += f"> 📊 **Status:** {status_10}\n"
+        desc += "\n"
 
-        # 20% Scenario
-        desc += f"👉 **SCENARIO 2: 20% Deposit (80% LVR) - No LMI**\n"
-        desc += f"**Deposit Required:** ${dep_20:,.0f}\n"
-        desc += f"**Est. Stamp Duty & Fees:** ${(sd_10 + fees):,.0f}\n"
-        desc += f"**Total Cash Needed (Funds to Complete):** ${cash_needed_20:,.0f}\n"
+        # 20% Scenario Block
+        desc += "**20% Deposit (80% LVR)**\n"
+        desc += f"> 💵 **Deposit:** `${dep_20:,.0f}`\n"
+        desc += f"> 🏛️ **Govt & Fees:** `${(sd_10 + fees):,.0f}`\n"
+        desc += f"> 💰 **Cash Needed:** `${cash_needed_20:,.0f}`\n"
+        desc += f"> 🚫 **LMI:** Avoided\n"
         
         if savings:
             diff_20 = savings - cash_needed_20
-            status_20 = f"Surplus of ${diff_20:,.0f}" if diff_20 >= 0 else f"Shortfall of ${abs(diff_20):,.0f}"
-            desc += f"**Surplus/Shortfall:** {status_20}\n"
-        desc += f"*Note: Avoids LMI entirely.*\n\n"
+            status_20 = f"🟢 Surplus `${diff_20:,.0f}`" if diff_20 >= 0 else f"🔴 Shortfall `${abs(diff_20):,.0f}`"
+            desc += f"> 📊 **Status:** {status_20}\n"
+        desc += "\n"
         
-        # Dynamic Talking Point (if savings provided)
+        # Dynamic Talking Point
         if savings:
-            if diff_20 >= 0: tp = "Great news! We comfortably have the cash for a 20% deposit, meaning we can avoid LMI entirely."
-            elif diff_10 >= 0: tp = "We are a bit short for the 20% right now, but we comfortably have the cash to get you into the market at 90% LVR if you're happy to capitalize the LMI."
-            else: tp = f"We're currently short for both scenarios. We'll need to save an additional ${abs(diff_10):,.0f} to reach the 10% entry point."
-            desc += f"🗣️ **Broker Talking Point:**\n_{tp}_"
+            if diff_20 >= 0: tp = "Great news! You comfortably have the 20% deposit ready, meaning we avoid LMI entirely."
+            elif diff_10 >= 0: tp = f"We're a bit short for 20%, but you have the cash to buy right now at 90% LVR if you're happy to capitalize the LMI."
+            else: tp = f"We're currently short for this purchase price. We'll need to save another ${abs(diff_10):,.0f} to get into the market at 10%."
+            desc += f"💬 **Broker Tip:**\n*{tp}*"
             
-        return discord.Embed(title="📊 Funds to Complete (FTC)", description=desc, color=THEME_GOLD)
+        return discord.Embed(title="📊 Funds to Complete", description=desc, color=THEME_GOLD)
 
     # 2. ONLY SAVINGS PROVIDED (Reverse Mode - Buying Power)
     elif savings:
@@ -550,23 +557,22 @@ def generate_ftc_embed(savings: Optional[int], price: Optional[int], state: str,
         dep_20 = int(max_20 * 0.20)
         lmi_10 = int((max_10 * 0.90) * 0.02)
         
-        desc = f"**Savings:** ${savings:,.0f} | **State:** {state} | **FHB:** {fhb_str}\n"
-        desc += "*Displaying Maximum Buying Power based on available cash.*\n\n"
+        desc = f"**Savings:** `${savings:,.0f}` | **State:** `{state}` | **FHB:** `{fhb_str}`\n\n"
         
-        desc += f"👉 **SCENARIO 1: Max Power at 10% Deposit (90% LVR)**\n"
-        desc += f"**Max Purchase Price:** ${max_10:,.0f}\n"
-        desc += f"**Deposit Required:** ${dep_10:,.0f}\n"
-        desc += f"**Est. Stamp Duty & Fees:** ${(sd_10 + fees):,.0f}\n"
-        desc += f"*Note: Est. LMI of ${lmi_10:,.0f} to be capitalized into the loan.*\n\n"
+        desc += "**Max Power: 10% Deposit (90% LVR)**\n"
+        desc += f"> 🏠 **Max Purchase Price:** `${max_10:,.0f}`\n"
+        desc += f"> 💵 **Deposit:** `${dep_10:,.0f}`\n"
+        desc += f"> 🏛️ **Govt & Fees:** `${(sd_10 + fees):,.0f}`\n"
+        desc += f"> 📈 **LMI (Capitalized):** `${lmi_10:,.0f}`\n\n"
         
-        desc += f"👉 **SCENARIO 2: Max Power at 20% Deposit (80% LVR)**\n"
-        desc += f"**Max Purchase Price:** ${max_20:,.0f}\n"
-        desc += f"**Deposit Required:** ${dep_20:,.0f}\n"
-        desc += f"**Est. Stamp Duty & Fees:** ${(sd_20 + fees):,.0f}\n"
-        desc += f"*Note: Avoids LMI entirely.*\n\n"
+        desc += "**Max Power: 20% Deposit (80% LVR)**\n"
+        desc += f"> 🏠 **Max Purchase Price:** `${max_20:,.0f}`\n"
+        desc += f"> 💵 **Deposit:** `${dep_20:,.0f}`\n"
+        desc += f"> 🏛️ **Govt & Fees:** `${(sd_20 + fees):,.0f}`\n"
+        desc += f"> 🚫 **LMI:** Avoided\n\n"
         
-        tp = f"Based on your savings of ${savings:,.0f}, the absolute maximum we can purchase is roughly ${max_10:,.0f} using a 10% deposit strategy. Or, if you want to avoid LMI entirely, your cap is ${max_20:,.0f}."
-        desc += f"🗣️ **Broker Talking Point:**\n_{tp}_"
+        tp = f"With ${savings:,.0f} cash, your absolute max purchase is ${max_10:,.0f} (10% deposit). Or, if you want to avoid LMI, your cap is ${max_20:,.0f}."
+        desc += f"💬 **Broker Tip:**\n*{tp}*"
         
         return discord.Embed(title="📊 Buying Power Calculator", description=desc, color=THEME_WIN)
 
@@ -1259,8 +1265,201 @@ class TowerGameView(View):
             save_tower_data(self.user_id, self.data)
             await interaction.edit_original_response(embed=self.update_embed("Combat", "Fighting..."), view=self)
 
-
 # ==================== CASINO LOGIC ====================
+
+def generate_slot_result(user, bet):
+    user_id = str(user.id)
+    update_balance(user_id, -bet)
+    emojis = ["🍒", "🍋", "🍇", "💎", "7️⃣", "🔔", "🍊"]
+    a, b, c = random.choice(emojis), random.choice(emojis), random.choice(emojis)
+    payout = 0; is_jackpot = False
+    if a == b == c: payout = bet * 13; is_jackpot = True
+    elif a == b or b == c or a == c: payout = int(bet * 1.5) 
+    if payout > 0:
+        update_balance(user_id, payout)
+        col = THEME_GOLD if payout > bet * 2 else THEME_WIN
+        msg = f"🎰 **{a} | {b} | {c}**\n✅ **WIN!** +{payout}"
+    else:
+        col = THEME_LOSS
+        msg = f"🎰 **{a} | {b} | {c}**\n❌ **Lost** {bet}"
+    embed = discord.Embed(description=msg, color=col)
+    if user.display_avatar: embed.set_author(name=f"{user.display_name}'s Spin", icon_url=user.display_avatar.url)
+    else: embed.set_author(name=f"{user.display_name}'s Spin")
+    embed.set_footer(text=f"Bet: {bet} Scoins")
+    return embed, is_jackpot, payout
+
+class RepeatSpinView(View):
+    def __init__(self, user_id, bet):
+        super().__init__(timeout=120)
+        self.user_id = user_id; self.bet = bet
+    @discord.ui.button(label="Spin Again", style=ButtonStyle.primary, emoji="🔄")
+    async def spin_btn(self, button, interaction: Interaction):
+        if interaction.user.id != self.user_id: return await interaction.response.send_message("🚫 Not your game.", ephemeral=True)
+        try:
+            await interaction.response.defer(ephemeral=True) 
+            bal = get_balance(str(self.user_id))
+            if bal < self.bet: return await interaction.followup.send(f"❌ Insufficient funds ({bal} < {self.bet}).", ephemeral=True)
+            embed, is_jackpot, win_amount = generate_slot_result(interaction.user, self.bet)
+            await interaction.followup.send(embed=embed, view=RepeatSpinView(self.user_id, self.bet), ephemeral=True)
+            if is_jackpot:
+                target_thread = interaction.guild.get_channel(CASINO_CHANNEL_ID) or await interaction.guild.fetch_channel(CASINO_CHANNEL_ID)
+                if target_thread: await target_thread.send(f"🚨 **JACKPOT!** 🎰\n**{interaction.user.display_name}** just hit a **3x Match** and won **{win_amount}** Scoins!")
+        except Exception as e: await interaction.followup.send(f"⚠️ Error: {e}", ephemeral=True)
+
+class BetAmountModal(Modal):
+    def __init__(self, title, balance, callback_func):
+        super().__init__(title=title)
+        self.balance = balance; self.callback_func = callback_func
+        self.add_item(TextInput(label=f"Amount (Max: {balance})", placeholder="Enter amount or 'all'", min_length=1))
+    async def callback(self, interaction: Interaction):
+        raw = self.children[0].value.lower()
+        if raw == "all": amount = self.balance
+        else:
+            try: amount = int(raw)
+            except: return await interaction.response.send_message("❌ Invalid number.", ephemeral=True)
+        if amount <= 0: return await interaction.response.send_message("❌ Must bet > 0.", ephemeral=True)
+        if amount > self.balance: return await interaction.response.send_message("❌ Insufficient funds.", ephemeral=True)
+        await self.callback_func(interaction, amount)
+
+class ChickenButton(Button):
+    def __init__(self, x, y, view_ref):
+        super().__init__(style=ButtonStyle.secondary, label="\u200b", row=y)
+        self.x = x; self.y = y; self.view_ref = view_ref; self.idx = y * 5 + x
+    async def callback(self, interaction: Interaction):
+        if interaction.user.id != self.view_ref.user_id: return await interaction.response.send_message("🚫 Not your game.", ephemeral=True)
+        await self.view_ref.handle_click(self, interaction)
+
+class ChickenGameView(View):
+    def __init__(self, user, bet, bones_count):
+        super().__init__(timeout=180)
+        self.user_id = user.id; self.user = user; self.bet = bet; self.bones_count = bones_count
+        self.grid_size = 20; self.bones_indices = set(random.sample(range(self.grid_size), bones_count))
+        self.revealed = set(); self.game_over = False; self.multiplier = 1.0
+        for y in range(4):
+            for x in range(5): self.add_item(ChickenButton(x, y, self))
+        self.cashout_btn = Button(style=ButtonStyle.success, label="Cash Out", row=4, emoji="💰", disabled=True)
+        self.cashout_btn.callback = self.cash_out; self.add_item(self.cashout_btn)
+    def calculate_next_multiplier(self):
+        remaining_tiles = self.grid_size - len(self.revealed); safe_remaining = remaining_tiles - self.bones_count
+        if safe_remaining <= 0: return self.multiplier
+        odds = remaining_tiles / safe_remaining
+        return self.multiplier * odds * 0.97 
+    async def handle_click(self, button, interaction: Interaction):
+        if self.game_over: return
+        idx = button.idx
+        if idx in self.bones_indices:
+            self.game_over = True; update_balance(str(self.user_id), -self.bet)
+            button.style = ButtonStyle.danger; button.emoji = "🦴"; button.label = ""
+            for child in self.children:
+                if isinstance(child, ChickenButton):
+                    child.disabled = True
+                    if child.idx in self.bones_indices and child.idx != idx: child.style = ButtonStyle.secondary; child.emoji = "🦴"
+            self.cashout_btn.disabled = True
+            embed = discord.Embed(title="💥 BONE!", description=f"You hit a bone and lost **{self.bet}** Scoins.", color=THEME_LOSS)
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            self.revealed.add(idx); self.multiplier = self.calculate_next_multiplier()
+            button.style = ButtonStyle.success; button.emoji = "🍗"; button.label = ""; button.disabled = True
+            self.cashout_btn.disabled = False; self.cashout_btn.label = f"Cash Out ({int(self.bet * self.multiplier)})"
+            current_win = int(self.bet * self.multiplier)
+            embed = discord.Embed(title="🍗 CHICKEN!", description=f"Multiplier: **{self.multiplier:.2f}x**\nCurrent Win: **{current_win}**", color=THEME_GOLD)
+            await interaction.response.edit_message(embed=embed, view=self)
+    async def cash_out(self, interaction: Interaction):
+        if interaction.user.id != self.user.id: return
+        self.game_over = True; win_amount = int(self.bet * self.multiplier)
+        update_balance(str(self.user_id), -self.bet + win_amount)
+        for child in self.children: child.disabled = True
+        embed = discord.Embed(title="💰 CASHED OUT", description=f"You won **{win_amount}** Scoins!\nMultiplier: **{self.multiplier:.2f}x**", color=THEME_WIN)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+class ChickenDifficultySelect(Select):
+    def __init__(self, user, bet):
+        self.user = user; self.bet = bet
+        options = [SelectOption(label="1 Bone (Safe)", value="1"), SelectOption(label="3 Bones", value="3"), SelectOption(label="5 Bones", value="5"), SelectOption(label="10 Bones", value="10"), SelectOption(label="15 Bones", value="15")]
+        super().__init__(placeholder="Select Difficulty...", min_values=1, max_values=1, options=options)
+    async def callback(self, interaction: Interaction):
+        if interaction.user.id != self.user.id: return
+        bones = int(self.values[0]); bal = get_balance(str(self.user.id))
+        if bal < self.bet: return await interaction.response.send_message("❌ Insufficient funds.", ephemeral=True)
+        view = ChickenGameView(self.user, self.bet, bones)
+        embed = discord.Embed(title="🍗 Chicken Cross", description=f"Bet: {self.bet} | Bones: {bones}", color=THEME_PRIMARY)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+class ChickenSetupView(View):
+    def __init__(self, user, bet):
+        super().__init__(timeout=60)
+        self.add_item(ChickenDifficultySelect(user, bet))
+
+class DiceGameView(View):
+    def __init__(self, user, bet):
+        super().__init__(timeout=60)
+        self.user = user; self.user_id = user.id; self.bet = bet; self.game_over = False
+    @discord.ui.button(label="Low (2-6) [x2]", style=ButtonStyle.primary, emoji="⬇️", row=0)
+    async def low_btn(self, button, interaction: Interaction): await self.process_roll(interaction, "low")
+    @discord.ui.button(label="Seven (7) [x5]", style=ButtonStyle.secondary, emoji="7️⃣", row=0)
+    async def seven_btn(self, button, interaction: Interaction): await self.process_roll(interaction, "seven")
+    @discord.ui.button(label="High (8-12) [x2]", style=ButtonStyle.primary, emoji="⬆️", row=0)
+    async def high_btn(self, button, interaction: Interaction): await self.process_roll(interaction, "high")
+    async def process_roll(self, interaction: Interaction, choice):
+        if interaction.user.id != self.user.id: return await interaction.response.send_message("🚫 Not your game.", ephemeral=True)
+        if self.game_over: return
+        bal = get_balance(str(self.user.id))
+        if bal < self.bet: return await interaction.response.send_message("❌ Insufficient funds.", ephemeral=True)
+        update_balance(str(self.user.id), -self.bet); self.game_over = True
+        d1 = random.randint(1, 6); d2 = random.randint(1, 6); total = d1 + d2
+        dice_map = {1: "1️⃣", 2: "2️⃣", 3: "3️⃣", 4: "4️⃣", 5: "5️⃣", 6: "6️⃣"}
+        visual = f"{dice_map[d1]} + {dice_map[d2]} = **{total}**"
+        won = False; payout = 0
+        if choice == "low" and total < 7: won = True; payout = int(self.bet * 2)
+        elif choice == "high" and total > 7: won = True; payout = int(self.bet * 2)
+        elif choice == "seven" and total == 7: won = True; payout = int(self.bet * 5)
+        if won:
+            update_balance(str(self.user_id), payout)
+            embed = discord.Embed(title="🎲 Dice Roll", description=f"{visual}\n✅ **WIN!** You won **{payout}** Scoins.", color=THEME_WIN)
+        else:
+            embed = discord.Embed(title="🎲 Dice Roll", description=f"{visual}\n❌ **LOSS.** You lost **{self.bet}** Scoins.", color=THEME_LOSS)
+        for child in self.children: child.disabled = True
+        self.add_item(PlayAgainDiceButton(self.user, self.bet))
+        await interaction.response.edit_message(embed=embed, view=self)
+
+class PlayAgainDiceButton(Button):
+    def __init__(self, user, bet):
+        super().__init__(label="Roll Again", style=ButtonStyle.success, emoji="🔄", row=1)
+        self.user = user; self.bet = bet
+    async def callback(self, interaction: Interaction):
+        if interaction.user.id != self.user.id: return
+        bal = get_balance(str(self.user.id))
+        if bal < self.bet: return await interaction.response.send_message("❌ Broke.", ephemeral=True)
+        await interaction.response.send_message(f"🎲 **High/Low Dice**\nBet: **{self.bet}**", view=DiceGameView(self.user, self.bet), ephemeral=True)
+
+class DuelAcceptView(View):
+    def __init__(self, p1, p2, amount):
+        super().__init__(timeout=60)
+        self.p1 = p1; self.p2 = p2; self.amount = amount
+    @discord.ui.button(label="ACCEPT DUEL", style=ButtonStyle.danger, emoji="⚔️")
+    async def accept(self, button, interaction: Interaction):
+        if interaction.user.id != self.p2.id: return
+        if get_balance(str(self.p1.id)) < self.amount or get_balance(str(self.p2.id)) < self.amount:
+            return await interaction.response.send_message("❌ Someone went broke during the wait.", ephemeral=True)
+        update_balance(str(self.p1.id), -self.amount); update_balance(str(self.p2.id), -self.amount)
+        winner = random.choice([self.p1, self.p2]); loser = self.p2 if winner == self.p1 else self.p1
+        win_amt = self.amount * 2; update_balance(str(winner.id), win_amt)
+        embed = discord.Embed(title="🩸 DUEL FINISHED", description=f"🏆 **Winner:** {winner.mention}\n💀 **Loser:** {loser.mention}\n💰 **Won:** {win_amt} Scoins", color=THEME_GOLD)
+        self.clear_items()
+        await interaction.response.edit_message(view=self, embed=embed)
+
+class ShopSelect(Select):
+    def __init__(self):
+        options = [SelectOption(label="Ban Haste", description="10,000 Scoins: Publicly banish Haste", value="ban_haste", emoji="🔨")]
+        super().__init__(placeholder="Select item to buy...", min_values=1, max_values=1, options=options)
+    async def callback(self, interaction: Interaction):
+        if not is_gambler(interaction.user): return await interaction.response.send_message("⛔ Restricted. Missing required role.", ephemeral=True)
+        user_id = str(interaction.user.id); bal = get_balance(user_id); val = self.values[0]
+        if val == "ban_haste":
+            cost = 10000
+            if bal < cost: return await interaction.response.send_message("❌ You need 10,000 Scoins.", ephemeral=True)
+            update_balance(user_id, -cost)
+            await interaction.response.send_message("🔨 **Haste has been BANNED!** (Not really, but you paid 10,000 Scoins for the flex).", ephemeral=False)
 
 class CasinoDashboard(View):
     def __init__(self):
@@ -1473,7 +1672,6 @@ class VCControlPanel(View):
         if not await self._check(i): return
         try: await self.vc.edit(user_limit=int(select.values[0])); await i.response.send_message(f"👥 Set.", ephemeral=True)
         except: await i.response.send_message("❌ Failed.", ephemeral=True)
-
 
 # ==================== RUN ====================
 if __name__ == "__main__":
