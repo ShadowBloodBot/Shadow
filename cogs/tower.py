@@ -5,6 +5,7 @@ import random
 import uuid
 import traceback
 from pathlib import Path
+
 import discord
 from discord import Option, ButtonStyle, SelectOption, Interaction
 from discord.ui import View, Button, Select
@@ -162,6 +163,48 @@ class TowerGameView(View):
         self.data["hp"] = min(self.data["hp"], self.stats["max_hp"])
         self.render_main_menu()
 
+    def get_inventory_embed(self):
+        stats = get_total_stats(self.data)
+        embed = discord.Embed(title=f"🎒 {self.user.display_name}'s Gear", color=THEME_PRIMARY)
+        
+        # Safely formatted string
+        s_text = (
+            f"❤️ **HP:** {self.data['hp']}/{stats['max_hp']}\n"
+            f"⚔️ **ATK:** {stats['atk']} (Str: {stats['str']})\n"
+            f"🛡️ **DEF:** {stats['vit'] // 2} (Vit: {stats['vit']})\n"
+            f"⚡ **CRIT:** {stats['crit_chance']}% (Agi: {stats['agi']})"
+        )
+        embed.add_field(name="📊 Stats", value=s_text, inline=True)
+        
+        g_text = ""
+        for slot in ITEM_SLOTS:
+            item = self.data["equipment"].get(slot)
+            if item:
+                stats_str = " ".join([f"**{k.upper()}**+{v}" for k,v in item['stats'].items()])
+                g_text += f"**{slot}:** {item['name']} ({stats_str})\n"
+            else: 
+                g_text += f"**{slot}:** Empty\n"
+        embed.add_field(name="🛡️ Equipment", value=g_text, inline=False)
+        
+        i_text = f"Items: {len(self.data['inventory'])}"
+        if not self.data["inventory"]: 
+            i_text += "\n(Empty)"
+        else:
+            for item in self.data["inventory"][:5]: 
+                i_text += f"\n• {item['name']}"
+            if len(self.data['inventory']) > 5: 
+                i_text += "\n...and more."
+                
+        embed.add_field(name="🎒 Backpack", value=i_text, inline=False)
+        return embed
+
+    def get_shop_embed(self):
+        embed = discord.Embed(title="⛺ Safe Zone Merchant", description="Stay a while and listen.", color=THEME_GOLD)
+        embed.add_field(name="Your Gold", value=f"💰 {self.data['gold']}")
+        embed.add_field(name="Potions", value=f"🧪 {self.data['potions']}")
+        embed.add_field(name="Inventory Value", value=f"💎 {sum([i['value'] for i in self.data['inventory']])}g")
+        return embed
+
     def update_embed(self, title, desc, color=THEME_PRIMARY):
         if self.mode == "INVENTORY": return self.get_inventory_embed()
         elif self.mode == "SHOP": return self.get_shop_embed()
@@ -171,14 +214,235 @@ class TowerGameView(View):
         a_bar = draw_bar(self.data.get("adrenaline", 0), 100, "🟨", 8)
         
         final_color = b_data["color"] if self.mode != "COMBAT" else THEME_COMBAT
-        embed = discord.Embed(title=f"{b_data['emoji']} {title} | Floor {self.data['floor']}", description=desc, color=final_color)
+        embed = discord.Embed(
+            title=f"{b_data['emoji']} {title} | Floor {self.data['floor']}", 
+            description=desc, 
+            color=final_color
+        )
         
         if self.mode == "COMBAT" and self.enemy:
             e_bar = draw_bar(self.enemy['hp'], self.enemy['max_hp'], "🟥")
             intent = self.enemy.get("intent", "Unknown")
-            embed.add_field(name=f"🆚 {self.enemy['name']}", value=f"{e_bar} {self.enemy['hp']} HP\n⚠️ **Intent:** {intent}", inline=False)
-            if self.combat_log: embed.add_field(name="📜 Combat Log", value=f"
-http://googleusercontent.com/immersive_entry_chip/0
+            embed.add_field(
+                name=f"🆚 {self.enemy['name']}", 
+                value=f"{e_bar} {self.enemy['hp']} HP\n⚠️ **Intent:** {intent}", 
+                inline=False
+            )
+            if self.combat_log: 
+                log_text = "\n".join(self.combat_log[-6:])
+                embed.add_field(name="📜 Combat Log", value=f"```ansi\n{log_text}\n```", inline=False)
 
-Let me know when you have these two saved, and we will wrap it up with `casino.py` and `music.py`!
+        stats_disp = f"⚔️{self.stats['atk']} 🛡️{self.stats['vit']//2} 💰{self.data['gold']}"
+        embed.add_field(
+            name=f"👤 {self.user.display_name} (Lvl {self.data['level']})", 
+            value=f"{p_bar} {self.data['hp']} HP\n{a_bar} Limit Break\n{stats_disp}", 
+            inline=False
+        )
+        embed.set_footer(text=f"{b_name}: {b_data['effect']}")
+        return embed
 
+    def render_main_menu(self):
+        self.clear_items()
+        if self.mode == "COMBAT":
+            atk_btn = Button(label="Attack", style=ButtonStyle.danger, emoji="⚔️", row=0)
+            atk_btn.callback = lambda i: self.wrapper(i, "act_atk")
+            self.add_item(atk_btn)
+            
+            def_btn = Button(label="Defend", style=ButtonStyle.secondary, emoji="🛡️", row=0)
+            def_btn.callback = lambda i: self.wrapper(i, "act_def")
+            self.add_item(def_btn)
+            
+            if self.data["potions"] > 0:
+                pot_btn = Button(label=f"Potion ({self.data['potions']})", style=ButtonStyle.success, emoji="🧪", row=0)
+                pot_btn.callback = lambda i: self.wrapper(i, "act_pot")
+                self.add_item(pot_btn)
+                
+            if self.data["adrenaline"] >= 100:
+                ult_btn = Button(label="LIMIT BREAK", style=ButtonStyle.primary, emoji="⚡", row=1)
+                ult_btn.callback = lambda i: self.wrapper(i, "act_ult")
+                self.add_item(ult_btn)
+                
+        elif self.mode == "EXPLORE":
+            climb_btn = Button(label="Climb", style=ButtonStyle.success, emoji="🧗", row=0)
+            climb_btn.callback = lambda i: self.wrapper(i, "nav_climb")
+            self.add_item(climb_btn)
+            
+            rest_btn = Button(label="Rest (100g)", style=ButtonStyle.primary, emoji="💤", row=0)
+            rest_btn.callback = lambda i: self.wrapper(i, "nav_rest")
+            self.add_item(rest_btn)
+            
+            gear_btn = Button(label="Bag/Gear", style=ButtonStyle.secondary, emoji="🎒", row=1)
+            gear_btn.callback = lambda i: self.wrapper(i, "nav_gear")
+            self.add_item(gear_btn)
+            
+        elif self.mode == "INVENTORY":
+            if self.data["inventory"]:
+                options = []
+                for item in self.data["inventory"][:25]:
+                    s_str = ", ".join([f"{k.upper()}+{v}" for k,v in item["stats"].items()])
+                    options.append(SelectOption(label=f"{item['name']} ({item['slot']})", description=s_str, value=item["id"]))
+                select = Select(placeholder="Equip Item...", options=options, row=0)
+                select.callback = self.equip_callback
+                self.add_item(select)
+                
+            back_btn = Button(label="Back to Game", style=ButtonStyle.secondary, emoji="↩️", row=1)
+            back_btn.callback = lambda i: self.wrapper(i, "nav_back")
+            self.add_item(back_btn)
+            
+        elif self.mode == "SHOP":
+            buy_btn = Button(label="Buy Potion (50g)", style=ButtonStyle.success, emoji="🧪", row=0)
+            buy_btn.callback = lambda i: self.wrapper(i, "shop_buy")
+            self.add_item(buy_btn)
+            
+            sell_btn = Button(label="Sell Junk", style=ButtonStyle.danger, emoji="💰", row=0)
+            sell_btn.callback = lambda i: self.wrapper(i, "shop_sell")
+            self.add_item(sell_btn)
+            
+            leave_btn = Button(label="Leave Shop", style=ButtonStyle.secondary, emoji="👋", row=1)
+            leave_btn.callback = lambda i: self.wrapper(i, "shop_leave")
+            self.add_item(leave_btn)
+
+    async def equip_callback(self, interaction):
+        if interaction.user.id != self.user.id: return
+        await interaction.response.defer() 
+        val = interaction.data["values"][0]
+        to_equip = next((i for i in self.data["inventory"] if i["id"] == val), None)
+        if to_equip:
+            slot = to_equip["slot"]; current = self.data["equipment"].get(slot)
+            if current: self.data["inventory"].append(current)
+            self.data["equipment"][slot] = to_equip; self.data["inventory"].remove(to_equip)
+            save_tower_data(self.user.id, self.data); self.stats = get_total_stats(self.data) 
+            self.render_main_menu() 
+            await interaction.edit_original_response(embed=self.update_embed("Gear Updated", ""), view=self)
+
+    async def wrapper(self, interaction, cid):
+        if interaction.user.id != self.user.id: return await interaction.response.send_message("🚫 Not your session.", ephemeral=True)
+        try:
+            await interaction.response.defer()
+            if "act_" in cid: await self.resolve_combat(interaction, cid)
+            elif cid == "nav_gear":
+                self.mode = "INVENTORY"; self.render_main_menu()
+                await interaction.edit_original_response(embed=self.update_embed("Inventory", ""), view=self)
+            elif cid == "nav_back":
+                self.mode = "EXPLORE"; self.render_main_menu()
+                await interaction.edit_original_response(embed=self.update_embed("Exploration", "Back to the tower."), view=self)
+            elif "shop_" in cid: await self.resolve_shop(interaction, cid)
+            else: await self.resolve_nav(interaction, cid)
+        except Exception as e: traceback.print_exc()
+
+    async def resolve_shop(self, interaction, cid):
+        if cid == "shop_buy":
+            if self.data["gold"] >= 50:
+                self.data["gold"] -= 50; self.data["potions"] += 1; save_tower_data(self.user.id, self.data)
+                await interaction.edit_original_response(embed=self.update_embed("Shop", "Bought potion."), view=self)
+            else: await interaction.followup.send("❌ Not enough gold.", ephemeral=True)
+        elif cid == "shop_sell":
+            total = sum([i["value"] for i in self.data["inventory"]]); count = len(self.data["inventory"])
+            self.data["inventory"] = []; self.data["gold"] += total; save_tower_data(self.user.id, self.data)
+            await interaction.edit_original_response(embed=self.update_embed("Shop", f"Sold {count} items for {total}g."), view=self)
+        elif cid == "shop_leave":
+            self.mode = "EXPLORE"; self.data["floor"] += 1; self.render_main_menu()
+            await interaction.edit_original_response(embed=self.update_embed("Exploration", "Moving on..."), view=self)
+
+    async def resolve_nav(self, interaction, cid):
+        if cid == "nav_rest":
+            if self.data["gold"] >= 100:
+                self.data["gold"] -= 100; self.data["hp"] = self.stats["max_hp"]; save_tower_data(self.user.id, self.data)
+                await interaction.edit_original_response(embed=self.update_embed("💤 Rested", "HP Fully Restored."), view=self)
+            else: await interaction.followup.send("❌ Need 100 Gold.", ephemeral=True)
+        elif cid == "nav_climb":
+            if self.data["floor"] % 5 == 0 and self.data["floor"] > 1:
+                self.mode = "SHOP"; self.render_main_menu()
+                await interaction.edit_original_response(embed=self.update_embed("Shop", "Safe zone reached."), view=self)
+                return
+            roll = random.randint(1, 100)
+            if roll <= 30: 
+                item = generate_rpg_item(self.data["floor"]); view = LootDropView(self.user, item)
+                stats_str = "\n".join([f"• **{k.upper()}:** +{v}" for k,v in item['stats'].items()])
+                
+                desc = (
+                    f"You found a chest!\n\n"
+                    f"**{item['name']}**\n"
+                    f"{stats_str}\n\n"
+                    f"*Value: {item['value']} Gold*"
+                )
+                
+                embed = discord.Embed(title="🎁 Treasure Found!", description=desc, color=RARITY_COLORS.get(item['rarity'], 0xFFFFFF))
+                await interaction.edit_original_response(embed=embed, view=view)
+            else: 
+                self.start_combat(); await interaction.edit_original_response(embed=self.update_embed("⚔️ Encounter!", "Prepare yourself!"), view=self)
+
+    def start_combat(self):
+        self.mode = "COMBAT"; floor = self.data["floor"]; name = get_monster(floor)
+        hp = (floor * 25) + 80; power = (floor * 3) + 5
+        self.enemy = {"name": name, "hp": hp, "max_hp": hp, "power": power, "intent": random.choice(["Attack", "Heavy Attack"])}
+        self.combat_log = [f"⚔️ Encountered {name}!"]; self.render_main_menu()
+
+    async def resolve_combat(self, interaction, action):
+        if not self.enemy: return
+        p_dmg, p_block = 0, 0
+        if action == "act_atk":
+            dmg = self.stats["atk"] + random.randint(-2, 2)
+            if random.randint(1, 100) <= self.stats["crit_chance"]: dmg = int(dmg * 1.5); self.combat_log.append(f"💥 CRIT! You deal {dmg} dmg.")
+            else: self.combat_log.append(f"🗡️ You deal {dmg} dmg.")
+            p_dmg = dmg; self.data["adrenaline"] = min(100, self.data["adrenaline"] + 10)
+        elif action == "act_def":
+            p_block = self.stats["vit"]; self.combat_log.append(f"🛡️ Block raised ({p_block}).")
+            self.data["adrenaline"] = min(100, self.data["adrenaline"] + 5)
+        elif action == "act_ult":
+            p_dmg = self.stats["atk"] * 3; self.combat_log.append(f"⚡ LIMIT BREAK! {p_dmg} DMG!")
+            self.data["adrenaline"] = 0
+        elif action == "act_pot":
+            heal = 50 + (self.stats["int"] * 2); self.data["hp"] = min(self.stats["max_hp"], self.data["hp"] + heal)
+            self.data["potions"] -= 1; self.combat_log.append(f"🧪 Healed +{heal} HP.")
+
+        self.enemy["hp"] -= p_dmg
+        if self.enemy["hp"] > 0:
+            e_dmg = self.enemy["power"]
+            if self.enemy["intent"] == "Heavy Attack": e_dmg = int(e_dmg * 1.5)
+            mitigation = (self.stats["vit"] // 3) + p_block
+            final_dmg = max(0, e_dmg - mitigation)
+            self.data["hp"] -= final_dmg
+            self.combat_log.append(f"👾 {self.enemy['name']} hits for {final_dmg} (Mitigated {mitigation}).")
+            self.enemy["intent"] = random.choice(["Attack", "Heavy Attack", "Defend"])
+        
+        if self.enemy["hp"] <= 0:
+            xp_gain = 20 + self.data["floor"]; gold_gain = 10 + (self.data["floor"] * 2)
+            self.data["xp"] += xp_gain; self.data["gold"] += gold_gain; self.data["floor"] += 1
+            self.mode = "EXPLORE"; self.enemy = None; req = self.data["level"] * 100
+            if self.data["xp"] >= req:
+                self.data["xp"] -= req; self.data["level"] += 1
+                self.data["stats"]["str"] += 1; self.data["stats"]["vit"] += 1
+                self.combat_log.append("✨ LEVEL UP! Stats Increased.")
+            save_tower_data(self.user_id, self.data); self.render_main_menu()
+            await interaction.edit_original_response(embed=self.update_embed("Victory!", f"Enemy Defeated.\n+{xp_gain} XP | +{gold_gain} Gold"), view=self)
+        elif self.data["hp"] <= 0:
+            self.data["hp"] = 0; lost_gold = int(self.data["gold"] / 2)
+            self.data["gold"] -= lost_gold; self.data["floor"] = max(1, self.data["floor"] - 5)
+            save_tower_data(self.user_id, self.data)
+            await interaction.edit_original_response(embed=self.update_embed("💀 Defeated", f"You fainted.\nLost {lost_gold} Gold.\nFloor reduced."), view=None)
+        else:
+            save_tower_data(self.user_id, self.data)
+            await interaction.edit_original_response(embed=self.update_embed("Combat", "Fighting..."), view=self)
+
+# --- COG SETUP ---
+class TowerCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self._load_data()
+
+    def _load_data(self):
+        global tower_db
+        if TOWER_STORE.exists():
+            try: tower_db = json.loads(TOWER_STORE.read_text())
+            except: tower_db = {}
+        else: tower_db = {}
+
+    @discord.slash_command(name="tower", description="Play RPG Tower")
+    async def tower(self, ctx):
+        view = TowerGameView(ctx.author)
+        embed = view.update_embed("The Shadow Tower", "You enter the dark tower...")
+        await safe_reply(ctx, embed=embed, view=view)
+
+def setup(bot):
+    bot.add_cog(TowerCog(bot))
