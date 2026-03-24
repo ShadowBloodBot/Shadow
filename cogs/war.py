@@ -12,6 +12,7 @@ THEME_COMBAT = 0xE67E22
 THEME_GOLD = 0xFFD700 
 WAR_THREAD_ID = 1475981718904242309
 WAR_ROLE_ID = 955600320287887400
+MASTER_ADMIN_ID = 482463400929263627
 
 QUINFALL_CLASSES = [
     ("Sword / Shield", "🛡️"), ("Life Staff", "🪄"), ("Two-Handed Sword", "🗡️"),
@@ -105,13 +106,16 @@ def generate_war_embed(data):
     return embed
 
 class WarStatsModal(Modal):
-    def __init__(self, msg_id, selected_class):
+    def __init__(self, msg_id, selected_class, existing_stats=None):
         super().__init__(title=f"Stats: {selected_class}"[:45])
         self.msg_id = msg_id; self.selected_class = selected_class
         self.stat_fields = CLASS_STATS_MAP.get(selected_class, ["HP", "AP", "DP", "MDP"])
+        existing_stats = existing_stats or {}
+        
         for stat in self.stat_fields:
             placeholder = "e.g., 50" if "%" in stat else "e.g., 4500"
-            self.add_item(TextInput(label=stat, placeholder=placeholder, required=True, max_length=7))
+            val_str = str(existing_stats.get(stat, ""))
+            self.add_item(TextInput(label=stat, placeholder=placeholder, value=val_str, required=True, max_length=7))
 
     async def callback(self, interaction: Interaction):
         uid = str(interaction.user.id)
@@ -131,6 +135,13 @@ class WarStatsModal(Modal):
         if "not_attending" not in war_db[self.msg_id]: war_db[self.msg_id]["not_attending"] = []
         if uid in war_db[self.msg_id]["not_attending"]: war_db[self.msg_id]["not_attending"].remove(uid)
 
+        # --- PERSISTENT PROFILES ---
+        if "profiles" not in war_db: war_db["profiles"] = {}
+        war_db["profiles"][uid] = {
+            "class": self.selected_class,
+            "stats": stat_values
+        }
+
         absences = []
         if uid in war_db[self.msg_id]["roster"] and isinstance(war_db[self.msg_id]["roster"][uid], dict):
             absences = war_db[self.msg_id]["roster"][uid].get("absences", [])
@@ -141,7 +152,7 @@ class WarStatsModal(Modal):
         try:
             msg = await interaction.channel.fetch_message(int(self.msg_id))
             await msg.edit(embed=generate_war_embed(war_db[self.msg_id]))
-            await interaction.response.send_message("✅ Class and Stats updated successfully!", ephemeral=True)
+            await interaction.response.send_message("✅ Profile and Roster updated successfully!", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"⚠️ Saved, but failed to update embed: {e}", ephemeral=True)
 
@@ -151,8 +162,35 @@ class WarClassSelect(Select):
         super().__init__(placeholder="1. Select Class to Join...", options=options, custom_id="war_class_select", min_values=1, max_values=1, row=0)
     async def callback(self, interaction: Interaction):
         msg_id = str(interaction.message.id)
+        uid = str(interaction.user.id)
         if msg_id not in war_db: return await interaction.response.send_message("❌ War not found in database.", ephemeral=True)
-        await interaction.response.send_modal(WarStatsModal(msg_id, self.values[0]))
+        
+        selected_class = self.values[0]
+        profile = war_db.get("profiles", {}).get(uid, {})
+        
+        # Auto-join if they already have stats saved for this class
+        if profile.get("class") == selected_class and profile.get("stats"):
+            if "roster" not in war_db[msg_id]: war_db[msg_id]["roster"] = {}
+            if "not_attending" not in war_db[msg_id]: war_db[msg_id]["not_attending"] = []
+            if uid in war_db[msg_id]["not_attending"]: war_db[msg_id]["not_attending"].remove(uid)
+
+            absences = []
+            if uid in war_db[msg_id]["roster"] and isinstance(war_db[msg_id]["roster"][uid], dict):
+                absences = war_db[msg_id]["roster"][uid].get("absences", [])
+
+            war_db[msg_id]["roster"][uid] = {
+                "class": selected_class, 
+                "stats": profile["stats"], 
+                "absences": absences
+            }
+            _save_wars()
+            
+            msg = await interaction.channel.fetch_message(int(msg_id))
+            await msg.edit(embed=generate_war_embed(war_db[msg_id]))
+            await interaction.response.send_message("✅ Auto-joined using your saved profile stats! (Use 'Update Stats' to change them)", ephemeral=True)
+        else:
+            # Need stats, pop modal
+            await interaction.response.send_modal(WarStatsModal(msg_id, selected_class))
 
 class WarAttendanceSelect(Select):
     def __init__(self):
@@ -162,6 +200,7 @@ class WarAttendanceSelect(Select):
         msg_id = str(interaction.message.id)
         if msg_id not in war_db: return await interaction.response.send_message("❌ War not found.", ephemeral=True)
         uid = str(interaction.user.id)
+        
         if uid not in war_db[msg_id].get("roster", {}): return await interaction.response.send_message("❌ Select a Class first!", ephemeral=True)
         if isinstance(war_db[msg_id]["roster"][uid], str): 
             war_db[msg_id]["roster"][uid] = {"class": war_db[msg_id]["roster"][uid], "absences": self.values}
@@ -170,6 +209,26 @@ class WarAttendanceSelect(Select):
             if "fights" in war_db[msg_id]["roster"][uid]: del war_db[msg_id]["roster"][uid]["fights"]
         _save_wars()
         await interaction.response.edit_message(embed=generate_war_embed(war_db[msg_id]))
+
+class WarUpdateStatsButton(Button):
+    def __init__(self): super().__init__(label="Update My Stats", style=ButtonStyle.success, custom_id="war_update_stats_btn", emoji="📈", row=2)
+    async def callback(self, interaction: Interaction):
+        msg_id = str(interaction.message.id)
+        uid = str(interaction.user.id)
+        
+        profile = war_db.get("profiles", {}).get(uid, {})
+        selected_class = profile.get("class")
+        
+        # Fallback to roster if they don't have a profile yet but somehow are in the list
+        if not selected_class:
+            roster_entry = war_db.get(msg_id, {}).get("roster", {}).get(uid)
+            if isinstance(roster_entry, dict): selected_class = roster_entry.get("class")
+            
+        if not selected_class:
+            return await interaction.response.send_message("❌ You must select a class from the dropdown first!", ephemeral=True)
+            
+        existing_stats = profile.get("stats", {})
+        await interaction.response.send_modal(WarStatsModal(msg_id, selected_class, existing_stats))
 
 class WarNotAttendingButton(Button):
     def __init__(self): super().__init__(label="Not Attending", style=ButtonStyle.danger, custom_id="war_not_attending_btn", emoji="❌", row=2)
@@ -183,7 +242,7 @@ class WarNotAttendingButton(Button):
         _save_wars(); await interaction.response.edit_message(embed=generate_war_embed(war_db[msg_id]))
 
 class WarLeaveButton(Button):
-    def __init__(self): super().__init__(label="Clear My Status", style=ButtonStyle.secondary, custom_id="war_leave_btn", emoji="🗑️", row=2)
+    def __init__(self): super().__init__(label="Remove Me", style=ButtonStyle.secondary, custom_id="war_leave_btn", emoji="🗑️", row=2)
     async def callback(self, interaction: Interaction):
         msg_id = str(interaction.message.id)
         if msg_id not in war_db: return await interaction.response.send_message("❌ War not found.", ephemeral=True)
@@ -191,12 +250,23 @@ class WarLeaveButton(Button):
         if uid in war_db[msg_id].get("roster", {}): del war_db[msg_id]["roster"][uid]; modified = True
         if uid in war_db[msg_id].get("not_attending", []): war_db[msg_id]["not_attending"].remove(uid); modified = True
         if modified: _save_wars(); await interaction.response.edit_message(embed=generate_war_embed(war_db[msg_id]))
-        else: await interaction.response.send_message("⚠️ You haven't selected a status yet.", ephemeral=True)
+        else: await interaction.response.send_message("⚠️ You aren't in the roster.", ephemeral=True)
+
+class WarClearRosterButton(Button):
+    def __init__(self): super().__init__(label="Admin: Clear Roster", style=ButtonStyle.danger, custom_id="war_admin_clear_btn", emoji="🛑", row=3)
+    async def callback(self, interaction: Interaction):
+        if interaction.user.id != MASTER_ADMIN_ID: return await interaction.response.send_message("⛔ Restricted. Only the Owner can use this.", ephemeral=True)
+        msg_id = str(interaction.message.id)
+        if msg_id not in war_db: return await interaction.response.send_message("❌ War not found.", ephemeral=True)
+        war_db[msg_id]["roster"] = {}
+        war_db[msg_id]["not_attending"] = []
+        _save_wars()
+        await interaction.response.edit_message(embed=generate_war_embed(war_db[msg_id]))
 
 class WarGenerateButton(Button):
     def __init__(self): super().__init__(label="Generate 20-Man Roster", style=ButtonStyle.primary, custom_id="war_generate_btn", emoji="📋", row=3)
     async def callback(self, interaction: Interaction):
-        if not is_war_role(interaction.user): return await interaction.response.send_message("⛔ Restricted to War Role.", ephemeral=True)
+        if interaction.user.id != MASTER_ADMIN_ID: return await interaction.response.send_message("⛔ Restricted. Only the Owner can use this.", ephemeral=True)
         msg_id = str(interaction.message.id)
         if msg_id not in war_db: return await interaction.response.send_message("❌ War not found.", ephemeral=True)
             
@@ -238,9 +308,11 @@ class WarRosterView(View):
         super().__init__(timeout=None)
         self.add_item(WarClassSelect())
         self.add_item(WarAttendanceSelect())
+        self.add_item(WarUpdateStatsButton())
         self.add_item(WarNotAttendingButton())
         self.add_item(WarLeaveButton())
         self.add_item(WarGenerateButton())
+        self.add_item(WarClearRosterButton())
 
 # --- COG SETUP ---
 class WarCog(commands.Cog):
@@ -254,6 +326,7 @@ class WarCog(commands.Cog):
             try: war_db = json.loads(WAR_STORE.read_text())
             except: war_db = {}
         else: war_db = {}
+        if "profiles" not in war_db: war_db["profiles"] = {}
 
     @discord.slash_command(name="create_war", description="Create a Quinfall War Roster (requires War Role)")
     async def create_war(self, ctx, title: Option(str, description="Title of the war"), hammer_time: Option(str, description="Paste timestamp from HammerTime")):
