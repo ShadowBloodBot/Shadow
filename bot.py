@@ -1,4 +1,4 @@
-# bot.py — ShadowSyn (Master: Unified v8.8 - 20-Man Vanguard Sorting + Events Restored)
+# bot.py — ShadowSyn (Master: Unified v8.8 - All Slash Commands Restored)
 #
 # === FEATURES ===
 # [x] ⚔️ WAR ROSTER: Dynamic stat inputs AND 20-Man Vanguard sorting (Tanks/Healers/Necros/Ranged DPS).
@@ -817,53 +817,8 @@ class FTCControlView(View):
         embed = generate_ftc_embed(self.savings, self.price, self.state, self.fhb)
         await i.response.edit_message(embed=embed, view=self)
 
-@bot.slash_command(name="ftc", description="Interactive FTC & Buying Power Calculator (Owner Only)")
-@owner_only()
-async def ftc(
-    ctx,
-    state: Option(str, description="Australian State", choices=["NSW", "VIC", "QLD", "WA", "SA", "TAS", "ACT", "NT"]),
-    savings: Option(int, description="Client savings amount", required=False),
-    purchase_price: Option(int, description="Target purchase price", required=False),
-    fhb: Option(bool, description="First Home Buyer?", default=False)
-):
-    if not savings and not purchase_price:
-        return await safe_reply(ctx, "❌ You must provide at least `savings` or `purchase_price`.", ephemeral=True)
-    embed = generate_ftc_embed(savings, purchase_price, state, fhb)
-    view = FTCControlView(savings, purchase_price, state, fhb, ctx.author.id)
-    await safe_reply(ctx, embed=embed, view=view)
-
 
 # ==================== COMMANDS: WAR ROSTER ====================
-
-@bot.slash_command(name="create_war", description="Create a Quinfall War Roster (requires War Role)")
-async def create_war(
-    ctx, 
-    title: Option(str, description="Title of the war"), 
-    hammer_time: Option(str, description="Paste timestamp from HammerTime (e.g., <t:170000000:F>)")
-):
-    if not is_war_role(ctx.author):
-        return await safe_reply(ctx, "⛔ Restricted. You must have the required role.", ephemeral=True)
-        
-    target_channel = bot.get_channel(WAR_THREAD_ID) or await bot.fetch_channel(WAR_THREAD_ID)
-    if not target_channel:
-        return await safe_reply(ctx, "❌ War channel thread not found.", ephemeral=True)
-        
-    war_data = {
-        "title": title,
-        "time": hammer_time,
-        "roster": {},
-        "not_attending": []
-    }
-    
-    embed = generate_war_embed(war_data)
-    view = WarRosterView()
-    
-    msg = await target_channel.send(content="@everyone New War Scheduled!", embed=embed, view=view)
-    
-    war_db[str(msg.id)] = war_data
-    _save_wars()
-    
-    await safe_reply(ctx, f"✅ War roster created in {target_channel.mention}", ephemeral=True)
 
 def generate_war_embed(data):
     embed = discord.Embed(title=f"⚔️ {data['title']}", description=f"**Time:** {data['time']}\nSelect your class and if you'll miss any fights below!", color=THEME_COMBAT)
@@ -1942,6 +1897,170 @@ class VCControlPanel(View):
         if not await self._check(i): return
         try: await self.vc.edit(user_limit=int(select.values[0])); await i.response.send_message(f"👥 Set.", ephemeral=True)
         except: await i.response.send_message("❌ Failed.", ephemeral=True)
+
+
+# ==================== SLASH COMMANDS ====================
+
+@bot.slash_command(name="speak", description="Text to Speech (Auto-Translates)")
+@dj_or_admin()
+async def speak(ctx, text: str, language: Option(str, choices=LANG_CHOICES, default="English")):
+    vc = await ensure_voice_simple(ctx)
+    if not vc: return
+
+    try:
+        lang_code = LANG_CODES.get(language, 'en')
+        text_to_speak = text
+        if lang_code != 'en':
+            try:
+                translation = await bot.loop.run_in_executor(None, lambda: translator.translate(text, dest=lang_code))
+                text_to_speak = translation.text
+            except Exception as tr_err:
+                print(f"Translation Error: {tr_err}")
+                text_to_speak = text 
+
+        await safe_reply(ctx, f"🗣️ **{language}:** {text_to_speak}", ephemeral=True)
+
+        log_ch = bot.get_channel(SPEAK_LOG_THREAD_ID)
+        if log_ch:
+            try: await log_ch.send(f"🗣️ **{ctx.author.display_name}** ({language}): {text_to_speak}")
+            except: pass
+
+        tts = gTTS(text=text_to_speak, lang=lang_code)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
+            tts.save(fp.name)
+            temp_path = fp.name
+        
+        vc.play(discord.FFmpegPCMAudio(temp_path), after=lambda e: os.remove(temp_path))
+    except Exception as e:
+        await safe_reply(ctx, f"❌ Error: {e}", ephemeral=True)
+
+@bot.slash_command(name="haste", description="Random Haste Fact")
+async def haste(ctx):
+    if not active_haste_facts: return await safe_reply(ctx, "No facts yet.")
+    fact = random.choice(active_haste_facts)
+    await safe_reply(ctx, f"🍌 **Fact:** {fact}")
+
+@bot.slash_command(name="morehaste", description="Add Haste Fact")
+@admin_only()
+async def morehaste(ctx, fact: str):
+    active_haste_facts.append(fact)
+    _save_haste_facts()
+    await safe_reply(ctx, "✅ Added.")
+
+@bot.slash_command(name="gamble", description="Open Casino")
+async def gamble(ctx):
+    if ctx.channel.id != CASINO_CHANNEL_ID:
+        return await safe_reply(ctx, f"❌ Go to <#{CASINO_CHANNEL_ID}> to gamble.", ephemeral=True)
+    if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
+    embed = discord.Embed(title="🎰 ShadowSyn Casino", description="Welcome.", color=THEME_PRIMARY)
+    embed.set_footer(text=f"Balance: {get_balance(str(ctx.author.id))}")
+    await safe_reply(ctx, embed=embed, view=CasinoDashboard(), ephemeral=True)
+
+@bot.slash_command(name="duel", description="Duel user")
+async def duel(ctx, opponent: discord.Member, amount: str):
+    if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
+    if amount == "all": bet = get_balance(str(ctx.author.id))
+    else: bet = int(amount)
+    embed = discord.Embed(title="⚔️ DUEL", description=f"{ctx.author.mention} vs {opponent.mention}\nPot: {bet*2}", color=discord.Color.red())
+    await safe_reply(ctx, content=opponent.mention, embed=embed, view=DuelAcceptView(ctx.author, opponent, bet))
+
+@bot.slash_command(name="wallet", description="Check balance")
+async def wallet(ctx, user: Option(discord.User, required=False)):
+    if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
+    t = user or ctx.author
+    await safe_reply(ctx, f"💳 {t.display_name}: {get_balance(str(t.id))} Scoins")
+
+@bot.slash_command(name="give_scoins", description="Owner Only")
+@owner_only()
+async def give_scoins(ctx, user: discord.Member, amount: int):
+    update_balance(str(user.id), amount)
+    await safe_reply(ctx, f"✅ Done. New balance: {get_balance(str(user.id))}", ephemeral=True)
+
+@bot.slash_command(name="play", description="Play a song")
+@dj_or_admin()
+async def play(ctx, search: str):
+    await safe_defer(ctx)
+    vc = await ensure_voice_simple(ctx)
+    if not vc: return
+    info = await bot.loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(YTDL_SEARCH_OPTIONS).extract_info(f"ytsearch5:{search}", download=False))
+    if not info or 'entries' not in info or not info['entries']:
+        return await safe_reply(ctx, "❌ No results found.", ephemeral=True)
+    entries = info['entries']
+    view = MusicSelectionView(entries, ctx, vc)
+    await safe_reply(ctx, "🔎 **Select a track:**", view=view)
+
+@bot.slash_command(name="queue", description="Show music queue")
+async def queue(ctx):
+    if ctx.guild.id not in bot.audio_queues or not bot.audio_queues[ctx.guild.id]:
+        return await safe_reply(ctx, "Queue is empty.")
+    lines = [f"{i+1}. {title}" for i, (url, title) in enumerate(bot.audio_queues[ctx.guild.id])]
+    await safe_reply(ctx, "\n".join(lines[:10]))
+
+@bot.slash_command(name="skip", description="Skip song")
+@dj_or_admin()
+async def skip(ctx):
+    if ctx.guild.voice_client: ctx.guild.voice_client.stop(); await safe_reply(ctx, "⏭️ Skipped.")
+
+@bot.slash_command(name="stop", description="Stop music")
+@dj_or_admin()
+async def stop(ctx):
+    if ctx.guild.id in bot.audio_queues: bot.audio_queues[ctx.guild.id].clear()
+    if ctx.guild.voice_client: ctx.guild.voice_client.stop(); await safe_reply(ctx, "⏹️ Stopped.")
+
+@bot.slash_command(name="join", description="Join VC")
+@dj_or_admin()
+async def join(ctx):
+    await ensure_voice_simple(ctx); await safe_reply(ctx, "✅ Joined.")
+
+@bot.slash_command(name="tower", description="Play RPG Tower")
+async def tower(ctx):
+    view = TowerGameView(ctx.author)
+    embed = view.update_embed("The Shadow Tower", "You enter the dark tower...")
+    await safe_reply(ctx, embed=embed, view=view)
+
+# --- CUSTOM EMBEDS (SIMPLE FORM) ---
+class EasyEmbedModal(Modal):
+    def __init__(self, channel, edit_msg=None):
+        super().__init__(title="Edit Embed" if edit_msg else "Create Custom Embed")
+        self.channel = channel
+        self.edit_msg = edit_msg
+        pre_title = edit_msg.embeds[0].title if edit_msg and edit_msg.embeds else ""
+        pre_desc = edit_msg.embeds[0].description if edit_msg and edit_msg.embeds else ""
+        pre_foot = edit_msg.embeds[0].footer.text if edit_msg and edit_msg.embeds and edit_msg.embeds[0].footer else ""
+        pre_col = str(hex(edit_msg.embeds[0].color.value)).replace("0x", "#") if edit_msg and edit_msg.embeds and edit_msg.embeds[0].color else ""
+        self.add_item(TextInput(label="Title", placeholder="Embed Title...", value=pre_title, required=True))
+        self.add_item(TextInput(label="Description", placeholder="Main content...", value=pre_desc, style=discord.InputTextStyle.paragraph, required=True))
+        self.add_item(TextInput(label="Footer (Optional)", placeholder="Small text at bottom...", value=pre_foot, required=False))
+        self.add_item(TextInput(label="Color (Hex)", placeholder="#2B0B35", value=pre_col, required=False))
+        
+    async def callback(self, interaction: Interaction):
+        title = self.children[0].value; desc = self.children[1].value; footer = self.children[2].value; color_raw = self.children[3].value
+        try: color = int(color_raw.replace("#", ""), 16) if color_raw else THEME_PRIMARY
+        except: color = THEME_PRIMARY
+        embed = discord.Embed(title=title, description=desc, color=color)
+        if footer: embed.set_footer(text=footer)
+        if self.edit_msg:
+            await self.edit_msg.edit(embed=embed)
+            await interaction.response.send_message("✅ Embed Updated!", ephemeral=True)
+        else:
+            await self.channel.send(embed=embed)
+            await interaction.response.send_message("✅ Embed Sent!", ephemeral=True)
+
+@bot.slash_command(name="send_custom", description="Send a clean embed message")
+@admin_only()
+async def send_custom(ctx, channel: Option(discord.TextChannel, required=False)):
+    target = channel or ctx.channel
+    await ctx.send_modal(EasyEmbedModal(target))
+
+@bot.slash_command(name="edit_custom", description="Edit an existing bot embed")
+@admin_only()
+async def edit_custom(ctx, message_id: str, channel: Option(discord.TextChannel, required=False)):
+    target_channel = channel or ctx.channel
+    try:
+        msg = await target_channel.fetch_message(int(message_id))
+        if msg.author != ctx.bot.user: return await ctx.respond("❌ I can only edit my own messages.", ephemeral=True)
+        await ctx.send_modal(EasyEmbedModal(target_channel, edit_msg=msg))
+    except Exception as e: await ctx.respond(f"❌ Error finding message: {e}", ephemeral=True)
 
 # ==================== RUN ====================
 if __name__ == "__main__":
