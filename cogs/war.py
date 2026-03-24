@@ -35,6 +35,12 @@ CLASS_STATS_MAP = {
     "Necromancer": ["HP", "AP", "DP", "MDP"]
 }
 
+# All classes not explicitly Tank, Healer, or Necro fall into the DPS Flex Pool
+DPS_CLASSES = [
+    "Two-Handed Sword", "Spear", "Dual Axe", "Dual Dagger", 
+    "War Hammer", "Bow", "Dual Crossbow", "Elementalist"
+]
+
 # --- PERSISTENCE ---
 PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve()
 try: PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
@@ -77,16 +83,11 @@ def generate_war_embed(data):
             cls = info; absences = []
         else:
             cls = info.get("class")
-            if "absences" in info: absences = info["absences"]
-            elif "fights" in info: absences = [f for f in ["1", "2", "3", "4", "5"] if f not in info["fights"]]
-            else: absences = []
+            absences = info.get("absences", [])
             
             if "stats" in info:
                 stats_list = [f"{k}: {v}" for k, v in info["stats"].items()]
                 stats_str = f" `[{' | '.join(stats_list)}]`"
-            else:
-                ap = info.get("ap"); dp = info.get("dp"); mdp = info.get("mdp")
-                if ap and dp and mdp: stats_str = f" `[AP: {ap} | DP: {dp} | MDP: {mdp}]`"
             
         fight_str = f" *(Absent Round {', '.join(sorted(absences))})*" if absences else ""
         if cls in class_counts: class_counts[cls].append(f"<@{uid}>{stats_str}{fight_str}")
@@ -135,12 +136,8 @@ class WarStatsModal(Modal):
         if "not_attending" not in war_db[self.msg_id]: war_db[self.msg_id]["not_attending"] = []
         if uid in war_db[self.msg_id]["not_attending"]: war_db[self.msg_id]["not_attending"].remove(uid)
 
-        # --- PERSISTENT PROFILES ---
         if "profiles" not in war_db: war_db["profiles"] = {}
-        war_db["profiles"][uid] = {
-            "class": self.selected_class,
-            "stats": stat_values
-        }
+        war_db["profiles"][uid] = {"class": self.selected_class, "stats": stat_values}
 
         absences = []
         if uid in war_db[self.msg_id]["roster"] and isinstance(war_db[self.msg_id]["roster"][uid], dict):
@@ -168,7 +165,6 @@ class WarClassSelect(Select):
         selected_class = self.values[0]
         profile = war_db.get("profiles", {}).get(uid, {})
         
-        # Auto-join if they already have stats saved for this class
         if profile.get("class") == selected_class and profile.get("stats"):
             if "roster" not in war_db[msg_id]: war_db[msg_id]["roster"] = {}
             if "not_attending" not in war_db[msg_id]: war_db[msg_id]["not_attending"] = []
@@ -178,18 +174,13 @@ class WarClassSelect(Select):
             if uid in war_db[msg_id]["roster"] and isinstance(war_db[msg_id]["roster"][uid], dict):
                 absences = war_db[msg_id]["roster"][uid].get("absences", [])
 
-            war_db[msg_id]["roster"][uid] = {
-                "class": selected_class, 
-                "stats": profile["stats"], 
-                "absences": absences
-            }
+            war_db[msg_id]["roster"][uid] = {"class": selected_class, "stats": profile["stats"], "absences": absences}
             _save_wars()
             
             msg = await interaction.channel.fetch_message(int(msg_id))
             await msg.edit(embed=generate_war_embed(war_db[msg_id]))
             await interaction.response.send_message("✅ Auto-joined using your saved profile stats! (Use 'Update Stats' to change them)", ephemeral=True)
         else:
-            # Need stats, pop modal
             await interaction.response.send_modal(WarStatsModal(msg_id, selected_class))
 
 class WarAttendanceSelect(Select):
@@ -215,11 +206,9 @@ class WarUpdateStatsButton(Button):
     async def callback(self, interaction: Interaction):
         msg_id = str(interaction.message.id)
         uid = str(interaction.user.id)
-        
         profile = war_db.get("profiles", {}).get(uid, {})
         selected_class = profile.get("class")
         
-        # Fallback to roster if they don't have a profile yet but somehow are in the list
         if not selected_class:
             roster_entry = war_db.get(msg_id, {}).get("roster", {}).get(uid)
             if isinstance(roster_entry, dict): selected_class = roster_entry.get("class")
@@ -253,9 +242,9 @@ class WarLeaveButton(Button):
         else: await interaction.response.send_message("⚠️ You aren't in the roster.", ephemeral=True)
 
 class WarClearRosterButton(Button):
-    def __init__(self): super().__init__(label="Admin: Clear Roster", style=ButtonStyle.danger, custom_id="war_admin_clear_btn", emoji="🛑", row=3)
+    def __init__(self): super().__init__(label="Admin: Clear", style=ButtonStyle.danger, custom_id="war_admin_clear_btn", emoji="🛑", row=3)
     async def callback(self, interaction: Interaction):
-        if interaction.user.id != MASTER_ADMIN_ID: return await interaction.response.send_message("⛔ Restricted. Only the Owner can use this.", ephemeral=True)
+        if interaction.user.id != MASTER_ADMIN_ID: return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
         msg_id = str(interaction.message.id)
         if msg_id not in war_db: return await interaction.response.send_message("❌ War not found.", ephemeral=True)
         war_db[msg_id]["roster"] = {}
@@ -263,45 +252,153 @@ class WarClearRosterButton(Button):
         _save_wars()
         await interaction.response.edit_message(embed=generate_war_embed(war_db[msg_id]))
 
+
+# ==================== DRAFT MODE & UI ====================
+
+class DraftSelect(Select):
+    def __init__(self, role_name, pool, selected_uids, stat_name, row):
+        self.role_name = role_name
+        self.stat_name = stat_name
+        self.pool_dict = {uid: (val, name) for uid, val, name in pool}
+        options = []
+        
+        if not pool:
+            options.append(SelectOption(label="No players signed up", value="none"))
+            super().__init__(placeholder=f"{role_name} (0 Available)", options=options, disabled=True, row=row)
+        else:
+            for uid, stat_val, name in pool[:25]:  # Discord max is 25 per dropdown
+                options.append(SelectOption(
+                    label=name[:25], 
+                    value=uid, 
+                    description=f"{stat_val:g} {stat_name}", 
+                    default=(uid in selected_uids)
+                ))
+            max_val = min(len(options), 20)
+            super().__init__(placeholder=f"Select {role_name}...", options=options, min_values=0, max_values=max_val, row=row)
+
+    async def callback(self, interaction: Interaction):
+        uids = [val for val in self.values if val != "none"]
+        if self.role_name == "Tanks": self.view.selected_tanks = uids
+        elif self.role_name == "Healers": self.view.selected_healers = uids
+        elif self.role_name == "Necros": self.view.selected_necros = uids
+        elif self.role_name == "DPS": self.view.selected_dps = uids
+        
+        for opt in self.options:
+            opt.default = (opt.value in uids)
+            
+        await self.view.update_draft(interaction)
+
+class WarDraftView(View):
+    def __init__(self, war_title, all_tanks, all_healers, all_necros, all_dps, top_tanks, top_healers, top_necros, top_dps):
+        super().__init__(timeout=900)
+        self.war_title = war_title
+        
+        self.all_tanks = all_tanks
+        self.all_healers = all_healers
+        self.all_necros = all_necros
+        self.all_dps = all_dps
+        
+        self.selected_tanks = top_tanks
+        self.selected_healers = top_healers
+        self.selected_necros = top_necros
+        self.selected_dps = top_dps
+
+        self.add_item(DraftSelect("Tanks", all_tanks, top_tanks, "MDP", 0))
+        self.add_item(DraftSelect("Healers", all_healers, top_healers, "Heal %", 1))
+        self.add_item(DraftSelect("Necros", all_necros, top_necros, "HP", 2))
+        self.add_item(DraftSelect("DPS", all_dps, top_dps, "AP", 3))
+
+        publish_btn = Button(label="Publish Final Roster", style=ButtonStyle.success, emoji="✅", row=4)
+        publish_btn.callback = self.publish
+        self.add_item(publish_btn)
+
+    def generate_draft_embed(self):
+        embed = discord.Embed(title="🛠️ Draft: 20-Man Vanguard", description=f"**{self.war_title}**\nEdit players below before publishing.", color=THEME_GOLD)
+        
+        def format_team(uids, pool):
+            if not uids: return "None Selected"
+            pool_dict = {u: (val, name) for u, val, name in pool}
+            lines = []
+            for uid in uids:
+                if uid in pool_dict:
+                    val, name = pool_dict[uid]
+                    lines.append(f"<@{uid}> - **{val:g}**")
+                else: lines.append(f"<@{uid}>")
+            return "\n".join(lines)
+
+        embed.add_field(name=f"🛡️ Tanks ({len(self.selected_tanks)})", value=format_team(self.selected_tanks, self.all_tanks), inline=False)
+        embed.add_field(name=f"🪄 Healers ({len(self.selected_healers)})", value=format_team(self.selected_healers, self.all_healers), inline=False)
+        embed.add_field(name=f"💀 Necromancers ({len(self.selected_necros)})", value=format_team(self.selected_necros, self.all_necros), inline=False)
+        embed.add_field(name=f"⚔️ DPS ({len(self.selected_dps)})", value=format_team(self.selected_dps, self.all_dps), inline=False)
+        
+        total = len(self.selected_tanks) + len(self.selected_healers) + len(self.selected_necros) + len(self.selected_dps)
+        embed.set_footer(text=f"Total Selected: {total}/20")
+        return embed
+
+    async def update_draft(self, interaction):
+        await interaction.response.edit_message(embed=self.generate_draft_embed(), view=self)
+
+    async def publish(self, interaction):
+        embed = self.generate_draft_embed()
+        embed.title = "🏆 FINAL: 20-Man Vanguard"
+        embed.description = f"**{self.war_title}**\nThe team has been locked in by command."
+        
+        # Ping the selected users so they know they made the cut
+        all_selected = self.selected_tanks + self.selected_healers + self.selected_necros + self.selected_dps
+        pings = " ".join([f"<@{uid}>" for uid in all_selected])
+        
+        await interaction.channel.send(content=f"**VANGUARD ROSTER DEPLOYED:**\n{pings}", embed=embed)
+        await interaction.response.edit_message(content="✅ Roster successfully published to the channel!", embed=None, view=None)
+
+
 class WarGenerateButton(Button):
-    def __init__(self): super().__init__(label="Generate 20-Man Roster", style=ButtonStyle.primary, custom_id="war_generate_btn", emoji="📋", row=3)
+    def __init__(self): super().__init__(label="Generate Roster", style=ButtonStyle.primary, custom_id="war_generate_btn", emoji="📋", row=3)
     async def callback(self, interaction: Interaction):
         if interaction.user.id != MASTER_ADMIN_ID: return await interaction.response.send_message("⛔ Restricted. Only the Owner can use this.", ephemeral=True)
         msg_id = str(interaction.message.id)
         if msg_id not in war_db: return await interaction.response.send_message("❌ War not found.", ephemeral=True)
             
         roster = war_db[msg_id].get("roster", {})
+        war_title = war_db[msg_id].get("title", "War Roster")
+        
         def parse_stat(val):
             try: return float(val.replace("%", "").replace(",", "")) if isinstance(val, str) else float(val)
             except: return 0.0
 
-        tanks, healers, necros, dps = [], [], [], []
+        all_tanks, all_healers, all_necros, all_dps = [], [], [], []
 
         for uid, info in roster.items():
             if isinstance(info, str): continue
+            
             c = info.get("class"); stats = info.get("stats", {})
-            if c == "Sword / Shield": tanks.append((uid, parse_stat(stats.get("MDP", 0))))
-            elif c == "Life Staff": healers.append((uid, parse_stat(stats.get("Heal Multiplier (%)", 0))))
-            elif c == "Necromancer": necros.append((uid, parse_stat(stats.get("HP", 0))))
-            elif c in ["Elementalist", "Dual Crossbow"]: dps.append((uid, parse_stat(stats.get("AP", 0))))
+            member = interaction.guild.get_member(int(uid))
+            name = member.display_name if member else f"User {uid}"
+            
+            if c == "Sword / Shield": all_tanks.append((uid, parse_stat(stats.get("MDP", 0)), name))
+            elif c == "Life Staff": all_healers.append((uid, parse_stat(stats.get("Heal Multiplier (%)", 0)), name))
+            elif c == "Necromancer": all_necros.append((uid, parse_stat(stats.get("HP", 0)), name))
+            elif c in DPS_CLASSES: all_dps.append((uid, parse_stat(stats.get("AP", 0)), name))
 
-        tanks.sort(key=lambda x: x[1], reverse=True); healers.sort(key=lambda x: x[1], reverse=True)
-        necros.sort(key=lambda x: x[1], reverse=True); dps.sort(key=lambda x: x[1], reverse=True)
+        all_tanks.sort(key=lambda x: x[1], reverse=True); all_healers.sort(key=lambda x: x[1], reverse=True)
+        all_necros.sort(key=lambda x: x[1], reverse=True); all_dps.sort(key=lambda x: x[1], reverse=True)
 
-        top_tanks = tanks[:4]; top_healers = healers[:4]; top_necros = necros[:4]; top_dps = dps[:8]
+        top_tanks = [x[0] for x in all_tanks[:4]]
+        top_healers = [x[0] for x in all_healers[:4]]
+        top_necros = [x[0] for x in all_necros[:4]]
+        top_dps = [x[0] for x in all_dps[:8]]
 
-        def format_team(selected_list, stat_name):
-            if not selected_list: return "None"
-            return "\n".join([f"<@{uid}> - **{val:g}** {stat_name}" for uid, val in selected_list])
-        
-        embed = discord.Embed(title="🏆 20-Man Vanguard Roster", description="Selected based on highest stat priority.", color=THEME_GOLD)
-        embed.add_field(name=f"🛡️ Tanks (Top {len(top_tanks)}/4)", value=format_team(top_tanks, "MDP"), inline=False)
-        embed.add_field(name=f"🪄 Healers (Top {len(top_healers)}/4)", value=format_team(top_healers, "Heal Multiplier (%)"), inline=False)
-        embed.add_field(name=f"💀 Necromancers (Top {len(top_necros)}/4)", value=format_team(top_necros, "HP"), inline=False)
-        embed.add_field(name=f"🏹 Ranged DPS (Top {len(top_dps)}/8)", value=format_team(top_dps, "AP"), inline=False)
-        total = len(top_tanks) + len(top_healers) + len(top_necros) + len(top_dps)
-        embed.set_footer(text=f"Total Selected: {total}/20")
-        await interaction.response.send_message(embed=embed)
+        draft_view = WarDraftView(
+            war_title, 
+            all_tanks, all_healers, all_necros, all_dps, 
+            top_tanks, top_healers, top_necros, top_dps
+        )
+
+        await interaction.response.send_message(
+            content="🛠️ **Draft Mode (Admin Only):** Review and swap members before publishing.",
+            embed=draft_view.generate_draft_embed(),
+            view=draft_view,
+            ephemeral=True
+        )
 
 class WarRosterView(View):
     def __init__(self):
