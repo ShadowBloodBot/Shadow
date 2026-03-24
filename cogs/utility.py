@@ -5,6 +5,7 @@ import random
 import re
 from pathlib import Path
 from datetime import datetime, timezone
+from typing import Optional
 
 import discord
 from discord.ext import commands
@@ -235,6 +236,7 @@ class EasyEmbedModal(Modal):
         else:
             await self.channel.send(embed=embed); await interaction.response.send_message("✅ Embed Sent!", ephemeral=True)
 
+
 class MinionView(View):
     def __init__(self, target_member_id):
         super().__init__(timeout=86400)
@@ -250,6 +252,7 @@ class MinionView(View):
             await i.response.send_message(f"✅ Granted.", ephemeral=True)
         else: 
             await i.response.send_message("❌ Error.", ephemeral=True)
+
 
 class UtilityCog(commands.Cog):
     def __init__(self, bot):
