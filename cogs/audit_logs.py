@@ -112,7 +112,7 @@ class AuditLogsCog(commands.Cog):
                 actions.append(f"🔄 Moved: **{before.channel.name}** ➡️ **{after.channel.name}**")
                 color = THEME_INFO
 
-        # 2. Detect Server Mutes and Deafens
+        # 2. Detect Server Mutes and Deafens (Admin actions)
         if before.mute != after.mute:
             if after.mute:
                 actions.append("🔇 Server Muted")
@@ -128,6 +128,19 @@ class AuditLogsCog(commands.Cog):
             else:
                 actions.append("🔔 Server Undeafened")
                 color = THEME_WIN
+
+        # 3. Detect Self Mutes and Deafens (User actions)
+        if before.self_mute != after.self_mute:
+            if after.self_mute:
+                actions.append("🎙️ Muted Mic (Self)")
+            else:
+                actions.append("🎙️ Unmuted Mic (Self)")
+                
+        if before.self_deaf != after.self_deaf:
+            if after.self_deaf:
+                actions.append("🎧 Deafened (Self)")
+            else:
+                actions.append("🎧 Undeafened (Self)")
 
         if actions:
             embed = discord.Embed(description="\n".join(actions), color=color, timestamp=datetime.now(timezone.utc))
