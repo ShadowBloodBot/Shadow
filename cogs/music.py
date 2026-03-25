@@ -303,7 +303,13 @@ class MusicCog(commands.Cog):
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         guild = member.guild
+        
+        # --- JTC LOGIC ---
         if after.channel and after.channel.id == JOIN_TO_CREATE_CHANNEL_ID:
+            # PREVENT LOOP: If user is already in a temp VC, don't trigger new creation
+            if before.channel and before.channel.id in self.active_temp_vcs:
+                return
+                
             try:
                 cat = get(guild.categories, id=VC_CATEGORY_ID) or after.channel.category
                 new_vc = await guild.create_voice_channel(
@@ -322,6 +328,7 @@ class MusicCog(commands.Cog):
                 asyncio.create_task(send_control_panel(new_vc, member))
             except Exception as e: traceback.print_exc()
                 
+        # --- CLEANUP LOGIC ---
         if before.channel and before.channel.id in self.active_temp_vcs and len(before.channel.members) == 0:
             try: 
                 await before.channel.delete()
