@@ -442,7 +442,13 @@ class WarCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._load_data()
+        # DELETED: self.bot.add_view(WarRosterView()) from here
+
+    # --- THE FIX: REGISTER VIEW IN ON_READY ---
+    @commands.Cog.listener()
+    async def on_ready(self):
         self.bot.add_view(WarRosterView())
+        print("✅ Registered persistent WarRosterView")
 
     def _load_data(self):
         global war_db
@@ -468,7 +474,6 @@ class WarCog(commands.Cog):
         
         await safe_reply(ctx, f"✅ War roster created in {target_channel.mention}", ephemeral=True)
 
-    # --- THE FIX: RESTORE GHOSTED ROSTERS ---
     @discord.slash_command(name="refresh_war", description="Admin: Restores a broken/ghosted war message without losing data")
     async def refresh_war(self, ctx, message_id: Option(str, description="The ID of the broken roster message")):
         if not is_war_role(ctx.author):
