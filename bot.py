@@ -1,5 +1,4 @@
-# bot.py — Main Entry Point
-
+# bot.py
 import os
 import discord
 from discord.ext import commands
@@ -23,7 +22,9 @@ cogs_list = [
     "cogs.war",
     "cogs.music",
     "cogs.casino",
-    "cogs.tower"
+    "cogs.tower",
+    "cogs.jtc",
+    "cogs.audit_logs"
 ]
 
 for cog in cogs_list:
