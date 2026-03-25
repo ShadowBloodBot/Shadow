@@ -119,6 +119,9 @@ class WarStatsModal(Modal):
             self.add_item(TextInput(label=stat, placeholder=placeholder, value=val_str, required=True, max_length=7))
 
     async def callback(self, interaction: Interaction):
+        # Armored Deferral to prevent 10062 timeouts while updating DB and editing messages
+        await interaction.response.defer(ephemeral=True)
+
         uid = str(interaction.user.id)
         stat_values = {}
         for i, stat in enumerate(self.stat_fields):
@@ -128,10 +131,10 @@ class WarStatsModal(Modal):
                 float(clean_val) 
                 if "%" in stat and "%" not in val: val += "%" 
             except ValueError:
-                return await interaction.response.send_message(f"❌ Validation Error: `{val}` is not a valid number for {stat}. Please enter numbers only.", ephemeral=True)
+                return await interaction.followup.send(f"❌ Validation Error: `{val}` is not a valid number for {stat}. Please enter numbers only.", ephemeral=True)
             stat_values[stat] = val
 
-        if self.msg_id not in war_db: return await interaction.response.send_message("❌ War not found in database.", ephemeral=True)
+        if self.msg_id not in war_db: return await interaction.followup.send("❌ War not found in database.", ephemeral=True)
         if "roster" not in war_db[self.msg_id]: war_db[self.msg_id]["roster"] = {}
         if "not_attending" not in war_db[self.msg_id]: war_db[self.msg_id]["not_attending"] = []
         if uid in war_db[self.msg_id]["not_attending"]: war_db[self.msg_id]["not_attending"].remove(uid)
@@ -149,9 +152,9 @@ class WarStatsModal(Modal):
         try:
             msg = await interaction.channel.fetch_message(int(self.msg_id))
             await msg.edit(embed=generate_war_embed(war_db[self.msg_id]))
-            await interaction.response.send_message("✅ Profile and Roster updated successfully!", ephemeral=True)
+            await interaction.followup.send("✅ Profile and Roster updated successfully!", ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"⚠️ Saved, but failed to update embed: {e}", ephemeral=True)
+            await interaction.followup.send(f"⚠️ Saved, but failed to update embed: {e}", ephemeral=True)
 
 class WarClassSelect(Select):
     def __init__(self):
@@ -166,6 +169,7 @@ class WarClassSelect(Select):
         profile = war_db.get("profiles", {}).get(uid, {})
         
         if profile.get("class") == selected_class and profile.get("stats"):
+            await interaction.response.defer(ephemeral=True)
             if "roster" not in war_db[msg_id]: war_db[msg_id]["roster"] = {}
             if "not_attending" not in war_db[msg_id]: war_db[msg_id]["not_attending"] = []
             if uid in war_db[msg_id]["not_attending"]: war_db[msg_id]["not_attending"].remove(uid)
@@ -179,7 +183,7 @@ class WarClassSelect(Select):
             
             msg = await interaction.channel.fetch_message(int(msg_id))
             await msg.edit(embed=generate_war_embed(war_db[msg_id]))
-            await interaction.response.send_message("✅ Auto-joined using your saved profile stats! (Use 'Update Stats' to change them)", ephemeral=True)
+            await interaction.followup.send("✅ Auto-joined using your saved profile stats! (Use 'Update Stats' to change them)", ephemeral=True)
         else:
             await interaction.response.send_modal(WarStatsModal(msg_id, selected_class))
 
@@ -193,13 +197,18 @@ class WarAttendanceSelect(Select):
         uid = str(interaction.user.id)
         
         if uid not in war_db[msg_id].get("roster", {}): return await interaction.response.send_message("❌ Select a Class first!", ephemeral=True)
+        
+        await interaction.response.defer()
         if isinstance(war_db[msg_id]["roster"][uid], str): 
             war_db[msg_id]["roster"][uid] = {"class": war_db[msg_id]["roster"][uid], "absences": self.values}
         else:
             war_db[msg_id]["roster"][uid]["absences"] = self.values
             if "fights" in war_db[msg_id]["roster"][uid]: del war_db[msg_id]["roster"][uid]["fights"]
         _save_wars()
-        await interaction.response.edit_message(embed=generate_war_embed(war_db[msg_id]))
+        
+        msg = await interaction.channel.fetch_message(int(msg_id))
+        await msg.edit(embed=generate_war_embed(war_db[msg_id]))
+        await interaction.followup.send("✅ Attendance updated.", ephemeral=True)
 
 class WarUpdateStatsButton(Button):
     def __init__(self): super().__init__(label="Update My Stats", style=ButtonStyle.success, custom_id="war_update_stats_btn", emoji="📈", row=2)
@@ -225,10 +234,16 @@ class WarNotAttendingButton(Button):
         msg_id = str(interaction.message.id)
         if msg_id not in war_db: return await interaction.response.send_message("❌ War not found.", ephemeral=True)
         uid = str(interaction.user.id)
+        
+        await interaction.response.defer()
         if "not_attending" not in war_db[msg_id]: war_db[msg_id]["not_attending"] = []
         if uid in war_db[msg_id].get("roster", {}): del war_db[msg_id]["roster"][uid]
         if uid not in war_db[msg_id]["not_attending"]: war_db[msg_id]["not_attending"].append(uid)
-        _save_wars(); await interaction.response.edit_message(embed=generate_war_embed(war_db[msg_id]))
+        _save_wars()
+        
+        msg = await interaction.channel.fetch_message(int(msg_id))
+        await msg.edit(embed=generate_war_embed(war_db[msg_id]))
+        await interaction.followup.send("✅ Marked as Not Attending.", ephemeral=True)
 
 class WarLeaveButton(Button):
     def __init__(self): super().__init__(label="Remove Me", style=ButtonStyle.secondary, custom_id="war_leave_btn", emoji="🗑️", row=2)
@@ -236,10 +251,18 @@ class WarLeaveButton(Button):
         msg_id = str(interaction.message.id)
         if msg_id not in war_db: return await interaction.response.send_message("❌ War not found.", ephemeral=True)
         uid = str(interaction.user.id); modified = False
+        
         if uid in war_db[msg_id].get("roster", {}): del war_db[msg_id]["roster"][uid]; modified = True
         if uid in war_db[msg_id].get("not_attending", []): war_db[msg_id]["not_attending"].remove(uid); modified = True
-        if modified: _save_wars(); await interaction.response.edit_message(embed=generate_war_embed(war_db[msg_id]))
-        else: await interaction.response.send_message("⚠️ You aren't in the roster.", ephemeral=True)
+        
+        if modified: 
+            await interaction.response.defer()
+            _save_wars()
+            msg = await interaction.channel.fetch_message(int(msg_id))
+            await msg.edit(embed=generate_war_embed(war_db[msg_id]))
+            await interaction.followup.send("✅ Removed from the roster event.", ephemeral=True)
+        else: 
+            await interaction.response.send_message("⚠️ You aren't in the roster.", ephemeral=True)
 
 class WarClearRosterButton(Button):
     def __init__(self): super().__init__(label="Admin: Clear", style=ButtonStyle.danger, custom_id="war_admin_clear_btn", emoji="🛑", row=3)
@@ -247,11 +270,15 @@ class WarClearRosterButton(Button):
         if interaction.user.id != MASTER_ADMIN_ID: return await interaction.response.send_message("⛔ Restricted.", ephemeral=True)
         msg_id = str(interaction.message.id)
         if msg_id not in war_db: return await interaction.response.send_message("❌ War not found.", ephemeral=True)
+        
+        await interaction.response.defer()
         war_db[msg_id]["roster"] = {}
         war_db[msg_id]["not_attending"] = []
         _save_wars()
-        await interaction.response.edit_message(embed=generate_war_embed(war_db[msg_id]))
-
+        
+        msg = await interaction.channel.fetch_message(int(msg_id))
+        await msg.edit(embed=generate_war_embed(war_db[msg_id]))
+        await interaction.followup.send("🛑 Roster cleared by Admin.", ephemeral=True)
 
 # ==================== DRAFT MODE & UI ====================
 
@@ -350,7 +377,6 @@ class WarDraftView(View):
         await interaction.channel.send(content=f"**VANGUARD ROSTER DEPLOYED:**\n{pings}", embed=embed)
         await interaction.response.edit_message(content="✅ Roster successfully published to the channel!", embed=None, view=None)
 
-
 class WarGenerateButton(Button):
     def __init__(self): super().__init__(label="Generate Roster", style=ButtonStyle.primary, custom_id="war_generate_btn", emoji="📋", row=3)
     async def callback(self, interaction: Interaction):
@@ -416,6 +442,11 @@ class WarCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._load_data()
+        
+        # --- THE FIX: REGISTER PERSISTENT VIEW ---
+        # This tells Py-cord to look for these custom_id buttons on old messages
+        # after a bot restart and route the clicks to the WarRosterView class.
+        self.bot.add_view(WarRosterView())
 
     def _load_data(self):
         global war_db
