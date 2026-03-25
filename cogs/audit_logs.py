@@ -7,10 +7,13 @@ from datetime import datetime, timezone
 # --- CONSTANTS & IDS ---
 THEME_PRIMARY = 0x2B0B35
 THEME_LOSS = 0xF04747 
+THEME_WIN = 0x43B581
+THEME_INFO = 0x3498DB
 
 ARRIVALS_THREAD_ID = 959629903186259978
-ROLE_MINION_ID = 955600021502431233
 DEPARTURES_THREAD_ID = 960088192177029140
+ROLE_MINION_ID = 955600021502431233
+VOICE_AUDIT_CHANNEL_ID = 961726632249425930
 
 # --- HELPERS ---
 def format_age(dt):
@@ -33,7 +36,7 @@ class MinionView(View):
         r = i.guild.get_role(ROLE_MINION_ID)
         if m and r: 
             await m.add_roles(r)
-            await i.response.send_message(f"✅ Granted.", ephemeral=True)
+            await i.response.send_message("✅ Granted.", ephemeral=True)
         else: 
             await i.response.send_message("❌ Error.", ephemeral=True)
 
@@ -49,7 +52,10 @@ class AuditLogsCog(commands.Cog):
             em = discord.Embed(description=f"{member.mention} joined **{member.guild.name}**", color=THEME_PRIMARY)
             em.set_author(name=str(member), icon_url=member.display_avatar.url if member.display_avatar else None)
             em.set_footer(text="Tap to grant Minion")
-            await ch.send(embed=em, view=MinionView(member.id))
+            try:
+                await ch.send(embed=em, view=MinionView(member.id))
+            except Exception:
+                pass
 
     @commands.Cog.listener()
     async def on_member_remove(self, member):
@@ -66,7 +72,7 @@ class AuditLogsCog(commands.Cog):
                 if entry.target.id == member.id and (now - entry.created_at).total_seconds() < 10:
                     title = "🥾 Member Kicked"
                     description = f"{member.mention} kicked the server.\nBy: **{entry.user.name}** ({entry.user.display_name})"
-                    color = 0xF04747 
+                    color = THEME_LOSS 
                     break
         except: pass
 
@@ -75,7 +81,63 @@ class AuditLogsCog(commands.Cog):
         embed.add_field(name="Account Age", value=format_age(member.created_at), inline=True)
         embed.add_field(name="Details", value=description, inline=False)
         embed.set_footer(text=f"ID: {member.id}")
-        await channel.send(embed=embed)
+        
+        try:
+            await channel.send(embed=embed)
+        except Exception:
+            pass
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member, before, after):
+        # Fetch the specific audit channel/thread
+        channel = self.bot.get_channel(VOICE_AUDIT_CHANNEL_ID)
+        if not channel:
+            try:
+                channel = await self.bot.fetch_channel(VOICE_AUDIT_CHANNEL_ID)
+            except Exception:
+                return
+
+        actions = []
+        color = THEME_PRIMARY
+
+        # 1. Detect Channel Movement
+        if before.channel != after.channel:
+            if before.channel is None:
+                actions.append(f"📥 Joined **{after.channel.name}**")
+                color = THEME_WIN
+            elif after.channel is None:
+                actions.append(f"📤 Left **{before.channel.name}**")
+                color = THEME_LOSS
+            else:
+                actions.append(f"🔄 Moved: **{before.channel.name}** ➡️ **{after.channel.name}**")
+                color = THEME_INFO
+
+        # 2. Detect Server Mutes and Deafens
+        if before.mute != after.mute:
+            if after.mute:
+                actions.append("🔇 Server Muted")
+                color = THEME_LOSS
+            else:
+                actions.append("🔊 Server Unmuted")
+                color = THEME_WIN
+        
+        if before.deaf != after.deaf:
+            if after.deaf:
+                actions.append("🔕 Server Deafened")
+                color = THEME_LOSS
+            else:
+                actions.append("🔔 Server Undeafened")
+                color = THEME_WIN
+
+        if actions:
+            embed = discord.Embed(description="\n".join(actions), color=color, timestamp=datetime.now(timezone.utc))
+            embed.set_author(name=f"{member.display_name} Voice Update", icon_url=member.display_avatar.url if member.display_avatar else None)
+            embed.set_footer(text=f"User ID: {member.id}")
+            
+            try:
+                await channel.send(embed=embed)
+            except Exception:
+                pass
 
 def setup(bot):
     bot.add_cog(AuditLogsCog(bot))
