@@ -1,4 +1,5 @@
 # cogs/audit_logs.py
+import asyncio
 import discord
 from discord.ext import commands
 from discord.ui import View, Button
@@ -47,12 +48,19 @@ class AuditLogsCog(commands.Cog):
 
     # --- INTERNAL HELPER FOR AUDIT LOG CROSS-REFERENCING ---
     async def _get_mod(self, guild, action_type, target):
-        """Silently scans the audit log to see if a moderator performed this action in the last 5 seconds."""
+        """Silently scans the audit log. Uses heuristic matching for moves/disconnects due to Discord API limits."""
+        # Force a small delay to allow Discord's backend to write to the Audit Log database
+        await asyncio.sleep(1.5)
         try:
             now = datetime.now(timezone.utc)
-            async for entry in guild.audit_logs(limit=5, action=action_type):
-                if entry.target.id == target.id and (now - entry.created_at).total_seconds() < 5:
-                    return entry.user
+            async for entry in guild.audit_logs(limit=3, action=action_type):
+                if (now - entry.created_at).total_seconds() < 6:
+                    # Discord API limitation: MEMBER_MOVE & MEMBER_DISCONNECT do not contain target user IDs
+                    if action_type in [discord.AuditLogAction.member_move, discord.AuditLogAction.member_disconnect]:
+                        return entry.user
+                    # For Mutes/Deafens, Discord provides the exact target ID
+                    elif entry.target and entry.target.id == target.id:
+                        return entry.user
         except Exception:
             pass
         return None
