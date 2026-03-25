@@ -1,0 +1,81 @@
+# cogs/audit_logs.py
+import discord
+from discord.ext import commands
+from discord.ui import View, Button
+from datetime import datetime, timezone
+
+# --- CONSTANTS & IDS ---
+THEME_PRIMARY = 0x2B0B35
+THEME_LOSS = 0xF04747 
+
+ARRIVALS_THREAD_ID = 959629903186259978
+ROLE_MINION_ID = 955600021502431233
+DEPARTURES_THREAD_ID = 960088192177029140
+
+# --- HELPERS ---
+def format_age(dt):
+    if not dt: return "Unknown"
+    delta = datetime.now(timezone.utc) - dt
+    if delta.days > 365: return f"{delta.days // 365} years ago"
+    return f"{delta.days} days ago"
+
+# --- VIEWS ---
+class MinionView(View):
+    def __init__(self, target_member_id):
+        super().__init__(timeout=86400)
+        self.target = target_member_id
+        b = Button(label="Minion", style=discord.ButtonStyle.success)
+        b.callback = self.grant
+        self.add_item(b)
+        
+    async def grant(self, i):
+        m = i.guild.get_member(self.target)
+        r = i.guild.get_role(ROLE_MINION_ID)
+        if m and r: 
+            await m.add_roles(r)
+            await i.response.send_message(f"✅ Granted.", ephemeral=True)
+        else: 
+            await i.response.send_message("❌ Error.", ephemeral=True)
+
+# --- COG LOGIC ---
+class AuditLogsCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member):
+        ch = self.bot.get_channel(ARRIVALS_THREAD_ID)
+        if ch:
+            em = discord.Embed(description=f"{member.mention} joined **{member.guild.name}**", color=THEME_PRIMARY)
+            em.set_author(name=str(member), icon_url=member.display_avatar.url if member.display_avatar else None)
+            em.set_footer(text="Tap to grant Minion")
+            await ch.send(embed=em, view=MinionView(member.id))
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member):
+        channel = member.guild.get_channel(DEPARTURES_THREAD_ID) or await member.guild.fetch_channel(DEPARTURES_THREAD_ID)
+        if not channel: return
+        
+        title = "👋 Member Left"
+        description = f"{member.mention} left the server."
+        color = THEME_LOSS 
+        now = datetime.now(timezone.utc)
+        
+        try:
+            async for entry in member.guild.audit_logs(limit=1, action=discord.AuditLogAction.kick):
+                if entry.target.id == member.id and (now - entry.created_at).total_seconds() < 10:
+                    title = "🥾 Member Kicked"
+                    description = f"{member.mention} kicked the server.\nBy: **{entry.user.name}** ({entry.user.display_name})"
+                    color = 0xF04747 
+                    break
+        except: pass
+
+        embed = discord.Embed(title=title, color=color, timestamp=now)
+        embed.add_field(name="User", value=f"{member.mention}\n{member.name}", inline=False)
+        embed.add_field(name="Account Age", value=format_age(member.created_at), inline=True)
+        embed.add_field(name="Details", value=description, inline=False)
+        embed.set_footer(text=f"ID: {member.id}")
+        await channel.send(embed=embed)
+
+def setup(bot):
+    bot.add_cog(AuditLogsCog(bot))
