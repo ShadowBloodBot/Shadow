@@ -45,6 +45,18 @@ class AuditLogsCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    # --- INTERNAL HELPER FOR AUDIT LOG CROSS-REFERENCING ---
+    async def _get_mod(self, guild, action_type, target):
+        """Silently scans the audit log to see if a moderator performed this action in the last 5 seconds."""
+        try:
+            now = datetime.now(timezone.utc)
+            async for entry in guild.audit_logs(limit=5, action=action_type):
+                if entry.target.id == target.id and (now - entry.created_at).total_seconds() < 5:
+                    return entry.user
+        except Exception:
+            pass
+        return None
+
     @commands.Cog.listener()
     async def on_member_join(self, member):
         ch = self.bot.get_channel(ARRIVALS_THREAD_ID)
@@ -100,33 +112,41 @@ class AuditLogsCog(commands.Cog):
         actions = []
         color = THEME_PRIMARY
 
-        # 1. Detect Channel Movement
+        # 1. Detect Channel Movement & Moderator Disconnects/Moves
         if before.channel != after.channel:
             if before.channel is None:
                 actions.append(f"📥 Joined **{after.channel.name}**")
                 color = THEME_WIN
             elif after.channel is None:
-                actions.append(f"📤 Left **{before.channel.name}**")
+                mod = await self._get_mod(member.guild, discord.AuditLogAction.member_disconnect, member)
+                mod_text = f"\n*(Disconnected by {mod.mention})*" if mod else ""
+                actions.append(f"📤 Left **{before.channel.name}**{mod_text}")
                 color = THEME_LOSS
             else:
-                actions.append(f"🔄 Moved: **{before.channel.name}** ➡️ **{after.channel.name}**")
+                mod = await self._get_mod(member.guild, discord.AuditLogAction.member_move, member)
+                mod_text = f"\n*(Moved by {mod.mention})*" if mod else ""
+                actions.append(f"🔄 Moved: **{before.channel.name}** ➡️ **{after.channel.name}**{mod_text}")
                 color = THEME_INFO
 
         # 2. Detect Server Mutes and Deafens (Admin actions)
         if before.mute != after.mute:
+            mod = await self._get_mod(member.guild, discord.AuditLogAction.member_update, member)
+            mod_text = f" *(by {mod.mention})*" if mod else ""
             if after.mute:
-                actions.append("🔇 Server Muted")
+                actions.append(f"🔇 Server Muted{mod_text}")
                 color = THEME_LOSS
             else:
-                actions.append("🔊 Server Unmuted")
+                actions.append(f"🔊 Server Unmuted{mod_text}")
                 color = THEME_WIN
         
         if before.deaf != after.deaf:
+            mod = await self._get_mod(member.guild, discord.AuditLogAction.member_update, member)
+            mod_text = f" *(by {mod.mention})*" if mod else ""
             if after.deaf:
-                actions.append("🔕 Server Deafened")
+                actions.append(f"🔕 Server Deafened{mod_text}")
                 color = THEME_LOSS
             else:
-                actions.append("🔔 Server Undeafened")
+                actions.append(f"🔔 Server Undeafened{mod_text}")
                 color = THEME_WIN
 
         # 3. Detect Self Mutes and Deafens (User actions)
