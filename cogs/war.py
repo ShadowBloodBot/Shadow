@@ -442,10 +442,6 @@ class WarCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._load_data()
-        
-        # --- THE FIX: REGISTER PERSISTENT VIEW ---
-        # This tells Py-cord to look for these custom_id buttons on old messages
-        # after a bot restart and route the clicks to the WarRosterView class.
         self.bot.add_view(WarRosterView())
 
     def _load_data(self):
@@ -471,6 +467,39 @@ class WarCog(commands.Cog):
         war_db[str(msg.id)] = war_data; _save_wars()
         
         await safe_reply(ctx, f"✅ War roster created in {target_channel.mention}", ephemeral=True)
+
+    # --- THE FIX: RESTORE GHOSTED ROSTERS ---
+    @discord.slash_command(name="refresh_war", description="Admin: Restores a broken/ghosted war message without losing data")
+    async def refresh_war(self, ctx, message_id: Option(str, description="The ID of the broken roster message")):
+        if not is_war_role(ctx.author):
+            return await safe_reply(ctx, "⛔ Restricted. You must have the required role.", ephemeral=True)
+            
+        if message_id not in war_db:
+            return await safe_reply(ctx, "❌ That message ID is not in the active database. (Was the database wiped?)", ephemeral=True)
+            
+        await ctx.defer(ephemeral=True)
+        war_data = war_db[message_id]
+        
+        target_channel = self.bot.get_channel(WAR_THREAD_ID) or await self.bot.fetch_channel(WAR_THREAD_ID)
+        if not target_channel: return await ctx.followup.send("❌ War channel thread not found.")
+        
+        embed = generate_war_embed(war_data)
+        view = WarRosterView()
+        
+        new_msg = await target_channel.send(content="🔄 **Roster Refreshed** (Fixing Interaction Error)", embed=embed, view=view)
+        
+        # Migrate data to new message ID
+        war_db[str(new_msg.id)] = war_data
+        del war_db[message_id]
+        _save_wars()
+        
+        # Cleanup old message silently
+        try:
+            old_msg = await target_channel.fetch_message(int(message_id))
+            await old_msg.delete()
+        except: pass
+        
+        await ctx.followup.send(f"✅ Roster perfectly restored and synced to the new message!")
 
 def setup(bot):
     bot.add_cog(WarCog(bot))
