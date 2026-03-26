@@ -1,10 +1,11 @@
 # ---- Base image
 FROM python:3.11-slim
 
-# ---- System deps: FFmpeg + Opus for Discord voice
+# ---- System deps: FFmpeg + Opus + Sodium for Discord voice
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libopus0 \
+    libsodium23 \
  && rm -rf /var/lib/apt/lists/*
 
 # ---- Make Python output unbuffered (better logs)
