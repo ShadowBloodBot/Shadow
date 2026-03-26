@@ -52,14 +52,11 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
         if hasattr(ctx_or_inter, 'respond'): return await ctx_or_inter.respond(*args, **kwargs)
         elif hasattr(ctx_or_inter, 'response'):
             if not ctx_or_inter.response.is_done(): return await ctx_or_inter.response.send_message(*args, **kwargs)
-            else: return await ctx_or_inter.followup.send(*args, **kwargs)
+            else: return await ctx.followup.send(*args, **kwargs)
     except: return None
 
 async def ensure_voice(ctx):
-    if not isinstance(ctx.author, discord.Member) or not ctx.author.voice or not ctx.author.voice.channel:
-        await safe_reply(ctx, "❌ You must be in a Voice Channel to use this.", ephemeral=True)
-        return None
-    
+    """Connects to the voice channel ONLY when explicitly called."""
     channel = ctx.author.voice.channel
     vc = ctx.guild.voice_client
     
@@ -69,7 +66,7 @@ async def ensure_voice(ctx):
                 if vc.channel.id != channel.id:
                     await vc.move_to(channel)
             else:
-                # Armored: Force cleanup of dead UDP sockets before reconnecting
+                # Clean up zombie connections before re-establishing
                 try: await vc.disconnect(force=True)
                 except: pass
                 vc = await channel.connect(timeout=20, reconnect=True)
@@ -99,32 +96,37 @@ class TTSCog(commands.Cog):
         # 2. Armored Deferral
         await ctx.defer() 
         
-        vc = await ensure_voice(ctx)
-        if not vc: return
-        
-        # 3. Collision Detection
-        if vc.is_playing():
+        # 3. Pre-flight Voice Check (Do not connect yet, just verify they are in a channel)
+        if not isinstance(ctx.author, discord.Member) or not ctx.author.voice or not ctx.author.voice.channel:
+            return await ctx.followup.send("❌ You must be in a Voice Channel to use this.", ephemeral=True)
+
+        # 4. Collision Detection
+        vc = ctx.guild.voice_client
+        if vc and vc.is_playing():
             return await ctx.followup.send("⚠️ I am already speaking or playing music. Please wait.", ephemeral=True)
 
         try:
+            # 5. Offline Generation Phase (Happens BEFORE joining the voice channel)
             file_name = f"tts_{uuid.uuid4().hex[:8]}.mp3"
             file_path = TEMP_AUDIO_DIR / file_name
 
-            # Offload blocking network call to prevent event loop stutter
             def generate_tts():
-                # Handle specific top-level domains for regional accents
                 if language == "au":
                     tts = gTTS(text=text, lang="en", tld="com.au", slow=False)
                 elif language == "uk":
                     tts = gTTS(text=text, lang="en", tld="co.uk", slow=False)
                 else:
                     tts = gTTS(text=text, lang=language, slow=False)
-                
                 tts.save(str(file_path))
 
             await self.bot.loop.run_in_executor(None, generate_tts)
 
-            # Define automatic cleanup to protect container storage
+            # 6. Connection Phase (The file is ready, NOW we join)
+            active_vc = await ensure_voice(ctx)
+            if not active_vc: 
+                return # Connection failed, error handled inside ensure_voice
+
+            # 7. Execution Phase
             def after_play(error):
                 if error: print(f"⚠️ TTS Playback Error: {error}")
                 try:
@@ -132,15 +134,8 @@ class TTSCog(commands.Cog):
                 except Exception as e:
                     print(f"⚠️ Failed to delete temp TTS file: {e}")
 
-            # 4. ARMOR CHECK: Did Discord drop us while downloading the audio?
-            if not vc.is_connected():
-                try: await vc.disconnect(force=True)
-                except: pass
-                vc = await ctx.author.voice.channel.connect(timeout=20, reconnect=True)
-
-            # 5. Stream Execution
             source = discord.FFmpegPCMAudio(str(file_path), **FFMPEG_OPTIONS)
-            vc.play(source, after=after_play)
+            active_vc.play(source, after=after_play)
             
             # Fetch human-readable language name for the log output
             lang_name = next((choice.name for choice in TTS_LANGUAGES if choice.value == language), language)
