@@ -41,12 +41,10 @@ TTS_LANGUAGES = [
     OptionChoice(name="Vietnamese", value="vi")
 ]
 
-# --- HELPERS ---
 def has_tts_role(user):
     if not isinstance(user, discord.Member): return False
     return any(r.id == TTS_ROLE_ID for r in user.roles)
 
-# --- COG LOGIC ---
 class TTSCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -59,21 +57,21 @@ class TTSCog(commands.Cog):
         language: Option(str, description="Select the language or accent", choices=TTS_LANGUAGES, default="en")
     ):
         if not has_tts_role(ctx.author):
-            return await ctx.respond("⛔ Restricted. You do not have the required role to use TTS.", ephemeral=True)
+            return await ctx.respond("⛔ Restricted.", ephemeral=True)
 
         await ctx.defer() 
         
-        if not isinstance(ctx.author, discord.Member) or not ctx.author.voice or not ctx.author.voice.channel:
+        if not getattr(ctx.author, "voice", None) or not ctx.author.voice.channel:
             return await ctx.followup.send("❌ You must be in a Voice Channel to use this.", ephemeral=True)
 
-        # 1. OFFLINE GENERATION FIRST (No idle voice sockets)
+        # 1. OFFLINE GENERATION
         file_name = f"tts_{uuid.uuid4().hex[:8]}.mp3"
         file_path = TEMP_AUDIO_DIR / file_name
 
         def generate_tts():
-            if language == "au": tts = gTTS(text=text, lang="en", tld="com.au", slow=False)
-            elif language == "uk": tts = gTTS(text=text, lang="en", tld="co.uk", slow=False)
-            else: tts = gTTS(text=text, lang=language, slow=False)
+            tld = "com.au" if language == "au" else "co.uk" if language == "uk" else "com"
+            lang_code = "en" if language in ["au", "uk"] else language
+            tts = gTTS(text=text, lang=lang_code, tld=tld, slow=False)
             tts.save(str(file_path))
 
         try:
@@ -82,11 +80,11 @@ class TTSCog(commands.Cog):
             traceback.print_exc()
             return await ctx.followup.send(f"❌ Audio Generation Failed: {e}", ephemeral=True)
 
-        # 2. NATIVE CONNECTION (The file is ready, join now)
+        # 2. CLEAN NATIVE CONNECTION
         vc = ctx.guild.voice_client
         try:
-            if not vc:
-                vc = await ctx.author.voice.channel.connect()
+            if not vc or not vc.is_connected():
+                vc = await ctx.author.voice.channel.connect(timeout=20.0)
             elif vc.channel.id != ctx.author.voice.channel.id:
                 await vc.move_to(ctx.author.voice.channel)
         except Exception as e:
@@ -95,13 +93,13 @@ class TTSCog(commands.Cog):
         if vc.is_playing():
             return await ctx.followup.send("⚠️ I am already speaking. Please wait.", ephemeral=True)
 
-        # 3. STREAM & CLEANUP
+        # 3. THE EXPERT FIX: FFmpegOpusAudio
+        # This bypasses the Python GIL and encrypts natively, stopping Py-cord from crashing.
         try:
-            source = discord.FFmpegPCMAudio(str(file_path), options='-vn')
+            source = await discord.FFmpegOpusAudio.from_probe(str(file_path))
             
             def after_play(error):
                 if error: print(f"⚠️ TTS Playback Error: {error}")
-                # Dispatch async cleanup
                 async def cleanup():
                     await asyncio.sleep(2.0)
                     try:
