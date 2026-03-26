@@ -24,7 +24,8 @@ cogs_list = [
     "cogs.casino",
     "cogs.tower",
     "cogs.jtc",
-    "cogs.audit_logs"
+    "cogs.audit_logs",
+    "cogs.tts"  # <-- Added the new TTS module here
 ]
 
 for cog in cogs_list:
