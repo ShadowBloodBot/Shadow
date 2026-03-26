@@ -115,7 +115,7 @@ class WarStatsModal(Modal):
         
         for stat in self.stat_fields:
             placeholder = "e.g., 50" if "%" in stat else "e.g., 4500"
-            val_str = str(existing_stats.get(stat, ""))[:15] # Prevents 400 Bad Request crashes
+            val_str = str(existing_stats.get(stat, ""))[:15]
             self.add_item(TextInput(label=stat, placeholder=placeholder, value=val_str, required=True, max_length=15))
 
     async def callback(self, interaction: Interaction):
@@ -152,7 +152,6 @@ class WarStatsModal(Modal):
             await msg.edit(embed=generate_war_embed(war_db[self.msg_id]))
             await interaction.followup.send("✅ Profile and Roster updated successfully!", ephemeral=True)
         except Exception as e:
-            print(f"MODAL CRASH: {e}")
             traceback.print_exc()
             await interaction.followup.send(f"⚠️ Internal Error: {e}", ephemeral=True)
 
@@ -160,37 +159,38 @@ class WarClassSelect(Select):
     def __init__(self):
         options = [SelectOption(label=name, value=name, emoji=emoji) for name, emoji in QUINFALL_CLASSES]
         super().__init__(placeholder="1. Select Class to Join...", options=options, custom_id="war_class_select", min_values=1, max_values=1, row=0)
+    
     async def callback(self, interaction: Interaction):
-        try:
-            msg_id = str(interaction.message.id)
-            uid = str(interaction.user.id)
-            if msg_id not in war_db: return await interaction.response.send_message("❌ War not found. Use /refresh_war on this message to restore it.", ephemeral=True)
-            
-            selected_class = self.values[0]
-            profile = war_db.get("profiles", {}).get(uid, {})
-            
-            if profile.get("class") == selected_class and profile.get("stats"):
-                await interaction.response.defer(ephemeral=True)
-                if "roster" not in war_db[msg_id]: war_db[msg_id]["roster"] = {}
-                if "not_attending" not in war_db[msg_id]: war_db[msg_id]["not_attending"] = []
-                if uid in war_db[msg_id]["not_attending"]: war_db[msg_id]["not_attending"].remove(uid)
+        # FAST-PATH: Determine immediately if we need a Modal to prevent interaction timeouts
+        msg_id = str(interaction.message.id)
+        uid = str(interaction.user.id)
+        selected_class = self.values[0]
+        profile = war_db.get("profiles", {}).get(uid, {})
 
-                absences = []
-                if uid in war_db[msg_id]["roster"] and isinstance(war_db[msg_id]["roster"][uid], dict):
-                    absences = war_db[msg_id]["roster"][uid].get("absences", [])
+        # If they don't have saved stats, shoot the Modal instantly. Do not defer.
+        if not profile.get("class") == selected_class or not profile.get("stats"):
+            return await interaction.response.send_modal(WarStatsModal(msg_id, selected_class))
 
-                war_db[msg_id]["roster"][uid] = {"class": selected_class, "stats": profile["stats"], "absences": absences}
-                _save_wars()
-                
-                msg = await interaction.channel.fetch_message(int(msg_id))
-                await msg.edit(embed=generate_war_embed(war_db[msg_id]))
-                await interaction.followup.send("✅ Auto-joined using your saved profile stats!", ephemeral=True)
-            else:
-                await interaction.response.send_modal(WarStatsModal(msg_id, selected_class))
-        except Exception as e:
-            print(f"DROPDOWN CRASH: {e}")
-            traceback.print_exc()
-            if not interaction.response.is_done(): await interaction.response.send_message("⚠️ Error connecting to Roster UI.", ephemeral=True)
+        # If they DO have stats, we can safely defer and update the DB in the background
+        await interaction.response.defer(ephemeral=True)
+        
+        if msg_id not in war_db: 
+            return await interaction.followup.send("❌ War not found.", ephemeral=True)
+            
+        if "roster" not in war_db[msg_id]: war_db[msg_id]["roster"] = {}
+        if "not_attending" not in war_db[msg_id]: war_db[msg_id]["not_attending"] = []
+        if uid in war_db[msg_id]["not_attending"]: war_db[msg_id]["not_attending"].remove(uid)
+
+        absences = []
+        if uid in war_db[msg_id]["roster"] and isinstance(war_db[msg_id]["roster"][uid], dict):
+            absences = war_db[msg_id]["roster"][uid].get("absences", [])
+
+        war_db[msg_id]["roster"][uid] = {"class": selected_class, "stats": profile["stats"], "absences": absences}
+        _save_wars()
+        
+        msg = await interaction.channel.fetch_message(int(msg_id))
+        await msg.edit(embed=generate_war_embed(war_db[msg_id]))
+        await interaction.followup.send("✅ Auto-joined using your saved profile stats!", ephemeral=True)
 
 class WarAttendanceSelect(Select):
     def __init__(self):
@@ -218,6 +218,7 @@ class WarAttendanceSelect(Select):
 class WarUpdateStatsButton(Button):
     def __init__(self): super().__init__(label="Update My Stats", style=ButtonStyle.success, custom_id="war_update_stats_btn", emoji="📈", row=2)
     async def callback(self, interaction: Interaction):
+        # FAST-PATH: Send Modal instantly.
         msg_id = str(interaction.message.id)
         uid = str(interaction.user.id)
         profile = war_db.get("profiles", {}).get(uid, {})
@@ -231,6 +232,7 @@ class WarUpdateStatsButton(Button):
             return await interaction.response.send_message("❌ You must select a class from the dropdown first!", ephemeral=True)
             
         existing_stats = profile.get("stats", {})
+        # INSTANT MODAL
         await interaction.response.send_modal(WarStatsModal(msg_id, selected_class, existing_stats))
 
 class WarNotAttendingButton(Button):
@@ -440,7 +442,6 @@ class WarCog(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         self.bot.add_view(WarRosterView())
-        print("✅ Registered persistent WarRosterView")
 
     def _load_data(self):
         global war_db
