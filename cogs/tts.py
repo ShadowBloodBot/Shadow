@@ -47,31 +47,25 @@ def has_tts_role(user):
     if not isinstance(user, discord.Member): return False
     return any(r.id == TTS_ROLE_ID for r in user.roles)
 
-async def indestructible_voice(ctx):
-    """Nukes Discord API ghost states before connecting."""
+async def ensure_voice_identical(ctx):
+    """A 1:1 carbon copy of the working voice logic from music.py"""
     channel = ctx.author.voice.channel
     vc = ctx.guild.voice_client
-
-    # 1. If perfectly healthy, keep it.
-    if vc and vc.is_connected() and vc.channel.id == channel.id:
-        return vc
-
-    # 2. Force terminate local dead socket
-    if vc:
-        try: await vc.disconnect(force=True)
-        except: pass
-
-    # 3. GHOST BUSTER: Nuke the server-side voice state to unstick the API
-    try: await ctx.guild.change_voice_state(channel=None)
-    except: pass
-    await asyncio.sleep(1.5) # Allow Discord backend to flush
-
-    # 4. Fresh Connection
     try:
-        vc = await channel.connect(timeout=15, reconnect=False)
+        # If there's a dead socket, cleanly sever it
+        if vc and not vc.is_connected():
+            try: await vc.disconnect(force=True)
+            except: pass
+            vc = None
+            
+        # Move or connect natively
+        if vc:
+            if vc.channel.id != channel.id: await vc.move_to(channel)
+        else: 
+            vc = await channel.connect(timeout=15, reconnect=True)
         return vc
     except Exception as e:
-        print(f"CRITICAL VOICE ERROR: {e}")
+        print(f"TTS CONNECTION ERROR: {e}")
         return None
 
 # --- COG LOGIC ---
@@ -94,39 +88,40 @@ class TTSCog(commands.Cog):
         if not isinstance(ctx.author, discord.Member) or not ctx.author.voice or not ctx.author.voice.channel:
             return await ctx.followup.send("❌ You must be in a Voice Channel to use this.", ephemeral=True)
 
-        vc = ctx.guild.voice_client
-        if vc and vc.is_playing():
-            return await ctx.followup.send("⚠️ I am already speaking or playing music. Please wait.", ephemeral=True)
+        # 1. Offline Generation (Prevents 20-second connection timeouts)
+        file_name = f"tts_{uuid.uuid4().hex[:8]}.mp3"
+        file_path = TEMP_AUDIO_DIR / file_name
+
+        def generate_tts():
+            if language == "au": tts = gTTS(text=text, lang="en", tld="com.au", slow=False)
+            elif language == "uk": tts = gTTS(text=text, lang="en", tld="co.uk", slow=False)
+            else: tts = gTTS(text=text, lang=language, slow=False)
+            tts.save(str(file_path))
 
         try:
-            # 1. Offline Generation
-            file_name = f"tts_{uuid.uuid4().hex[:8]}.mp3"
-            file_path = TEMP_AUDIO_DIR / file_name
-
-            def generate_tts():
-                if language == "au": tts = gTTS(text=text, lang="en", tld="com.au", slow=False)
-                elif language == "uk": tts = gTTS(text=text, lang="en", tld="co.uk", slow=False)
-                else: tts = gTTS(text=text, lang=language, slow=False)
-                tts.save(str(file_path))
-
             await self.bot.loop.run_in_executor(None, generate_tts)
+        except Exception as e:
+            traceback.print_exc()
+            return await ctx.followup.send(f"❌ Audio Generation Failed: {e}", ephemeral=True)
 
-            # 2. Secure Voice Connection
-            active_vc = await indestructible_voice(ctx)
-            if not active_vc or not active_vc.is_connected(): 
-                return await ctx.followup.send("❌ Discord's Voice Gateway refused the connection. The server is stuck in a ghost state. Kick the bot manually and try again.", ephemeral=True)
+        # 2. Native Connection (Using music.py pipeline)
+        active_vc = await ensure_voice_identical(ctx)
+        if not active_vc: 
+            return await ctx.followup.send("❌ Failed to connect to Voice. Check Railway logs for exact error.", ephemeral=True)
 
-            # 3. Stream & Delayed Cleanup
+        if active_vc.is_playing():
+            return await ctx.followup.send("⚠️ I am already speaking or playing music. Please wait.", ephemeral=True)
+
+        # 3. Stream & Cleanup
+        try:
             source = discord.FFmpegPCMAudio(str(file_path), **FFMPEG_OPTIONS)
             
             def after_play(error):
                 if error: print(f"⚠️ TTS Playback Error: {error}")
-                async def cleanup():
-                    await asyncio.sleep(2.0) # Prevent FFmpeg file lock crashes
-                    try:
-                        if file_path.exists(): os.remove(str(file_path))
-                    except Exception as e: print(f"⚠️ Cleanup failed: {e}")
-                asyncio.run_coroutine_threadsafe(cleanup(), self.bot.loop)
+                # Safe cleanup logic
+                try:
+                    if file_path.exists(): os.remove(str(file_path))
+                except Exception as e: print(f"⚠️ Cleanup failed: {e}")
 
             active_vc.play(source, after=after_play)
             
@@ -137,7 +132,7 @@ class TTSCog(commands.Cog):
 
         except Exception as e:
             traceback.print_exc()
-            await ctx.followup.send(f"❌ Failed to generate speech: {e}", ephemeral=True)
+            await ctx.followup.send(f"❌ Execution Failed: {e}", ephemeral=True)
 
 def setup(bot):
     bot.add_cog(TTSCog(bot))
