@@ -66,20 +66,7 @@ class TTSCog(commands.Cog):
         if not isinstance(ctx.author, discord.Member) or not ctx.author.voice or not ctx.author.voice.channel:
             return await ctx.followup.send("❌ You must be in a Voice Channel to use this.", ephemeral=True)
 
-        # 1. NATIVE CONNECTION (No custom wrappers, no timeouts, let Py-cord handle it naturally)
-        vc = ctx.guild.voice_client
-        try:
-            if not vc:
-                vc = await ctx.author.voice.channel.connect()
-            elif vc.channel.id != ctx.author.voice.channel.id:
-                await vc.move_to(ctx.author.voice.channel)
-        except Exception as e:
-            return await ctx.followup.send(f"❌ Voice Connection Failed: {e}", ephemeral=True)
-
-        if vc.is_playing():
-            return await ctx.followup.send("⚠️ I am already speaking. Please wait.", ephemeral=True)
-
-        # 2. Offline Generation
+        # 1. OFFLINE GENERATION FIRST (No idle voice sockets)
         file_name = f"tts_{uuid.uuid4().hex[:8]}.mp3"
         file_path = TEMP_AUDIO_DIR / file_name
 
@@ -95,13 +82,26 @@ class TTSCog(commands.Cog):
             traceback.print_exc()
             return await ctx.followup.send(f"❌ Audio Generation Failed: {e}", ephemeral=True)
 
-        # 3. Stream & Cleanup (Using basic local-file FFmpeg flags)
+        # 2. NATIVE CONNECTION (The file is ready, join now)
+        vc = ctx.guild.voice_client
+        try:
+            if not vc:
+                vc = await ctx.author.voice.channel.connect()
+            elif vc.channel.id != ctx.author.voice.channel.id:
+                await vc.move_to(ctx.author.voice.channel)
+        except Exception as e:
+            return await ctx.followup.send(f"❌ Voice Connection Failed: {e}", ephemeral=True)
+
+        if vc.is_playing():
+            return await ctx.followup.send("⚠️ I am already speaking. Please wait.", ephemeral=True)
+
+        # 3. STREAM & CLEANUP
         try:
             source = discord.FFmpegPCMAudio(str(file_path), options='-vn')
             
             def after_play(error):
                 if error: print(f"⚠️ TTS Playback Error: {error}")
-                # Safe cleanup logic
+                # Dispatch async cleanup
                 async def cleanup():
                     await asyncio.sleep(2.0)
                     try:
