@@ -9,7 +9,7 @@ import discord
 from discord.ext import commands
 from discord import Option, OptionChoice
 from gtts import gTTS
-from googletrans import Translator
+from deep_translator import GoogleTranslator
 
 # --- CONSTANTS ---
 THEME_PRIMARY = 0x2B0B35
@@ -49,7 +49,6 @@ def has_tts_role(user):
 class TTSCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.translator = Translator()
 
     @discord.slash_command(name="speak", description="Make the bot say something in your Voice Channel")
     async def speak(
@@ -72,7 +71,7 @@ class TTSCog(commands.Cog):
             
         target_channel = member.voice.channel
 
-        # 2. TRANSLATION LOGIC
+        # 2. TRANSLATION LOGIC (Using deep-translator)
         lang_code = "en" if language in ["au", "uk"] else language
         tld = "com.au" if language == "au" else "co.uk" if language == "uk" else "com"
         
@@ -80,14 +79,23 @@ class TTSCog(commands.Cog):
         is_translated = False
         
         if lang_code != "en":
+            def fetch_translation():
+                try:
+                    # Map zh-cn to zh-CN for deep-translator compatibility
+                    target = "zh-CN" if lang_code == "zh-cn" else lang_code
+                    return GoogleTranslator(source='auto', target=target).translate(text)
+                except Exception as e:
+                    print(f"⚠️ Translation Error: {e}")
+                    return text
+
             try:
-                # googletrans 4.0.0-rc1 uses async translation
-                translation = await self.translator.translate(text, dest=lang_code)
-                spoken_text = translation.text
-                is_translated = True
+                # Run the translation API in a background thread so the bot doesn't lag
+                translation_result = await self.bot.loop.run_in_executor(None, fetch_translation)
+                if translation_result and translation_result != text:
+                    spoken_text = translation_result
+                    is_translated = True
             except Exception as e:
-                print(f"⚠️ Translation Error: {e}")
-                # If translation fails, it will fall back to reading English with an accent
+                print(f"⚠️ Async Translation Error: {e}")
 
         # 3. OFFLINE GENERATION
         file_name = f"tts_{uuid.uuid4().hex[:8]}.mp3"
@@ -103,9 +111,9 @@ class TTSCog(commands.Cog):
             traceback.print_exc()
             return await ctx.followup.send(f"❌ Audio Generation Failed: {e}", ephemeral=True)
 
-        # 4. PRE-LOAD AUDIO (Opus Engine)
+        # 4. PRE-LOAD AUDIO (Opus Engine with silenced FFmpeg warnings)
         try:
-            source = await discord.FFmpegOpusAudio.from_probe(str(file_path))
+            source = await discord.FFmpegOpusAudio.from_probe(str(file_path), options='-loglevel error')
         except Exception as e:
             traceback.print_exc()
             return await ctx.followup.send(f"❌ Audio Encoding Failed: {e}", ephemeral=True)
