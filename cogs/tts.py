@@ -19,7 +19,6 @@ TEMP_AUDIO_DIR = Path("temp_audio")
 TEMP_AUDIO_DIR.mkdir(exist_ok=True)
 
 # --- LANGUAGE CONFIGURATION ---
-# 20 predefined languages/accents for the Discord slash command dropdown
 TTS_LANGUAGES = [
     OptionChoice(name="English (US)", value="en"),
     OptionChoice(name="English (Australian)", value="au"),
@@ -65,11 +64,17 @@ async def ensure_voice(ctx):
     vc = ctx.guild.voice_client
     
     try:
-        if vc and vc.is_connected():
-            if vc.channel.id != channel.id:
-                await vc.move_to(channel)
+        if vc:
+            if vc.is_connected():
+                if vc.channel.id != channel.id:
+                    await vc.move_to(channel)
+            else:
+                # Armored: Force cleanup of dead UDP sockets before reconnecting
+                try: await vc.disconnect(force=True)
+                except: pass
+                vc = await channel.connect(timeout=20, reconnect=True)
         else:
-            vc = await channel.connect(timeout=10, reconnect=True)
+            vc = await channel.connect(timeout=20, reconnect=True)
         return vc
     except Exception as e:
         await safe_reply(ctx, f"❌ Voice Error: {e}", ephemeral=True)
@@ -127,7 +132,13 @@ class TTSCog(commands.Cog):
                 except Exception as e:
                     print(f"⚠️ Failed to delete temp TTS file: {e}")
 
-            # 4. Stream Execution
+            # 4. ARMOR CHECK: Did Discord drop us while downloading the audio?
+            if not vc.is_connected():
+                try: await vc.disconnect(force=True)
+                except: pass
+                vc = await ctx.author.voice.channel.connect(timeout=20, reconnect=True)
+
+            # 5. Stream Execution
             source = discord.FFmpegPCMAudio(str(file_path), **FFMPEG_OPTIONS)
             vc.play(source, after=after_play)
             
