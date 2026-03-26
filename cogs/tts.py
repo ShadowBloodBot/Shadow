@@ -12,7 +12,6 @@ from gtts import gTTS
 
 # --- CONSTANTS ---
 THEME_PRIMARY = 0x2B0B35
-FFMPEG_OPTIONS = {'options': '-vn'}
 TTS_ROLE_ID = 955600320287887400
 
 TEMP_AUDIO_DIR = Path("temp_audio")
@@ -47,27 +46,6 @@ def has_tts_role(user):
     if not isinstance(user, discord.Member): return False
     return any(r.id == TTS_ROLE_ID for r in user.roles)
 
-async def ensure_voice_identical(ctx):
-    """A 1:1 carbon copy of the working voice logic from music.py"""
-    channel = ctx.author.voice.channel
-    vc = ctx.guild.voice_client
-    try:
-        # If there's a dead socket, cleanly sever it
-        if vc and not vc.is_connected():
-            try: await vc.disconnect(force=True)
-            except: pass
-            vc = None
-            
-        # Move or connect natively
-        if vc:
-            if vc.channel.id != channel.id: await vc.move_to(channel)
-        else: 
-            vc = await channel.connect(timeout=15, reconnect=True)
-        return vc
-    except Exception as e:
-        print(f"TTS CONNECTION ERROR: {e}")
-        return None
-
 # --- COG LOGIC ---
 class TTSCog(commands.Cog):
     def __init__(self, bot):
@@ -88,7 +66,20 @@ class TTSCog(commands.Cog):
         if not isinstance(ctx.author, discord.Member) or not ctx.author.voice or not ctx.author.voice.channel:
             return await ctx.followup.send("❌ You must be in a Voice Channel to use this.", ephemeral=True)
 
-        # 1. Offline Generation (Prevents 20-second connection timeouts)
+        # 1. NATIVE CONNECTION (No custom wrappers, no timeouts, let Py-cord handle it naturally)
+        vc = ctx.guild.voice_client
+        try:
+            if not vc:
+                vc = await ctx.author.voice.channel.connect()
+            elif vc.channel.id != ctx.author.voice.channel.id:
+                await vc.move_to(ctx.author.voice.channel)
+        except Exception as e:
+            return await ctx.followup.send(f"❌ Voice Connection Failed: {e}", ephemeral=True)
+
+        if vc.is_playing():
+            return await ctx.followup.send("⚠️ I am already speaking. Please wait.", ephemeral=True)
+
+        # 2. Offline Generation
         file_name = f"tts_{uuid.uuid4().hex[:8]}.mp3"
         file_path = TEMP_AUDIO_DIR / file_name
 
@@ -104,26 +95,21 @@ class TTSCog(commands.Cog):
             traceback.print_exc()
             return await ctx.followup.send(f"❌ Audio Generation Failed: {e}", ephemeral=True)
 
-        # 2. Native Connection (Using music.py pipeline)
-        active_vc = await ensure_voice_identical(ctx)
-        if not active_vc: 
-            return await ctx.followup.send("❌ Failed to connect to Voice. Check Railway logs for exact error.", ephemeral=True)
-
-        if active_vc.is_playing():
-            return await ctx.followup.send("⚠️ I am already speaking or playing music. Please wait.", ephemeral=True)
-
-        # 3. Stream & Cleanup
+        # 3. Stream & Cleanup (Using basic local-file FFmpeg flags)
         try:
-            source = discord.FFmpegPCMAudio(str(file_path), **FFMPEG_OPTIONS)
+            source = discord.FFmpegPCMAudio(str(file_path), options='-vn')
             
             def after_play(error):
                 if error: print(f"⚠️ TTS Playback Error: {error}")
                 # Safe cleanup logic
-                try:
-                    if file_path.exists(): os.remove(str(file_path))
-                except Exception as e: print(f"⚠️ Cleanup failed: {e}")
+                async def cleanup():
+                    await asyncio.sleep(2.0)
+                    try:
+                        if file_path.exists(): os.remove(str(file_path))
+                    except: pass
+                asyncio.run_coroutine_threadsafe(cleanup(), self.bot.loop)
 
-            active_vc.play(source, after=after_play)
+            vc.play(source, after=after_play)
             
             lang_name = next((choice.name for choice in TTS_LANGUAGES if choice.value == language), language)
             embed = discord.Embed(description=f"🗣️ **Said:** {text}", color=THEME_PRIMARY)
@@ -132,7 +118,7 @@ class TTSCog(commands.Cog):
 
         except Exception as e:
             traceback.print_exc()
-            await ctx.followup.send(f"❌ Execution Failed: {e}", ephemeral=True)
+            await ctx.followup.send(f"❌ Playback Execution Failed: {e}", ephemeral=True)
 
 def setup(bot):
     bot.add_cog(TTSCog(bot))
