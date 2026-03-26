@@ -60,11 +60,19 @@ class TTSCog(commands.Cog):
             return await ctx.respond("⛔ Restricted.", ephemeral=True)
 
         await ctx.defer() 
-        
-        if not getattr(ctx.author, "voice", None) or not ctx.author.voice.channel:
-            return await ctx.followup.send("❌ You must be in a Voice Channel to use this.", ephemeral=True)
 
-        # 1. OFFLINE GENERATION
+        # 1. THE JTC CACHE FIX
+        # Give Discord 1 second to update the backend after a JTC move, 
+        # then forcefully fetch your live member state to bypass Py-cord's old cache.
+        await asyncio.sleep(1.0)
+        member = ctx.guild.get_member(ctx.author.id)
+
+        if not getattr(member, "voice", None) or not member.voice.channel:
+            return await ctx.followup.send("❌ You must be in a Voice Channel to use this.", ephemeral=True)
+            
+        target_channel = member.voice.channel
+
+        # 2. OFFLINE GENERATION
         file_name = f"tts_{uuid.uuid4().hex[:8]}.mp3"
         file_path = TEMP_AUDIO_DIR / file_name
 
@@ -80,23 +88,22 @@ class TTSCog(commands.Cog):
             traceback.print_exc()
             return await ctx.followup.send(f"❌ Audio Generation Failed: {e}", ephemeral=True)
 
-        # 2. CLEAN NATIVE CONNECTION
+        # 3. NATIVE CONNECTION (To your ACTUAL room, not the JTC Hub)
         vc = ctx.guild.voice_client
         try:
             if not vc or not vc.is_connected():
-                vc = await ctx.author.voice.channel.connect(timeout=20.0)
-            elif vc.channel.id != ctx.author.voice.channel.id:
-                await vc.move_to(ctx.author.voice.channel)
+                vc = await target_channel.connect(timeout=20.0)
+            elif vc.channel.id != target_channel.id:
+                await vc.move_to(target_channel)
         except Exception as e:
             return await ctx.followup.send(f"❌ Voice Connection Failed: {e}", ephemeral=True)
 
         if vc.is_playing():
             return await ctx.followup.send("⚠️ I am already speaking. Please wait.", ephemeral=True)
 
-        # 3. THE EXPERT FIX: FFmpegOpusAudio
-        # This bypasses the Python GIL and encrypts natively, stopping Py-cord from crashing.
+        # 4. STREAM & CLEANUP
         try:
-            source = await discord.FFmpegOpusAudio.from_probe(str(file_path))
+            source = discord.FFmpegPCMAudio(str(file_path), options='-vn')
             
             def after_play(error):
                 if error: print(f"⚠️ TTS Playback Error: {error}")
