@@ -61,9 +61,7 @@ class TTSCog(commands.Cog):
 
         await ctx.defer() 
 
-        # 1. THE JTC CACHE FIX
-        # Give Discord 1 second to update the backend after a JTC move, 
-        # then forcefully fetch your live member state to bypass Py-cord's old cache.
+        # 1. THE JTC CACHE FIX (Wait for Discord to sync your location)
         await asyncio.sleep(1.0)
         member = ctx.guild.get_member(ctx.author.id)
 
@@ -88,7 +86,14 @@ class TTSCog(commands.Cog):
             traceback.print_exc()
             return await ctx.followup.send(f"❌ Audio Generation Failed: {e}", ephemeral=True)
 
-        # 3. NATIVE CONNECTION (To your ACTUAL room, not the JTC Hub)
+        # 3. PRE-LOAD AUDIO (The Opus Engine Fix - Re-added!)
+        try:
+            source = await discord.FFmpegOpusAudio.from_probe(str(file_path))
+        except Exception as e:
+            traceback.print_exc()
+            return await ctx.followup.send(f"❌ Audio Encoding Failed: {e}", ephemeral=True)
+
+        # 4. NATIVE CONNECTION
         vc = ctx.guild.voice_client
         try:
             if not vc or not vc.is_connected():
@@ -98,13 +103,18 @@ class TTSCog(commands.Cog):
         except Exception as e:
             return await ctx.followup.send(f"❌ Voice Connection Failed: {e}", ephemeral=True)
 
-        if vc.is_playing():
-            return await ctx.followup.send("⚠️ I am already speaking. Please wait.", ephemeral=True)
+        # 5. THE STABILIZATION BUFFER
+        # Py-cord needs a moment to establish the UDP hole-punch. Do not hit play instantly.
+        await asyncio.sleep(1.5)
 
-        # 4. STREAM & CLEANUP
+        if not vc.is_connected():
+            return await ctx.followup.send("❌ Connection lost before speaking. (Are you being kicked by a JTC script?)", ephemeral=True)
+
+        if vc.is_playing():
+            vc.stop() # Force stop anything currently hanging
+
+        # 6. STREAM & CLEANUP
         try:
-            source = discord.FFmpegPCMAudio(str(file_path), options='-vn')
-            
             def after_play(error):
                 if error: print(f"⚠️ TTS Playback Error: {error}")
                 async def cleanup():
