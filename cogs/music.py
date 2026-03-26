@@ -29,32 +29,78 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
     except: return None
 
 async def ensure_voice_simple(ctx):
+    """Safely connects to VC without triggering Py-cord's fatal _MissingSentinel crash."""
     user = ctx.user if isinstance(ctx, discord.Interaction) else ctx.author
     if not user.voice or not user.voice.channel:
-        await safe_reply(ctx, "❌ Join a VC first!", ephemeral=True); return None
-    channel = user.voice.channel; vc = ctx.guild.voice_client
+        await safe_reply(ctx, "❌ Join a VC first!", ephemeral=True)
+        return None
+        
+    channel = user.voice.channel
+    vc = ctx.guild.voice_client
+    
     try:
-        if vc and not vc.is_connected():
-            try: await vc.disconnect(force=True)
-            except: pass
-            vc = None
         if vc:
-            if vc.channel.id != channel.id: await vc.move_to(channel)
-        else: vc = await channel.connect(timeout=10, reconnect=True)
+            if not vc.is_connected():
+                # STANDARD disconnect. Never use force=True in Py-cord here.
+                try: await vc.disconnect() 
+                except: pass
+                vc = await channel.connect(timeout=20, reconnect=True)
+                await asyncio.sleep(0.5) # UDP Stabilization Buffer
+            elif vc.channel.id != channel.id:
+                await vc.move_to(channel)
+                await asyncio.sleep(0.5)
+        else: 
+            vc = await channel.connect(timeout=20, reconnect=True)
+            await asyncio.sleep(0.5)
         return vc
-    except Exception as e: await safe_reply(ctx, f"❌ Voice Error: {e}", ephemeral=True); return None
+    except Exception as e: 
+        print(f"Music Connect Error: {e}")
+        await safe_reply(ctx, f"❌ Voice Error: {e}", ephemeral=True)
+        return None
 
 # --- MUSIC LOGIC ---
-YTDL_PLAY_OPTIONS = {'format': 'bestaudio/best', 'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s', 'restrictfilenames': True, 'noplaylist': True, 'nocheckcertificate': True, 'ignoreerrors': False, 'logtostderr': False, 'quiet': True, 'no_warnings': True, 'default_search': 'auto', 'source_address': '0.0.0.0', 'socket_timeout': 10, 'retries': 5}
-YTDL_SEARCH_OPTIONS = YTDL_PLAY_OPTIONS.copy()
-YTDL_SEARCH_OPTIONS.update({'extract_flat': True, 'skip_download': True})
-FFMPEG_OPTIONS = {'options': '-vn', 'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'}
+
+# Heavy options for actual playback
+YTDL_PLAY_OPTIONS = {
+    'format': 'bestaudio/best', 
+    'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s', 
+    'restrictfilenames': True, 
+    'noplaylist': True, 
+    'nocheckcertificate': True, 
+    'ignoreerrors': False, 
+    'logtostderr': False, 
+    'quiet': True, 
+    'no_warnings': True, 
+    'default_search': 'auto', 
+    'source_address': '0.0.0.0', 
+    'socket_timeout': 15, 
+    'retries': 5
+}
+
+# Ultra-lightweight options purely for fetching track titles fast
+YTDL_SEARCH_OPTIONS = {
+    'format': 'bestaudio/best',
+    'extract_flat': True,
+    'skip_download': True,
+    'quiet': True,
+    'no_warnings': True,
+    'default_search': 'auto',
+    'source_address': '0.0.0.0'
+}
+
+# Aggressive anti-stutter buffering for Railway
+FFMPEG_OPTIONS = {
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'options': '-vn -b:a 128k -bufsize 64k'
+}
+
 ytdl_play = yt_dlp.YoutubeDL(YTDL_PLAY_OPTIONS)
 
 class YTDLSource(discord.PCMVolumeTransformer):
     def __init__(self, source, *, data, volume=0.5):
         super().__init__(source, volume)
         self.data = data; self.title = data.get('title'); self.url = data.get('url')
+        
     @classmethod
     async def from_url(cls, url, *, loop=None, stream=True):
         loop = loop or asyncio.get_running_loop()
@@ -72,7 +118,8 @@ async def play_track(bot, vc, url, title, gid):
     try:
         player = await YTDLSource.from_url(url, loop=bot.loop, stream=True)
         vc.play(player, after=lambda e: check_queue(bot, gid, vc))
-    except Exception as e: print(f"[Music] Error: {e}")
+    except Exception as e: 
+        print(f"[Music] Playback Error: {e}")
 
 class MusicSelect(Select):
     def __init__(self, entries, ctx, vc, bot):
@@ -81,9 +128,19 @@ class MusicSelect(Select):
         super().__init__(placeholder="Select a track...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: Interaction):
-        if interaction.user.id != self.ctx.author.id: return await interaction.response.send_message("❌ Not your request.", ephemeral=True)
+        if interaction.user.id != self.ctx.author.id: 
+            return await interaction.response.send_message("❌ Not your request.", ephemeral=True)
+            
         await interaction.response.defer()
-        selected = self.entries[int(self.values[0])]; url = selected.get('url') or selected.get('webpage_url'); title = selected.get('title')
+        
+        # Remove the dropdown immediately so it can't be clicked twice
+        try: await interaction.message.edit(view=None)
+        except: pass
+        
+        selected = self.entries[int(self.values[0])]
+        url = selected.get('url') or selected.get('webpage_url')
+        title = selected.get('title')
+        
         if not url: return await interaction.followup.send("❌ Error: Could not resolve URL.")
 
         if self.vc.is_playing():
@@ -93,13 +150,11 @@ class MusicSelect(Select):
         else:
             await interaction.followup.send(f"▶️ **Playing:** {title}")
             await play_track(self.bot, self.vc, url, title, self.ctx.guild.id)
-        try: await interaction.message.delete()
-        except: pass
 
 class MusicSelectionView(View):
     def __init__(self, entries, ctx, vc, bot):
-        super().__init__(timeout=60); self.add_item(MusicSelect(entries, ctx, vc, bot))
-
+        super().__init__(timeout=60)
+        self.add_item(MusicSelect(entries, ctx, vc, bot))
 
 class MusicCog(commands.Cog):
     def __init__(self, bot):
@@ -110,11 +165,16 @@ class MusicCog(commands.Cog):
     @dj_or_admin()
     async def play(self, ctx, search: str):
         if hasattr(ctx, 'defer'): await ctx.defer()
+        
         vc = await ensure_voice_simple(ctx)
         if not vc: return
+        
+        # Now uses the ultra-lightweight YTDL_SEARCH_OPTIONS
         info = await self.bot.loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(YTDL_SEARCH_OPTIONS).extract_info(f"ytsearch5:{search}", download=False))
+        
         if not info or 'entries' not in info or not info['entries']:
             return await safe_reply(ctx, "❌ No results found.", ephemeral=True)
+            
         view = MusicSelectionView(info['entries'], ctx, vc, self.bot)
         await safe_reply(ctx, "🔎 **Select a track:**", view=view)
 
@@ -128,18 +188,21 @@ class MusicCog(commands.Cog):
     @discord.slash_command(name="skip", description="Skip song")
     @dj_or_admin()
     async def skip(self, ctx):
-        if ctx.guild.voice_client: ctx.guild.voice_client.stop(); await safe_reply(ctx, "⏭️ Skipped.")
+        if ctx.guild.voice_client: ctx.guild.voice_client.stop()
+        await safe_reply(ctx, "⏭️ Skipped.")
 
     @discord.slash_command(name="stop", description="Stop music")
     @dj_or_admin()
     async def stop(self, ctx):
         if ctx.guild.id in self.bot.audio_queues: self.bot.audio_queues[ctx.guild.id].clear()
-        if ctx.guild.voice_client: ctx.guild.voice_client.stop(); await safe_reply(ctx, "⏹️ Stopped.")
+        if ctx.guild.voice_client: ctx.guild.voice_client.stop()
+        await safe_reply(ctx, "⏹️ Stopped.")
 
     @discord.slash_command(name="join", description="Join VC")
     @dj_or_admin()
     async def join(self, ctx):
-        await ensure_voice_simple(ctx); await safe_reply(ctx, "✅ Joined.")
+        await ensure_voice_simple(ctx)
+        await safe_reply(ctx, "✅ Joined.")
 
 def setup(bot):
     bot.add_cog(MusicCog(bot))
