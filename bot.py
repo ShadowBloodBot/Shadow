@@ -17,15 +17,15 @@ intents.message_content = True
 bot = discord.Bot(intents=intents)
 
 # --- LOAD COGS (MODULES) ---
+# Notice: "cogs.music" has been completely removed to stabilize Voice Gateway
 cogs_list = [
     "cogs.utility",
     "cogs.war",
-    "cogs.music",
     "cogs.casino",
     "cogs.tower",
     "cogs.jtc",
     "cogs.audit_logs",
-    "cogs.tts"  # <-- Added the new TTS module here
+    "cogs.tts"
 ]
 
 for cog in cogs_list:
