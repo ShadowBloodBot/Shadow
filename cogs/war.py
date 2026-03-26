@@ -1,6 +1,7 @@
 # cogs/war.py
 import os
 import json
+import traceback
 from pathlib import Path
 import discord
 from discord import Option, ButtonStyle, SelectOption, Interaction
@@ -35,7 +36,6 @@ CLASS_STATS_MAP = {
     "Necromancer": ["HP", "AP", "DP", "MDP"]
 }
 
-# All classes not explicitly Tank, Healer, or Necro fall into the DPS Flex Pool
 DPS_CLASSES = [
     "Two-Handed Sword", "Spear", "Dual Axe", "Dual Dagger", 
     "War Hammer", "Bow", "Dual Crossbow", "Elementalist"
@@ -115,77 +115,82 @@ class WarStatsModal(Modal):
         
         for stat in self.stat_fields:
             placeholder = "e.g., 50" if "%" in stat else "e.g., 4500"
-            val_str = str(existing_stats.get(stat, ""))
-            self.add_item(TextInput(label=stat, placeholder=placeholder, value=val_str, required=True, max_length=7))
+            val_str = str(existing_stats.get(stat, ""))[:15] # Prevents 400 Bad Request crashes
+            self.add_item(TextInput(label=stat, placeholder=placeholder, value=val_str, required=True, max_length=15))
 
     async def callback(self, interaction: Interaction):
-        # Armored Deferral to prevent 10062 timeouts while updating DB and editing messages
         await interaction.response.defer(ephemeral=True)
-
-        uid = str(interaction.user.id)
-        stat_values = {}
-        for i, stat in enumerate(self.stat_fields):
-            val = self.children[i].value.strip()
-            clean_val = val.replace("%", "").replace(",", "")
-            try:
-                float(clean_val) 
-                if "%" in stat and "%" not in val: val += "%" 
-            except ValueError:
-                return await interaction.followup.send(f"❌ Validation Error: `{val}` is not a valid number for {stat}. Please enter numbers only.", ephemeral=True)
-            stat_values[stat] = val
-
-        if self.msg_id not in war_db: return await interaction.followup.send("❌ War not found in database.", ephemeral=True)
-        if "roster" not in war_db[self.msg_id]: war_db[self.msg_id]["roster"] = {}
-        if "not_attending" not in war_db[self.msg_id]: war_db[self.msg_id]["not_attending"] = []
-        if uid in war_db[self.msg_id]["not_attending"]: war_db[self.msg_id]["not_attending"].remove(uid)
-
-        if "profiles" not in war_db: war_db["profiles"] = {}
-        war_db["profiles"][uid] = {"class": self.selected_class, "stats": stat_values}
-
-        absences = []
-        if uid in war_db[self.msg_id]["roster"] and isinstance(war_db[self.msg_id]["roster"][uid], dict):
-            absences = war_db[self.msg_id]["roster"][uid].get("absences", [])
-
-        war_db[self.msg_id]["roster"][uid] = {"class": self.selected_class, "absences": absences, "stats": stat_values}
-        _save_wars()
-
         try:
+            uid = str(interaction.user.id)
+            stat_values = {}
+            for i, stat in enumerate(self.stat_fields):
+                val = self.children[i].value.strip()
+                clean_val = val.replace("%", "").replace(",", "")
+                try:
+                    float(clean_val) 
+                    if "%" in stat and "%" not in val: val += "%" 
+                except ValueError:
+                    return await interaction.followup.send(f"❌ Validation Error: `{val}` is not a valid number.", ephemeral=True)
+                stat_values[stat] = val
+
+            if self.msg_id not in war_db: return await interaction.followup.send("❌ War not found in database.", ephemeral=True)
+            if "roster" not in war_db[self.msg_id]: war_db[self.msg_id]["roster"] = {}
+            if "not_attending" not in war_db[self.msg_id]: war_db[self.msg_id]["not_attending"] = []
+            if uid in war_db[self.msg_id]["not_attending"]: war_db[self.msg_id]["not_attending"].remove(uid)
+
+            if "profiles" not in war_db: war_db["profiles"] = {}
+            war_db["profiles"][uid] = {"class": self.selected_class, "stats": stat_values}
+
+            absences = []
+            if uid in war_db[self.msg_id]["roster"] and isinstance(war_db[self.msg_id]["roster"][uid], dict):
+                absences = war_db[self.msg_id]["roster"][uid].get("absences", [])
+
+            war_db[self.msg_id]["roster"][uid] = {"class": self.selected_class, "absences": absences, "stats": stat_values}
+            _save_wars()
+
             msg = await interaction.channel.fetch_message(int(self.msg_id))
             await msg.edit(embed=generate_war_embed(war_db[self.msg_id]))
             await interaction.followup.send("✅ Profile and Roster updated successfully!", ephemeral=True)
         except Exception as e:
-            await interaction.followup.send(f"⚠️ Saved, but failed to update embed: {e}", ephemeral=True)
+            print(f"MODAL CRASH: {e}")
+            traceback.print_exc()
+            await interaction.followup.send(f"⚠️ Internal Error: {e}", ephemeral=True)
 
 class WarClassSelect(Select):
     def __init__(self):
         options = [SelectOption(label=name, value=name, emoji=emoji) for name, emoji in QUINFALL_CLASSES]
         super().__init__(placeholder="1. Select Class to Join...", options=options, custom_id="war_class_select", min_values=1, max_values=1, row=0)
     async def callback(self, interaction: Interaction):
-        msg_id = str(interaction.message.id)
-        uid = str(interaction.user.id)
-        if msg_id not in war_db: return await interaction.response.send_message("❌ War not found in database.", ephemeral=True)
-        
-        selected_class = self.values[0]
-        profile = war_db.get("profiles", {}).get(uid, {})
-        
-        if profile.get("class") == selected_class and profile.get("stats"):
-            await interaction.response.defer(ephemeral=True)
-            if "roster" not in war_db[msg_id]: war_db[msg_id]["roster"] = {}
-            if "not_attending" not in war_db[msg_id]: war_db[msg_id]["not_attending"] = []
-            if uid in war_db[msg_id]["not_attending"]: war_db[msg_id]["not_attending"].remove(uid)
-
-            absences = []
-            if uid in war_db[msg_id]["roster"] and isinstance(war_db[msg_id]["roster"][uid], dict):
-                absences = war_db[msg_id]["roster"][uid].get("absences", [])
-
-            war_db[msg_id]["roster"][uid] = {"class": selected_class, "stats": profile["stats"], "absences": absences}
-            _save_wars()
+        try:
+            msg_id = str(interaction.message.id)
+            uid = str(interaction.user.id)
+            if msg_id not in war_db: return await interaction.response.send_message("❌ War not found. Use /refresh_war on this message to restore it.", ephemeral=True)
             
-            msg = await interaction.channel.fetch_message(int(msg_id))
-            await msg.edit(embed=generate_war_embed(war_db[msg_id]))
-            await interaction.followup.send("✅ Auto-joined using your saved profile stats! (Use 'Update Stats' to change them)", ephemeral=True)
-        else:
-            await interaction.response.send_modal(WarStatsModal(msg_id, selected_class))
+            selected_class = self.values[0]
+            profile = war_db.get("profiles", {}).get(uid, {})
+            
+            if profile.get("class") == selected_class and profile.get("stats"):
+                await interaction.response.defer(ephemeral=True)
+                if "roster" not in war_db[msg_id]: war_db[msg_id]["roster"] = {}
+                if "not_attending" not in war_db[msg_id]: war_db[msg_id]["not_attending"] = []
+                if uid in war_db[msg_id]["not_attending"]: war_db[msg_id]["not_attending"].remove(uid)
+
+                absences = []
+                if uid in war_db[msg_id]["roster"] and isinstance(war_db[msg_id]["roster"][uid], dict):
+                    absences = war_db[msg_id]["roster"][uid].get("absences", [])
+
+                war_db[msg_id]["roster"][uid] = {"class": selected_class, "stats": profile["stats"], "absences": absences}
+                _save_wars()
+                
+                msg = await interaction.channel.fetch_message(int(msg_id))
+                await msg.edit(embed=generate_war_embed(war_db[msg_id]))
+                await interaction.followup.send("✅ Auto-joined using your saved profile stats!", ephemeral=True)
+            else:
+                await interaction.response.send_modal(WarStatsModal(msg_id, selected_class))
+        except Exception as e:
+            print(f"DROPDOWN CRASH: {e}")
+            traceback.print_exc()
+            if not interaction.response.is_done(): await interaction.response.send_message("⚠️ Error connecting to Roster UI.", ephemeral=True)
 
 class WarAttendanceSelect(Select):
     def __init__(self):
@@ -293,7 +298,7 @@ class DraftSelect(Select):
             options.append(SelectOption(label="No players signed up", value="none"))
             super().__init__(placeholder=f"{role_name} (0 Available)", options=options, disabled=True, row=row)
         else:
-            for uid, stat_val, name in pool[:25]:  # Discord max is 25 per dropdown
+            for uid, stat_val, name in pool[:25]: 
                 options.append(SelectOption(
                     label=name[:25], 
                     value=uid, 
@@ -370,7 +375,6 @@ class WarDraftView(View):
         embed.title = "🏆 FINAL: 20-Man Vanguard"
         embed.description = f"**{self.war_title}**\nThe team has been locked in by command."
         
-        # Ping the selected users so they know they made the cut
         all_selected = self.selected_tanks + self.selected_healers + self.selected_necros + self.selected_dps
         pings = " ".join([f"<@{uid}>" for uid in all_selected])
         
@@ -413,18 +417,8 @@ class WarGenerateButton(Button):
         top_necros = [x[0] for x in all_necros[:4]]
         top_dps = [x[0] for x in all_dps[:8]]
 
-        draft_view = WarDraftView(
-            war_title, 
-            all_tanks, all_healers, all_necros, all_dps, 
-            top_tanks, top_healers, top_necros, top_dps
-        )
-
-        await interaction.response.send_message(
-            content="🛠️ **Draft Mode (Admin Only):** Review and swap members before publishing.",
-            embed=draft_view.generate_draft_embed(),
-            view=draft_view,
-            ephemeral=True
-        )
+        draft_view = WarDraftView(war_title, all_tanks, all_healers, all_necros, all_dps, top_tanks, top_healers, top_necros, top_dps)
+        await interaction.response.send_message(content="🛠️ **Draft Mode:** Review and swap members.", embed=draft_view.generate_draft_embed(), view=draft_view, ephemeral=True)
 
 class WarRosterView(View):
     def __init__(self):
@@ -442,9 +436,7 @@ class WarCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._load_data()
-        # DELETED: self.bot.add_view(WarRosterView()) from here
 
-    # --- THE FIX: REGISTER VIEW IN ON_READY ---
     @commands.Cog.listener()
     async def on_ready(self):
         self.bot.add_view(WarRosterView())
@@ -476,11 +468,8 @@ class WarCog(commands.Cog):
 
     @discord.slash_command(name="refresh_war", description="Admin: Restores a broken/ghosted war message without losing data")
     async def refresh_war(self, ctx, message_id: Option(str, description="The ID of the broken roster message")):
-        if not is_war_role(ctx.author):
-            return await safe_reply(ctx, "⛔ Restricted. You must have the required role.", ephemeral=True)
-            
-        if message_id not in war_db:
-            return await safe_reply(ctx, "❌ That message ID is not in the active database. (Was the database wiped?)", ephemeral=True)
+        if not is_war_role(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
+        if message_id not in war_db: return await safe_reply(ctx, "❌ That message ID is not in the active database.", ephemeral=True)
             
         await ctx.defer(ephemeral=True)
         war_data = war_db[message_id]
@@ -488,17 +477,13 @@ class WarCog(commands.Cog):
         target_channel = self.bot.get_channel(WAR_THREAD_ID) or await self.bot.fetch_channel(WAR_THREAD_ID)
         if not target_channel: return await ctx.followup.send("❌ War channel thread not found.")
         
-        embed = generate_war_embed(war_data)
-        view = WarRosterView()
-        
+        embed = generate_war_embed(war_data); view = WarRosterView()
         new_msg = await target_channel.send(content="🔄 **Roster Refreshed** (Fixing Interaction Error)", embed=embed, view=view)
         
-        # Migrate data to new message ID
         war_db[str(new_msg.id)] = war_data
         del war_db[message_id]
         _save_wars()
         
-        # Cleanup old message silently
         try:
             old_msg = await target_channel.fetch_message(int(message_id))
             await old_msg.delete()
