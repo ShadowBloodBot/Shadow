@@ -77,7 +77,8 @@ class TTSCog(commands.Cog):
                 print(f"⚠️ Translation Error: {e}")
                 return text, False
 
-        translation_task = asyncio.create_task(self.bot.loop.run_in_executor(None, fetch_translation))
+        # FIX: Removed asyncio.create_task(). run_in_executor returns an awaitable Future already!
+        translation_task = self.bot.loop.run_in_executor(None, fetch_translation)
 
         # WHILE it translates, we run the 1-second JTC Cache fix to save time
         await asyncio.sleep(1.0)
