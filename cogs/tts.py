@@ -60,9 +60,26 @@ class TTSCog(commands.Cog):
         if not has_tts_role(ctx.author):
             return await ctx.respond("⛔ Restricted.", ephemeral=True)
 
-        await ctx.defer() 
+        # PRIVACY FIX: Makes "Shadow is thinking..." hidden from everyone but you
+        await ctx.defer(ephemeral=True) 
 
-        # 1. THE JTC CACHE FIX
+        lang_code = "en" if language in ["au", "uk"] else language
+        tld = "com.au" if language == "au" else "co.uk" if language == "uk" else "com"
+
+        # SPEED OPTIMIZATION: Start the translation immediately in the background
+        def fetch_translation():
+            if lang_code == "en": return text, False
+            try:
+                target = "zh-CN" if lang_code == "zh-cn" else lang_code
+                result = GoogleTranslator(source='auto', target=target).translate(text)
+                return result, True
+            except Exception as e:
+                print(f"⚠️ Translation Error: {e}")
+                return text, False
+
+        translation_task = asyncio.create_task(self.bot.loop.run_in_executor(None, fetch_translation))
+
+        # WHILE it translates, we run the 1-second JTC Cache fix to save time
         await asyncio.sleep(1.0)
         member = ctx.guild.get_member(ctx.author.id)
 
@@ -71,33 +88,10 @@ class TTSCog(commands.Cog):
             
         target_channel = member.voice.channel
 
-        # 2. TRANSLATION LOGIC (Using deep-translator)
-        lang_code = "en" if language in ["au", "uk"] else language
-        tld = "com.au" if language == "au" else "co.uk" if language == "uk" else "com"
-        
-        spoken_text = text
-        is_translated = False
-        
-        if lang_code != "en":
-            def fetch_translation():
-                try:
-                    # Map zh-cn to zh-CN for deep-translator compatibility
-                    target = "zh-CN" if lang_code == "zh-cn" else lang_code
-                    return GoogleTranslator(source='auto', target=target).translate(text)
-                except Exception as e:
-                    print(f"⚠️ Translation Error: {e}")
-                    return text
+        # Retrieve the finished translation
+        spoken_text, is_translated = await translation_task
 
-            try:
-                # Run the translation API in a background thread so the bot doesn't lag
-                translation_result = await self.bot.loop.run_in_executor(None, fetch_translation)
-                if translation_result and translation_result != text:
-                    spoken_text = translation_result
-                    is_translated = True
-            except Exception as e:
-                print(f"⚠️ Async Translation Error: {e}")
-
-        # 3. OFFLINE GENERATION
+        # OFFLINE GENERATION
         file_name = f"tts_{uuid.uuid4().hex[:8]}.mp3"
         file_path = TEMP_AUDIO_DIR / file_name
 
@@ -111,14 +105,14 @@ class TTSCog(commands.Cog):
             traceback.print_exc()
             return await ctx.followup.send(f"❌ Audio Generation Failed: {e}", ephemeral=True)
 
-        # 4. PRE-LOAD AUDIO (Opus Engine with silenced FFmpeg warnings)
+        # PRE-LOAD AUDIO
         try:
             source = await discord.FFmpegOpusAudio.from_probe(str(file_path), options='-loglevel error')
         except Exception as e:
             traceback.print_exc()
             return await ctx.followup.send(f"❌ Audio Encoding Failed: {e}", ephemeral=True)
 
-        # 5. NATIVE CONNECTION
+        # NATIVE CONNECTION
         vc = ctx.guild.voice_client
         try:
             if not vc or not vc.is_connected():
@@ -128,7 +122,7 @@ class TTSCog(commands.Cog):
         except Exception as e:
             return await ctx.followup.send(f"❌ Voice Connection Failed: {e}", ephemeral=True)
 
-        # 6. STABILIZATION BUFFER
+        # STABILIZATION BUFFER
         await asyncio.sleep(1.5)
 
         if not vc.is_connected():
@@ -137,7 +131,7 @@ class TTSCog(commands.Cog):
         if vc.is_playing():
             vc.stop() 
 
-        # 7. STREAM & CLEANUP
+        # STREAM & CLEANUP
         try:
             def after_play(error):
                 if error: print(f"⚠️ TTS Playback Error: {error}")
@@ -152,14 +146,15 @@ class TTSCog(commands.Cog):
             
             lang_name = next((choice.name for choice in TTS_LANGUAGES if choice.value == language), language)
             
-            # Show what was actually translated in the UI
             display_desc = f"🗣️ **Said:** {spoken_text}"
             if is_translated:
                 display_desc += f"\n*(Original: {text})*"
                 
             embed = discord.Embed(description=display_desc, color=THEME_PRIMARY)
             embed.set_footer(text=f"Requested by {ctx.author.display_name} | {lang_name}")
-            await ctx.followup.send(embed=embed)
+            
+            # PRIVACY FIX: Ensure the final message embed is also hidden
+            await ctx.followup.send(embed=embed, ephemeral=True)
 
         except Exception as e:
             traceback.print_exc()
