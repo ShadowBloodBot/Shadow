@@ -1,124 +1,55 @@
-# cogs/tts.py
+# bot.py
 import os
-import asyncio
-import uuid
-import traceback
-from pathlib import Path
+import socket
+
+# ==========================================
+# --- RAILWAY IPV6 NETWORK PATCH ---
+# Force Python to only use IPv4. This bypasses Railway's broken IPv6 UDP routing
+# which causes Discord Voice WebSockets to silently drop and ghost.
+old_getaddrinfo = socket.getaddrinfo
+def new_getaddrinfo(*args, **kwargs):
+    responses = old_getaddrinfo(*args, **kwargs)
+    return [response for response in responses if response[0] == socket.AF_INET]
+socket.getaddrinfo = new_getaddrinfo
+# ==========================================
 
 import discord
 from discord.ext import commands
-from discord import Option, OptionChoice
-from gtts import gTTS
 
-# --- CONSTANTS ---
-THEME_PRIMARY = 0x2B0B35
-TTS_ROLE_ID = 955600320287887400
+TOKEN = os.getenv("DISCORD_TOKEN")
+if not TOKEN:
+    raise SystemExit("❌ DISCORD_TOKEN is not set.")
 
-TEMP_AUDIO_DIR = Path("temp_audio")
-TEMP_AUDIO_DIR.mkdir(exist_ok=True)
+# --- SET UP INTENTS ---
+intents = discord.Intents.default()
+intents.guilds = True
+intents.voice_states = True
+intents.members = True
+intents.message_content = True
 
-# --- LANGUAGE CONFIGURATION ---
-TTS_LANGUAGES = [
-    OptionChoice(name="English (US)", value="en"),
-    OptionChoice(name="English (Australian)", value="au"),
-    OptionChoice(name="English (UK)", value="uk"),
-    OptionChoice(name="Spanish", value="es"),
-    OptionChoice(name="French", value="fr"),
-    OptionChoice(name="German", value="de"),
-    OptionChoice(name="Italian", value="it"),
-    OptionChoice(name="Portuguese", value="pt"),
-    OptionChoice(name="Japanese", value="ja"),
-    OptionChoice(name="Korean", value="ko"),
-    OptionChoice(name="Chinese (Mandarin)", value="zh-cn"),
-    OptionChoice(name="Russian", value="ru"),
-    OptionChoice(name="Arabic", value="ar"),
-    OptionChoice(name="Hindi", value="hi"),
-    OptionChoice(name="Turkish", value="tr"),
-    OptionChoice(name="Dutch", value="nl"),
-    OptionChoice(name="Polish", value="pl"),
-    OptionChoice(name="Swedish", value="sv"),
-    OptionChoice(name="Indonesian", value="id"),
-    OptionChoice(name="Vietnamese", value="vi")
+bot = discord.Bot(intents=intents)
+
+# --- LOAD COGS (MODULES) ---
+cogs_list = [
+    "cogs.utility",
+    "cogs.war",
+    "cogs.casino",
+    "cogs.tower",
+    "cogs.jtc",
+    "cogs.audit_logs",
+    "cogs.tts"
 ]
 
-# --- HELPERS ---
-def has_tts_role(user):
-    if not isinstance(user, discord.Member): return False
-    return any(r.id == TTS_ROLE_ID for r in user.roles)
+for cog in cogs_list:
+    try:
+        bot.load_extension(cog)
+        print(f"✅ Loaded {cog}")
+    except Exception as e:
+        print(f"❌ Failed to load {cog}: {e}")
 
-# --- COG LOGIC ---
-class TTSCog(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
+@bot.event
+async def on_ready():
+    print(f"🚀 Master Bot is online! Logged in as {bot.user}")
 
-    @discord.slash_command(name="speak", description="Make the bot say something in your Voice Channel")
-    async def speak(
-        self, 
-        ctx, 
-        text: Option(str, description="What do you want the bot to say?"), 
-        language: Option(str, description="Select the language or accent", choices=TTS_LANGUAGES, default="en")
-    ):
-        if not has_tts_role(ctx.author):
-            return await ctx.respond("⛔ Restricted. You do not have the required role to use TTS.", ephemeral=True)
-
-        await ctx.defer() 
-        
-        if not isinstance(ctx.author, discord.Member) or not ctx.author.voice or not ctx.author.voice.channel:
-            return await ctx.followup.send("❌ You must be in a Voice Channel to use this.", ephemeral=True)
-
-        # 1. OFFLINE GENERATION FIRST (No idle voice sockets)
-        file_name = f"tts_{uuid.uuid4().hex[:8]}.mp3"
-        file_path = TEMP_AUDIO_DIR / file_name
-
-        def generate_tts():
-            if language == "au": tts = gTTS(text=text, lang="en", tld="com.au", slow=False)
-            elif language == "uk": tts = gTTS(text=text, lang="en", tld="co.uk", slow=False)
-            else: tts = gTTS(text=text, lang=language, slow=False)
-            tts.save(str(file_path))
-
-        try:
-            await self.bot.loop.run_in_executor(None, generate_tts)
-        except Exception as e:
-            traceback.print_exc()
-            return await ctx.followup.send(f"❌ Audio Generation Failed: {e}", ephemeral=True)
-
-        # 2. NATIVE CONNECTION (The file is ready, join now)
-        vc = ctx.guild.voice_client
-        try:
-            if not vc:
-                vc = await ctx.author.voice.channel.connect()
-            elif vc.channel.id != ctx.author.voice.channel.id:
-                await vc.move_to(ctx.author.voice.channel)
-        except Exception as e:
-            return await ctx.followup.send(f"❌ Voice Connection Failed: {e}", ephemeral=True)
-
-        if vc.is_playing():
-            return await ctx.followup.send("⚠️ I am already speaking. Please wait.", ephemeral=True)
-
-        # 3. STREAM & CLEANUP
-        try:
-            source = discord.FFmpegPCMAudio(str(file_path), options='-vn')
-            
-            def after_play(error):
-                if error: print(f"⚠️ TTS Playback Error: {error}")
-                # Dispatch async cleanup
-                async def cleanup():
-                    await asyncio.sleep(2.0)
-                    try:
-                        if file_path.exists(): os.remove(str(file_path))
-                    except: pass
-                asyncio.run_coroutine_threadsafe(cleanup(), self.bot.loop)
-
-            vc.play(source, after=after_play)
-            
-            lang_name = next((choice.name for choice in TTS_LANGUAGES if choice.value == language), language)
-            embed = discord.Embed(description=f"🗣️ **Said:** {text}", color=THEME_PRIMARY)
-            embed.set_footer(text=f"Requested by {ctx.author.display_name} | {lang_name}")
-            await ctx.followup.send(embed=embed)
-
-        except Exception as e:
-            traceback.print_exc()
-            await ctx.followup.send(f"❌ Playback Execution Failed: {e}", ephemeral=True)
-
-def setup(bot):
-    bot.add_cog(TTSCog(bot))
+if __name__ == "__main__":
+    bot.run(TOKEN)
