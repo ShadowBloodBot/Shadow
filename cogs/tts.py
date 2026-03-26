@@ -9,6 +9,7 @@ import discord
 from discord.ext import commands
 from discord import Option, OptionChoice
 from gtts import gTTS
+from googletrans import Translator
 
 # --- CONSTANTS ---
 THEME_PRIMARY = 0x2B0B35
@@ -48,6 +49,7 @@ def has_tts_role(user):
 class TTSCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.translator = Translator()
 
     @discord.slash_command(name="speak", description="Make the bot say something in your Voice Channel")
     async def speak(
@@ -61,7 +63,7 @@ class TTSCog(commands.Cog):
 
         await ctx.defer() 
 
-        # 1. THE JTC CACHE FIX (Wait for Discord to sync your location)
+        # 1. THE JTC CACHE FIX
         await asyncio.sleep(1.0)
         member = ctx.guild.get_member(ctx.author.id)
 
@@ -70,14 +72,29 @@ class TTSCog(commands.Cog):
             
         target_channel = member.voice.channel
 
-        # 2. OFFLINE GENERATION
+        # 2. TRANSLATION LOGIC
+        lang_code = "en" if language in ["au", "uk"] else language
+        tld = "com.au" if language == "au" else "co.uk" if language == "uk" else "com"
+        
+        spoken_text = text
+        is_translated = False
+        
+        if lang_code != "en":
+            try:
+                # googletrans 4.0.0-rc1 uses async translation
+                translation = await self.translator.translate(text, dest=lang_code)
+                spoken_text = translation.text
+                is_translated = True
+            except Exception as e:
+                print(f"⚠️ Translation Error: {e}")
+                # If translation fails, it will fall back to reading English with an accent
+
+        # 3. OFFLINE GENERATION
         file_name = f"tts_{uuid.uuid4().hex[:8]}.mp3"
         file_path = TEMP_AUDIO_DIR / file_name
 
         def generate_tts():
-            tld = "com.au" if language == "au" else "co.uk" if language == "uk" else "com"
-            lang_code = "en" if language in ["au", "uk"] else language
-            tts = gTTS(text=text, lang=lang_code, tld=tld, slow=False)
+            tts = gTTS(text=spoken_text, lang=lang_code, tld=tld, slow=False)
             tts.save(str(file_path))
 
         try:
@@ -86,14 +103,14 @@ class TTSCog(commands.Cog):
             traceback.print_exc()
             return await ctx.followup.send(f"❌ Audio Generation Failed: {e}", ephemeral=True)
 
-        # 3. PRE-LOAD AUDIO (The Opus Engine Fix - Re-added!)
+        # 4. PRE-LOAD AUDIO (Opus Engine)
         try:
             source = await discord.FFmpegOpusAudio.from_probe(str(file_path))
         except Exception as e:
             traceback.print_exc()
             return await ctx.followup.send(f"❌ Audio Encoding Failed: {e}", ephemeral=True)
 
-        # 4. NATIVE CONNECTION
+        # 5. NATIVE CONNECTION
         vc = ctx.guild.voice_client
         try:
             if not vc or not vc.is_connected():
@@ -103,17 +120,16 @@ class TTSCog(commands.Cog):
         except Exception as e:
             return await ctx.followup.send(f"❌ Voice Connection Failed: {e}", ephemeral=True)
 
-        # 5. THE STABILIZATION BUFFER
-        # Py-cord needs a moment to establish the UDP hole-punch. Do not hit play instantly.
+        # 6. STABILIZATION BUFFER
         await asyncio.sleep(1.5)
 
         if not vc.is_connected():
-            return await ctx.followup.send("❌ Connection lost before speaking. (Are you being kicked by a JTC script?)", ephemeral=True)
+            return await ctx.followup.send("❌ Connection lost before speaking.", ephemeral=True)
 
         if vc.is_playing():
-            vc.stop() # Force stop anything currently hanging
+            vc.stop() 
 
-        # 6. STREAM & CLEANUP
+        # 7. STREAM & CLEANUP
         try:
             def after_play(error):
                 if error: print(f"⚠️ TTS Playback Error: {error}")
@@ -127,7 +143,13 @@ class TTSCog(commands.Cog):
             vc.play(source, after=after_play)
             
             lang_name = next((choice.name for choice in TTS_LANGUAGES if choice.value == language), language)
-            embed = discord.Embed(description=f"🗣️ **Said:** {text}", color=THEME_PRIMARY)
+            
+            # Show what was actually translated in the UI
+            display_desc = f"🗣️ **Said:** {spoken_text}"
+            if is_translated:
+                display_desc += f"\n*(Original: {text})*"
+                
+            embed = discord.Embed(description=display_desc, color=THEME_PRIMARY)
             embed.set_footer(text=f"Requested by {ctx.author.display_name} | {lang_name}")
             await ctx.followup.send(embed=embed)
 
