@@ -4,4 +4,4 @@ gTTS>=2.5.1
 googletrans==4.0.0-rc1
 yt-dlp
 pynacl
-py-cord[voice]
+py-cord[voice] @ git+https://github.com/Pycord-Development/pycord.git
