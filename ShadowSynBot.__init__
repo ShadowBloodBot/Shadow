@@ -1,5 +1,6 @@
 intents = discord.Intents.default()
 intents.guilds = True
 intents.voice_states = True
-intents.members = True            # ← add this
+intents.members = True
+intents.message_content = True   # <- Add this for Audit Logs!
 super().__init__(intents=intents)
