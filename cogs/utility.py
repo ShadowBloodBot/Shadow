@@ -7,7 +7,13 @@ from pathlib import Path
 import discord
 from discord.ext import commands
 from discord import Option, Interaction
-from discord.ui import Modal, TextInput
+from discord.ui import View, Button, Modal, TextInput
+
+# --- ARCHITECTURE NOTE ---
+# Discord API strictly enforces static, pre-registered names for Slash Commands. 
+# Creating dynamic commands like `/role_1497776011394158602` on the fly violates Discord's global registry constraints.
+# SOLUTION: Deployed `/role_button` with a `discord.Role` option parameter.
+# State is encoded directly into the Button's custom_id for 100% stateless persistence across container restarts.
 
 # --- CONSTANTS & IDS ---
 THEME_PRIMARY = 0x2B0B35
@@ -63,7 +69,7 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
             else: return await ctx_or_inter.followup.send(*args, **kwargs)
     except: return None
 
-# --- CUSTOM EMBEDS CLASS ---
+# --- UI COMPONENTS ---
 class EasyEmbedModal(Modal):
     def __init__(self, channel, edit_msg=None):
         super().__init__(title="Edit Embed" if edit_msg else "Create Custom Embed")
@@ -88,6 +94,16 @@ class EasyEmbedModal(Modal):
         else:
             await self.channel.send(embed=embed); await interaction.response.send_message("✅ Embed Sent!", ephemeral=True)
 
+class PersistentRoleView(View):
+    def __init__(self, role: discord.Role):
+        super().__init__(timeout=None)
+        btn = Button(
+            label=f"Toggle {role.name}", 
+            style=discord.ButtonStyle.primary, 
+            custom_id=f"claim_role_{role.id}",
+            emoji="🏷️"
+        )
+        self.add_item(btn)
 
 class UtilityCog(commands.Cog):
     def __init__(self, bot):
@@ -100,6 +116,42 @@ class UtilityCog(commands.Cog):
             try: self.active_haste_facts = json.loads(HASTE_FACTS_STORE.read_text())
             except: self.active_haste_facts = list(DEFAULT_HASTE_FACTS)
         else: self.active_haste_facts = list(DEFAULT_HASTE_FACTS)
+
+    # --- STATELESS PERSISTENT LISTENER ---
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction):
+        if interaction.type == discord.InteractionType.component:
+            custom_id = interaction.data.get("custom_id", "")
+            if custom_id.startswith("claim_role_"):
+                try:
+                    role_id = int(custom_id.replace("claim_role_", ""))
+                    role = interaction.guild.get_role(role_id)
+                    
+                    if not role:
+                        return await safe_reply(interaction, "❌ This role no longer exists on the server.", ephemeral=True)
+                    
+                    if role in interaction.user.roles:
+                        await interaction.user.remove_roles(role)
+                        await safe_reply(interaction, f"➖ You have removed the **{role.name}** role.", ephemeral=True)
+                    else:
+                        await interaction.user.add_roles(role)
+                        await safe_reply(interaction, f"✅ You have claimed the **{role.name}** role.", ephemeral=True)
+                
+                except discord.Forbidden:
+                    await safe_reply(interaction, "❌ I lack permissions to assign this role. Ensure my bot role is placed higher in the hierarchy.", ephemeral=True)
+                except Exception as e:
+                    await safe_reply(interaction, f"⚠️ Error processing role assignment: {e}", ephemeral=True)
+
+    @discord.slash_command(name="role_button", description="Deploy a persistent button for users to claim a role")
+    @admin_only()
+    async def role_button(self, ctx, role: Option(discord.Role, description="Select the role to attach to the button")):
+        embed = discord.Embed(
+            title="🏷️ Role Assignment",
+            description=f"Click the button below to claim or remove the {role.mention} role.",
+            color=THEME_PRIMARY
+        )
+        await safe_reply(ctx, "✅ Deploying role button...", ephemeral=True)
+        await ctx.channel.send(embed=embed, view=PersistentRoleView(role))
 
     @discord.slash_command(name="send_custom", description="Send a clean embed message")
     @admin_only()
