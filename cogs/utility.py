@@ -35,7 +35,6 @@ try: PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
 except: PERSIST_ROOT = Path(".").resolve()
 
 HASTE_FACTS_STORE = (PERSIST_ROOT / "haste_facts.json")
-INVITE_ROLE_STORE = (PERSIST_ROOT / "invite_roles.json")
 
 DEFAULT_HASTE_FACTS = [
     "Haste is a man lover", "Haste feeds knights to spearmen", "Haste is the potato peeler",
@@ -127,15 +126,16 @@ class MinionView(View):
         self.target = target_member_id
         
         # Original Minion grant button
-        b = Button(label="Minion", style=discord.ButtonStyle.success)
+        b = Button(label="Grant Minion", style=discord.ButtonStyle.success, emoji="✅")
         b.callback = self.grant
         self.add_item(b)
         
-        # New robust profile link button to circumvent broken un-cached mentions
+        # Robust profile link button to circumvent broken un-cached mentions
         profile_btn = Button(
             label="View Profile", 
             url=f"https://discord.com/users/{target_member_id}", 
-            style=discord.ButtonStyle.link
+            style=discord.ButtonStyle.link,
+            emoji="🔍"
         )
         self.add_item(profile_btn)
         
@@ -145,13 +145,25 @@ class MinionView(View):
             r = i.guild.get_role(ROLE_MINION_ID)
             if m and r: 
                 await m.add_roles(r)
-                await i.response.send_message(f"✅ Granted.", ephemeral=True)
+                await i.response.send_message(f"✅ Minion role granted to **{m.display_name}**.", ephemeral=True)
             else: 
                 await i.response.send_message("❌ Error: Member may have left or role is missing.", ephemeral=True)
         except discord.Forbidden:
-            await i.response.send_message("❌ Error: I lack permission to grant this role.", ephemeral=True)
+            await i.response.send_message("❌ Error: I lack permission to grant this role. Ensure my bot role is higher in the hierarchy.", ephemeral=True)
         except Exception as e:
             await i.response.send_message(f"⚠️ Unexpected Error: {e}", ephemeral=True)
+
+class DepartureView(View):
+    def __init__(self, target_member_id):
+        super().__init__(timeout=None)
+        # Dedicated stateless profile view for departures
+        profile_btn = Button(
+            label="View Profile", 
+            url=f"https://discord.com/users/{target_member_id}", 
+            style=discord.ButtonStyle.link,
+            emoji="🔍"
+        )
+        self.add_item(profile_btn)
 
 class UtilityCog(commands.Cog):
     def __init__(self, bot):
@@ -236,26 +248,22 @@ class UtilityCog(commands.Cog):
             if not ch: return
             
             created_ts = int(member.created_at.timestamp())
+            avatar_url = member.display_avatar.url if member.display_avatar else member.default_avatar.url
             
             em = discord.Embed(
-                description=(
-                    f"**User:** {member.mention}\n"
-                    f"**Tag:** `{member.name}`\n"
-                    f"**ID:** `{member.id}`\n"
-                    f"**Account Created:** <t:{created_ts}:R>"
-                ),
+                title="🛬 New Arrival",
+                description=f"Welcome to **{member.guild.name}**, {member.mention}!",
                 color=THEME_PRIMARY
             )
             
-            if member.display_avatar:
-                em.set_thumbnail(url=member.display_avatar.url)
-                em.set_author(name=f"{member.display_name} joined {member.guild.name}", icon_url=member.display_avatar.url)
-            else:
-                em.set_author(name=f"{member.display_name} joined {member.guild.name}")
-                
-            em.set_footer(text="Tap to grant Minion • Click View Profile to inspect")
+            em.set_thumbnail(url=avatar_url)
+            
+            em.add_field(name="👤 Username", value=f"`{member.name}`", inline=True)
+            em.add_field(name="🆔 User ID", value=f"`{member.id}`", inline=True)
+            em.add_field(name="📅 Account Created", value=f"<t:{created_ts}:R>", inline=False)
             
             await ch.send(embed=em, view=MinionView(member.id))
+            
         except Exception as e:
             print(f"⚠️ Exception in on_member_join routing: {e}")
 
@@ -266,26 +274,38 @@ class UtilityCog(commands.Cog):
             if not channel: return
             
             title = "👋 Member Left"
-            description = f"{member.mention} left the server."
+            description = f"{member.mention} has left **{member.guild.name}**."
             color = THEME_LOSS 
             now = datetime.now(timezone.utc)
             
+            # Check Audit Logs for Kicks
             try:
                 async for entry in member.guild.audit_logs(limit=1, action=discord.AuditLogAction.kick):
                     if entry.target.id == member.id and (now - entry.created_at).total_seconds() < 10:
                         title = "🥾 Member Kicked"
-                        description = f"{member.mention} kicked the server.\nBy: **{entry.user.name}** ({entry.user.display_name})"
-                        color = 0xF04747 
+                        description = f"{member.mention} was kicked from the server.\n**By:** {entry.user.mention} (`{entry.user.name}`)"
                         break
             except: pass
 
-            embed = discord.Embed(title=title, color=color, timestamp=now)
-            embed.add_field(name="User", value=f"{member.mention}\n{member.name}", inline=False)
-            embed.add_field(name="Account Age", value=format_age(member.created_at), inline=True)
-            embed.add_field(name="Details", value=description, inline=False)
-            embed.set_footer(text=f"ID: {member.id}")
+            # Extract timestamps for precise metrics
+            created_ts = int(member.created_at.timestamp())
+            joined_ts = int(member.joined_at.timestamp()) if member.joined_at else None
+            avatar_url = member.display_avatar.url if member.display_avatar else member.default_avatar.url
+
+            embed = discord.Embed(title=title, description=description, color=color, timestamp=now)
+            embed.set_thumbnail(url=avatar_url)
             
-            await channel.send(embed=embed)
+            embed.add_field(name="👤 Username", value=f"`{member.name}`", inline=True)
+            embed.add_field(name="🆔 User ID", value=f"`{member.id}`", inline=True)
+            
+            embed.add_field(name="📅 Account Created", value=f"<t:{created_ts}:R>", inline=False)
+            if joined_ts:
+                embed.add_field(name="📥 Joined Server", value=f"<t:{joined_ts}:R>", inline=True)
+                
+            embed.set_footer(text=f"User ID: {member.id}")
+            
+            await channel.send(embed=embed, view=DepartureView(member.id))
+            
         except Exception as e:
             print(f"⚠️ Exception in on_member_remove routing: {e}")
 
