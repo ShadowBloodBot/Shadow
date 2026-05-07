@@ -72,7 +72,7 @@ class BetAmountModal(Modal):
         super().__init__(title=title[:45])
         self.balance = balance
         self.callback_func = callback_func
-        self.add_item(TextInput(label=f"Amount (Max: {balance})", placeholder="Enter amount or 'all'", min_length=1))
+        self.add_item(TextInput(label=f"Amount (Max: {balance})"[:45], placeholder="Enter amount or 'all'", min_length=1))
         
     async def callback(self, interaction: Interaction):
         raw = self.children[0].value.lower().strip()
@@ -204,10 +204,11 @@ class BlackjackView(View):
 # --- [ENGINE] LIMBO (CRASH) ---
 class LimboModal(Modal):
     def __init__(self, balance):
-        super().__init__(title="Limbo (Crash Multiplier)")
+        super().__init__(title="Limbo (Crash Multiplier)"[:45])
         self.balance = balance
-        self.add_item(TextInput(label=f"Bet Amount (Max: {balance})", placeholder="Enter amount or 'all'"))
-        self.add_item(TextInput(label="Target Multiplier (e.g., 2.0, 10.5)", placeholder="Minimum 1.01", default="2.0"))
+        self.add_item(TextInput(label=f"Bet Amount (Max: {balance})"[:45], placeholder="Enter amount or 'all'"))
+        # FIX: Pycord TextInput uses 'value' to set a default input text, not 'default'.
+        self.add_item(TextInput(label="Target Multiplier (e.g., 2.0, 10.5)"[:45], placeholder="Minimum 1.01", value="2.0"))
         
     async def callback(self, interaction: Interaction):
         raw_bet = self.children[0].value.lower().strip()
