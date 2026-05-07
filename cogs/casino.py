@@ -3,6 +3,7 @@ import os
 import json
 import time
 import random
+import asyncio
 from pathlib import Path
 
 import discord
@@ -15,6 +16,8 @@ THEME_PRIMARY = 0x2B0B35
 THEME_WIN = 0x43B581 
 THEME_LOSS = 0xF04747 
 THEME_GOLD = 0xFFD700 
+THEME_INFO = 0x3498DB
+THEME_WARNING = 0xE67E22
 
 CASINO_CHANNEL_ID = 1468766727134249091
 GAMBLER_ROLE_ID = 955600320287887400  
@@ -207,7 +210,6 @@ class LimboModal(Modal):
         super().__init__(title="Limbo (Crash Multiplier)"[:45])
         self.balance = balance
         self.add_item(TextInput(label=f"Bet Amount (Max: {balance})"[:45], placeholder="Enter amount or 'all'"))
-        # FIX: Pycord TextInput uses 'value' to set a default input text, not 'default'.
         self.add_item(TextInput(label="Target Multiplier (e.g., 2.0, 10.5)"[:45], placeholder="Minimum 1.01", value="2.0"))
         
     async def callback(self, interaction: Interaction):
@@ -231,6 +233,32 @@ class LimboModal(Modal):
         # Cryptographic representation of a 1% house edge crash game
         crash_point = 0.99 / (1.0 - random.random())
         
+        # --- PHASE 1: LAUNCH ---
+        start_embed = discord.Embed(
+            title="📈 Limbo Crash", 
+            description="🚀 **The rocket is launching...**\n`1.00x`", 
+            color=THEME_INFO
+        )
+        start_embed.set_footer(text=f"Bet: {bet} | Target: {target}x")
+        await interaction.response.send_message(embed=start_embed, ephemeral=True)
+
+        # --- PHASE 2: ANIMATION ---
+        # If it doesn't crash instantly, simulate a build-up frame
+        if crash_point > 1.15:
+            await asyncio.sleep(1.2)
+            mid_point = 1.0 + ((min(crash_point, target) - 1.0) * random.uniform(0.4, 0.7))
+            mid_embed = discord.Embed(
+                title="📈 Limbo Crash", 
+                description=f"🔥 **Climbing!**\n`{mid_point:.2f}x`", 
+                color=THEME_WARNING
+            )
+            mid_embed.set_footer(text=f"Bet: {bet} | Target: {target}x")
+            try: await interaction.edit_original_response(embed=mid_embed)
+            except: pass
+
+        await asyncio.sleep(1.5)
+
+        # --- PHASE 3: RESOLUTION ---
         if crash_point >= target:
             payout = int(bet * target)
             update_balance(user_id, payout)
@@ -240,9 +268,10 @@ class LimboModal(Modal):
             color = THEME_LOSS
             desc = f"💥 The multiplier crashed at **{crash_point:.2f}x**.\n❌ You missed your target of **{target}x** and lost **{bet}** Scoins."
 
-        embed = discord.Embed(title="📈 Limbo Crash", description=desc, color=color)
-        embed.set_footer(text=f"Bet: {bet} | Target: {target}x")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        final_embed = discord.Embed(title="📈 Limbo Crash", description=desc, color=color)
+        final_embed.set_footer(text=f"Bet: {bet} | Target: {target}x")
+        try: await interaction.edit_original_response(embed=final_embed)
+        except: pass
 
 
 # --- [ENGINE] DUEL & SHOP ---
