@@ -2,30 +2,15 @@
 import os
 import json
 import random
-import re
 from pathlib import Path
-from datetime import datetime, timezone
 
 import discord
 from discord.ext import commands
 from discord import Option, Interaction
-from discord.ui import Modal, TextInput, View, Button, Select
-
-# --- ARCHITECTURE NOTE ---
-# Discord API strictly enforces static, pre-registered names for Slash Commands. 
-# Creating dynamic commands like `/role_1497776011394158602` on the fly violates Discord's global registry constraints.
-# SOLUTION: Deployed `/role_button` with a `discord.Role` option parameter.
-# State is encoded directly into the Button's custom_id for 100% stateless persistence across container restarts.
+from discord.ui import Modal, TextInput, View, Button
 
 # --- CONSTANTS & IDS ---
 THEME_PRIMARY = 0x2B0B35
-THEME_WIN = 0x43B581 
-THEME_LOSS = 0xF04747 
-THEME_GOLD = 0xFFD700 
-
-ARRIVALS_THREAD_ID = 959629903186259978
-ROLE_MINION_ID = 955600021502431233
-DEPARTURES_THREAD_ID = 960088192177029140
 ROLE_ADMIN_ID = 1214794734770323466 
 OWNER_ID = 482463400929263627
 
@@ -69,12 +54,6 @@ def admin_only():
 def owner_only():
     def predicate(ctx): return ctx.author.id == OWNER_ID
     return commands.check(predicate)
-
-def format_age(dt):
-    if not dt: return "Unknown"
-    delta = datetime.now(timezone.utc) - dt
-    if delta.days > 365: return f"{delta.days // 365} years ago"
-    return f"{delta.days} days ago"
 
 async def safe_reply(ctx_or_inter, *args, **kwargs):
     try:
@@ -120,51 +99,6 @@ class PersistentRoleView(View):
         )
         self.add_item(btn)
 
-class MinionView(View):
-    def __init__(self, target_member_id):
-        super().__init__(timeout=86400)
-        self.target = target_member_id
-        
-        # Original Minion grant button
-        b = Button(label="Grant Minion", style=discord.ButtonStyle.success, emoji="✅")
-        b.callback = self.grant
-        self.add_item(b)
-        
-        # Robust profile link button to circumvent broken un-cached mentions
-        profile_btn = Button(
-            label="View Profile", 
-            url=f"https://discord.com/users/{target_member_id}", 
-            style=discord.ButtonStyle.link,
-            emoji="🔍"
-        )
-        self.add_item(profile_btn)
-        
-    async def grant(self, i):
-        try:
-            m = i.guild.get_member(self.target)
-            r = i.guild.get_role(ROLE_MINION_ID)
-            if m and r: 
-                await m.add_roles(r)
-                await i.response.send_message(f"✅ Minion role granted to **{m.display_name}**.", ephemeral=True)
-            else: 
-                await i.response.send_message("❌ Error: Member may have left or role is missing.", ephemeral=True)
-        except discord.Forbidden:
-            await i.response.send_message("❌ Error: I lack permission to grant this role. Ensure my bot role is higher in the hierarchy.", ephemeral=True)
-        except Exception as e:
-            await i.response.send_message(f"⚠️ Unexpected Error: {e}", ephemeral=True)
-
-class DepartureView(View):
-    def __init__(self, target_member_id):
-        super().__init__(timeout=None)
-        # Dedicated stateless profile view for departures
-        profile_btn = Button(
-            label="View Profile", 
-            url=f"https://discord.com/users/{target_member_id}", 
-            style=discord.ButtonStyle.link,
-            emoji="🔍"
-        )
-        self.add_item(profile_btn)
-
 class UtilityCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -198,9 +132,9 @@ class UtilityCog(commands.Cog):
                         await safe_reply(interaction, f"✅ You have claimed the **{role.name}** role.", ephemeral=True)
                 
                 except discord.Forbidden:
-                    await safe_reply(interaction, "❌ I lack permissions to assign this role. Ensure my bot role is placed higher in the hierarchy.", ephemeral=True)
+                    await safe_reply(interaction, "❌ I lack permissions to assign this role.", ephemeral=True)
                 except Exception as e:
-                    await safe_reply(interaction, f"⚠️ Error processing role assignment: {e}", ephemeral=True)
+                    await safe_reply(interaction, f"⚠️ Error: {e}", ephemeral=True)
 
     @discord.slash_command(name="role_button", description="Deploy a persistent button for users to claim a role")
     @admin_only()
@@ -240,74 +174,6 @@ class UtilityCog(commands.Cog):
         self.active_haste_facts.append(fact)
         _atomic_write(HASTE_FACTS_STORE, self.active_haste_facts)
         await safe_reply(ctx, "✅ Added.")
-
-    @commands.Cog.listener()
-    async def on_member_join(self, member):
-        try:
-            ch = self.bot.get_channel(ARRIVALS_THREAD_ID) or await self.bot.fetch_channel(ARRIVALS_THREAD_ID)
-            if not ch: return
-            
-            created_ts = int(member.created_at.timestamp())
-            avatar_url = member.display_avatar.url if member.display_avatar else member.default_avatar.url
-            
-            em = discord.Embed(
-                title="🛬 New Arrival",
-                description=f"Welcome to **{member.guild.name}**, {member.mention}!",
-                color=THEME_PRIMARY
-            )
-            
-            em.set_thumbnail(url=avatar_url)
-            
-            em.add_field(name="👤 Username", value=f"`{member.name}`", inline=True)
-            em.add_field(name="🆔 User ID", value=f"`{member.id}`", inline=True)
-            em.add_field(name="📅 Account Created", value=f"<t:{created_ts}:R>", inline=False)
-            
-            await ch.send(embed=em, view=MinionView(member.id))
-            
-        except Exception as e:
-            print(f"⚠️ Exception in on_member_join routing: {e}")
-
-    @commands.Cog.listener()
-    async def on_member_remove(self, member):
-        try:
-            channel = member.guild.get_channel(DEPARTURES_THREAD_ID) or await member.guild.fetch_channel(DEPARTURES_THREAD_ID)
-            if not channel: return
-            
-            title = "👋 Member Left"
-            description = f"{member.mention} has left **{member.guild.name}**."
-            color = THEME_LOSS 
-            now = datetime.now(timezone.utc)
-            
-            # Check Audit Logs for Kicks
-            try:
-                async for entry in member.guild.audit_logs(limit=1, action=discord.AuditLogAction.kick):
-                    if entry.target.id == member.id and (now - entry.created_at).total_seconds() < 10:
-                        title = "🥾 Member Kicked"
-                        description = f"{member.mention} was kicked from the server.\n**By:** {entry.user.mention} (`{entry.user.name}`)"
-                        break
-            except: pass
-
-            # Extract timestamps for precise metrics
-            created_ts = int(member.created_at.timestamp())
-            joined_ts = int(member.joined_at.timestamp()) if member.joined_at else None
-            avatar_url = member.display_avatar.url if member.display_avatar else member.default_avatar.url
-
-            embed = discord.Embed(title=title, description=description, color=color, timestamp=now)
-            embed.set_thumbnail(url=avatar_url)
-            
-            embed.add_field(name="👤 Username", value=f"`{member.name}`", inline=True)
-            embed.add_field(name="🆔 User ID", value=f"`{member.id}`", inline=True)
-            
-            embed.add_field(name="📅 Account Created", value=f"<t:{created_ts}:R>", inline=False)
-            if joined_ts:
-                embed.add_field(name="📥 Joined Server", value=f"<t:{joined_ts}:R>", inline=True)
-                
-            embed.set_footer(text=f"User ID: {member.id}")
-            
-            await channel.send(embed=embed, view=DepartureView(member.id))
-            
-        except Exception as e:
-            print(f"⚠️ Exception in on_member_remove routing: {e}")
 
 def setup(bot):
     bot.add_cog(UtilityCog(bot))
