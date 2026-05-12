@@ -22,7 +22,7 @@ cogs_list = [
     "cogs.utility",
     "cogs.war",
     "cogs.casino",
-    "cogs.tower",
+    "cogs.spire",
     "cogs.jtc",
     "cogs.audit_logs",
     "cogs.tts"
