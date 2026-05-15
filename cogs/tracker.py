@@ -56,7 +56,7 @@ class TrackerCog(commands.Cog):
         self.bot = bot
         self._load_data()
         self.client = httpx.AsyncClient(timeout=30.0, follow_redirects=True, headers={
-            "User-Agent": "ShadowSyn Systems Architect/3.2 (Production Telemetry)"
+            "User-Agent": "ShadowSyn Systems Architect/3.3 (Production Telemetry)"
         })
         self.feed_monitor.start()
 
@@ -74,27 +74,6 @@ class TrackerCog(commands.Cog):
                         tracker_db[k] = v
             except:
                 pass
-
-    async def _extract_player_name(self, profile_url: str):
-        """Resolves an fta.gg profile URL to a case-sensitive in-game name."""
-        try:
-            response = await self.client.get(profile_url)
-            if response.status_code != 200:
-                return None
-            
-            soup = BeautifulSoup(response.text, "html.parser")
-            # Strategy: Find the main heading or meta titles where FTA stores character names
-            name_tag = soup.find("h1")
-            if name_tag:
-                return name_tag.get_text().strip()
-            
-            meta_title = soup.find("meta", property="og:title")
-            if meta_title:
-                return meta_title["content"].split("-")[0].strip()
-                
-            return None
-        except:
-            return None
 
     @tasks.loop(minutes=1)
     async def feed_monitor(self):
@@ -199,23 +178,18 @@ class TrackerCog(commands.Cog):
 
     # --- SLASH COMMANDS ---
 
-    @discord.slash_command(name="track_profile", description="Track a player using their fta.gg profile URL")
-    async def track_profile(self, ctx, profile_url: Option(str, "Full player profile link from fta.gg")):
+    @discord.slash_command(name="track_player", description="Add a player to the watch list")
+    async def track_player(self, ctx, 
+                           player_name: Option(str, "Exact in-game name (e.g., warcrimes)"), 
+                           profile_url: Option(str, "Optional: Paste fta.gg link here", required=False, default="No Link Provided")):
         await ctx.defer(ephemeral=True)
         
-        if "fta.gg" not in profile_url:
-            return await ctx.respond("❌ Invalid URL. Please provide a link from fta.gg", ephemeral=True)
+        if any(p["name"].lower() == player_name.lower() for p in tracker_db["tracked_players"]):
+            return await ctx.respond(f"⚠️ **{player_name}** is already being monitored.", ephemeral=True)
 
-        name = await self._extract_player_name(profile_url)
-        if not name:
-            return await ctx.respond("❌ Could not resolve player name. Is the profile public?", ephemeral=True)
-
-        if any(p["name"].lower() == name.lower() for p in tracker_db["tracked_players"]):
-            return await ctx.respond(f"⚠️ **{name}** is already being monitored.", ephemeral=True)
-
-        tracker_db["tracked_players"].append({"name": name, "profile_url": profile_url})
+        tracker_db["tracked_players"].append({"name": player_name, "profile_url": profile_url})
         _save_tracker()
-        await ctx.respond(f"✅ Telemetry locked onto: **{name}**", ephemeral=True)
+        await ctx.respond(f"✅ Telemetry locked onto: **{player_name}**", ephemeral=True)
 
     @discord.slash_command(name="untrack_player", description="Stop monitoring a player by name")
     async def untrack_player(self, ctx, player_name: Option(str, "Name of the player to remove")):
@@ -241,7 +215,13 @@ class TrackerCog(commands.Cog):
         if not players:
             return await ctx.respond("📝 Monitor list empty. Currently in Global Server Mode.", ephemeral=True)
         
-        desc = "\n".join([f"• **{p['name']}** ([Profile]({p['profile_url']}))" for p in players])
+        desc = ""
+        for p in players:
+            if "fta.gg" in p['profile_url']:
+                desc += f"• **{p['name']}** ([Profile]({p['profile_url']}))\n"
+            else:
+                desc += f"• **{p['name']}**\n"
+                
         embed = discord.Embed(title="📑 Current Watch List", description=desc, color=THEME_PRIMARY)
         await ctx.respond(embed=embed, ephemeral=True)
 
