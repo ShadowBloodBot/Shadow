@@ -25,7 +25,8 @@ cogs_list = [
     "cogs.spire",
     "cogs.jtc",
     "cogs.audit_logs",
-    "cogs.tts"
+    "cogs.tts",
+    "cogs.tracker"
 ]
 
 for cog in cogs_list:
