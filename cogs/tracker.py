@@ -4,6 +4,7 @@ import json
 import asyncio
 import traceback
 import re
+import time
 import urllib.parse
 from pathlib import Path
 from datetime import datetime
@@ -57,7 +58,7 @@ class TrackerCog(commands.Cog):
         self.bot = bot
         self._load_data()
         self.client = httpx.AsyncClient(timeout=30.0, headers={
-            "User-Agent": "ShadowSyn Systems Architect/4.0 (Direct API Telemetry)",
+            "User-Agent": "ShadowSyn Systems Architect/4.1 (Cache-Busting API Telemetry)",
             "Accept": "application/json"
         })
         self.feed_monitor.start()
@@ -104,7 +105,7 @@ class TrackerCog(commands.Cog):
                     "json": {
                         "playerId": pid,
                         "serverId": None,
-                        "limit": 15
+                        "limit": 50
                     },
                     "meta": {
                         "values": {
@@ -115,7 +116,10 @@ class TrackerCog(commands.Cog):
             }
             
             encoded_payload = urllib.parse.quote(json.dumps(payload))
-            url = f"https://fta.gg/api/trpc/players.getWcsKills?batch=1&input={encoded_payload}"
+            
+            # Cryptographic Cache Buster: Forces Cloudflare to treat this as a brand new request
+            cache_buster = int(time.time() * 1000)
+            url = f"https://fta.gg/api/trpc/players.getWcsKills?batch=1&input={encoded_payload}&_cb={cache_buster}"
 
             try:
                 response = await self.client.get(url)
@@ -186,7 +190,7 @@ class TrackerCog(commands.Cog):
             # Injecting the precise data mined from the JSON payload
             embed.add_field(name="🔫 Weapon", value=f"`{weapon}`", inline=True)
             embed.add_field(name="📏 Distance", value=f"`{distance:.1f}m`", inline=True)
-            embed.set_footer(text="FTA.gg Direct API Link")
+            embed.set_footer(text="FTA.gg Live Telemetry")
             
             try:
                 await channel.send(embed=embed)
