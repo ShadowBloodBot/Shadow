@@ -29,8 +29,9 @@ except:
 TRACKER_STORE = (PERSIST_ROOT / "kill_tracker_api.json")
 tracker_db = {
     "target_thread_id": None,
-    "tracked_players": [],  # Format: {"name": str, "player_id": str, "profile_url": str}
-    "processed_kills": []   # Array of raw kill IDs to prevent duplicates
+    "session_cookie": None,  # For passing auth headers to the tRPC backend
+    "tracked_players": [],   # Format: {"name": str, "player_id": str, "profile_url": str}
+    "processed_kills": []    # Array of raw kill IDs to prevent duplicates
 }
 
 def _atomic_write(file_path: Path, data):
@@ -60,8 +61,9 @@ class TrackerCog(commands.Cog):
         self.bot = bot
         self._load_data()
         self.client = httpx.AsyncClient(timeout=30.0, headers={
-            "User-Agent": "ShadowSyn Systems Architect/4.3 (Cache-Busting API Telemetry)",
-            "Accept": "application/json"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+            "Referer": "https://fta.gg/"
         })
         self.feed_monitor.start()
 
@@ -80,16 +82,10 @@ class TrackerCog(commands.Cog):
             except:
                 pass
                 
-        # Armored Sanitation Filter to clean legacy structures
         sanitized_players = []
         patched = False
-        
         for p in tracker_db["tracked_players"]:
-            if isinstance(p, str):
-                # If it's a legacy plain string, skip it to prevent '.get()' attribute crashes
-                patched = True
-                continue
-            elif isinstance(p, dict):
+            if isinstance(p, dict):
                 if not p.get("player_id") and p.get("profile_url"):
                     p["player_id"] = extract_player_id(p["profile_url"])
                     patched = True
@@ -110,6 +106,11 @@ class TrackerCog(commands.Cog):
         new_events = []
         tracked_names = [p["name"].lower() for p in tracker_db["tracked_players"] if isinstance(p, dict) and "name" in p]
 
+        # Dynamically build cookie header if provided
+        headers = {}
+        if tracker_db.get("session_cookie"):
+            headers["Cookie"] = tracker_db["session_cookie"]
+
         for player in tracker_db["tracked_players"]:
             if not isinstance(player, dict):
                 continue
@@ -118,7 +119,6 @@ class TrackerCog(commands.Cog):
             if not pid:
                 continue
 
-            # Constructing the exact tRPC payload intercepted from the network
             payload = {
                 "0": {
                     "json": {
@@ -135,18 +135,27 @@ class TrackerCog(commands.Cog):
             }
             
             encoded_payload = urllib.parse.quote(json.dumps(payload))
-            
-            # Cryptographic Cache Buster: Forces Cloudflare to pass fresh database values
             cache_buster = int(time.time() * 1000)
             url = f"https://fta.gg/api/trpc/players.getWcsKills?batch=1&input={encoded_payload}&_cb={cache_buster}"
 
             try:
-                response = await self.client.get(url)
+                response = await self.client.get(url, headers=headers)
                 if response.status_code != 200:
+                    print(f"📡 Telemetry Warning: Server returned status code {response.status_code}")
                     continue
 
+                # --- TELEMETRY DIAGNOSTICS LOG ---
+                print(f"🔍 RAW API RESPONSE FOR {player.get('name')}: {response.text}")
+
                 data = response.json()
+                
+                # Check for empty response or error response layouts
+                if not data or not isinstance(data, list) or "result" not in data[0]:
+                    continue
+                    
                 kills_array = data[0]["result"]["data"]["json"]
+                if not isinstance(kills_array, list):
+                    continue
                 
                 for event in kills_array:
                     if not isinstance(event, dict):
@@ -200,7 +209,13 @@ class TrackerCog(commands.Cog):
             )
             
             embed.add_field(name="🔫 Weapon", value=f"`{weapon}`", inline=True)
-            embed.add_field(name="📏 Distance", value=f"`{distance:.1f}m`", inline=True)
+            # Try/Except block to format numerical float safely
+            try:
+                dist_val = float(distance)
+                embed.add_field(name="📏 Distance", value=f"`{dist_val:.1f}m`", inline=True)
+            except:
+                embed.add_field(name="📏 Distance", value=f"`{distance}m`", inline=True)
+                
             embed.set_footer(text="FTA.gg Live Telemetry")
             
             try:
@@ -248,6 +263,17 @@ class TrackerCog(commands.Cog):
         tracker_db["target_thread_id"] = ctx.channel.id
         _save_tracker()
         await ctx.respond(f"🎯 API Output synchronized to: {ctx.channel.mention}", ephemeral=True)
+
+    @discord.slash_command(name="tracker_session", description="Set or clear the authorization raw cookie value (Admin Only)")
+    async def tracker_session(self, ctx, cookie_string: Option(str, "Paste raw cookie headers string from DevTools or type 'clear'", required=True)):
+        if cookie_string.lower().strip() == "clear":
+            tracker_db["session_cookie"] = None
+            _save_tracker()
+            return await ctx.respond("🧹 Cleared session cookies from the telemetry engine database.", ephemeral=True)
+            
+        tracker_db["session_cookie"] = cookie_string
+        _save_tracker()
+        await ctx.respond("🔒 Session cookie headers updated successfully.", ephemeral=True)
 
     @discord.slash_command(name="tracker_list", description="List all monitored API profiles")
     async def tracker_list(self, ctx):
