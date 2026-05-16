@@ -5,7 +5,6 @@ import asyncio
 import traceback
 import re
 import time
-import urllib.parse
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -62,7 +61,7 @@ class TrackerCog(commands.Cog):
         self.client = httpx.AsyncClient(timeout=30.0, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
             "Accept": "application/json",
-            "Referer": "[https://fta.gg/](https://fta.gg/)"
+            "Referer": "https://fta.gg/"
         })
         self.feed_monitor.start()
 
@@ -95,6 +94,11 @@ class TrackerCog(commands.Cog):
         if patched:
             _save_tracker()
 
+    # Safety Lock: Waits for the bot to fully connect to Discord before scanning
+    @feed_monitor.before_loop
+    async def before_feed_monitor(self):
+        await self.bot.wait_until_ready()
+
     @tasks.loop(seconds=45)
     async def feed_monitor(self):
         if not tracker_db.get("target_thread_id"):
@@ -107,6 +111,8 @@ class TrackerCog(commands.Cog):
         headers = {}
         if tracker_db.get("session_cookie"):
             headers["Cookie"] = tracker_db["session_cookie"]
+
+        api_url = "https://fta.gg/api/trpc/players.getWcsKills"
 
         for player in tracker_db["tracked_players"]:
             if not isinstance(player, dict):
@@ -130,11 +136,15 @@ class TrackerCog(commands.Cog):
                 }
             }
             
-            encoded_payload = urllib.parse.quote(json.dumps(payload, separators=(',', ':')))
-            url = f"[https://fta.gg/api/trpc/players.getWcsKills?batch=1&input=](https://fta.gg/api/trpc/players.getWcsKills?batch=1&input=){encoded_payload}"
+            # Safely build query parameters using dictionary instead of raw strings
+            query_params = {
+                "batch": "1",
+                "input": json.dumps(payload, separators=(',', ':')),
+                "_cb": str(int(time.time() * 1000))  # Cache buster
+            }
 
             try:
-                response = await self.client.get(url, headers=headers)
+                response = await self.client.get(api_url, params=query_params, headers=headers)
                 if response.status_code != 200:
                     print(f"📡 HTTP {response.status_code} Error from FTA for {player.get('name')}")
                     continue
@@ -261,7 +271,6 @@ class TrackerCog(commands.Cog):
         tracker_db["target_thread_id"] = ctx.channel.id
         _save_tracker()
         await ctx.respond(f"🎯 Output synchronized.", ephemeral=True)
-        # Validation test message
         try:
             await ctx.channel.send("✅ **[System Check]** Telemetry engine is officially linked to this channel. Awaiting live data...")
         except discord.Forbidden:
@@ -286,17 +295,25 @@ class TrackerCog(commands.Cog):
         player = tracker_db["tracked_players"][0]
         pid = player.get("player_id")
         
+        api_url = "https://fta.gg/api/trpc/players.getWcsKills"
         payload = {
             "0": {
                 "json": {"playerId": pid, "serverId": None, "limit": 2},
                 "meta": {"values": {"serverId": ["undefined"]}, "v": 1}
             }
         }
-        encoded = urllib.parse.quote(json.dumps(payload, separators=(',', ':')))
-        url = f"[https://fta.gg/api/trpc/players.getWcsKills?batch=1&input=](https://fta.gg/api/trpc/players.getWcsKills?batch=1&input=){encoded}"
         
+        query_params = {
+            "batch": "1",
+            "input": json.dumps(payload, separators=(',', ':'))
+        }
+        
+        headers = {}
+        if tracker_db.get("session_cookie"):
+            headers["Cookie"] = tracker_db["session_cookie"]
+
         try:
-            response = await self.client.get(url)
+            response = await self.client.get(api_url, params=query_params, headers=headers)
             if response.status_code != 200:
                 resp_text = response.text[:1000]
                 error_msg = f"❌ **Cloudflare Blocked the Request (HTTP {response.status_code})**\n```html\n{resp_text}\n```"
