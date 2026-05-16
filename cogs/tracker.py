@@ -5,6 +5,7 @@ import asyncio
 import traceback
 import re
 import time
+import urllib.parse
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -94,11 +95,7 @@ class TrackerCog(commands.Cog):
         if patched:
             _save_tracker()
 
-    # Safety Lock: Waits for the bot to fully connect to Discord before scanning
-    @feed_monitor.before_loop
-    async def before_feed_monitor(self):
-        await self.bot.wait_until_ready()
-
+    # Define the engine FIRST
     @tasks.loop(seconds=45)
     async def feed_monitor(self):
         if not tracker_db.get("target_thread_id"):
@@ -136,11 +133,10 @@ class TrackerCog(commands.Cog):
                 }
             }
             
-            # Safely build query parameters using dictionary instead of raw strings
             query_params = {
                 "batch": "1",
                 "input": json.dumps(payload, separators=(',', ':')),
-                "_cb": str(int(time.time() * 1000))  # Cache buster
+                "_cb": str(int(time.time() * 1000))
             }
 
             try:
@@ -189,6 +185,11 @@ class TrackerCog(commands.Cog):
             
             new_events.sort(key=lambda x: x.get("timestamp", ""))
             await self.broadcast_kills(new_events, tracked_ids, tracked_names)
+
+    # Attach the lock AFTER the engine is defined
+    @feed_monitor.before_loop
+    async def before_feed_monitor(self):
+        await self.bot.wait_until_ready()
 
     async def broadcast_kills(self, events, tracked_ids, tracked_names):
         channel_id = tracker_db.get("target_thread_id")
