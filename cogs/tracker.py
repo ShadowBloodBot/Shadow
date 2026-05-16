@@ -7,7 +7,7 @@ import re
 import time
 import urllib.parse
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 import discord
 import httpx
@@ -29,9 +29,9 @@ except:
 TRACKER_STORE = (PERSIST_ROOT / "kill_tracker_api.json")
 tracker_db = {
     "target_thread_id": None,
-    "session_cookie": None,  # For passing auth headers to the tRPC backend
+    "session_cookie": None,  
     "tracked_players": [],   # Format: {"name": str, "player_id": str, "profile_url": str}
-    "processed_kills": []    # Array of raw kill IDs to prevent duplicates
+    "processed_kills": []    
 }
 
 def _atomic_write(file_path: Path, data):
@@ -61,9 +61,10 @@ class TrackerCog(commands.Cog):
         self.bot = bot
         self._load_data()
         self.client = httpx.AsyncClient(timeout=30.0, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "Accept": "application/json",
-            "Referer": "https://fta.gg/"
+            "Referer": "https://fta.gg/",
+            "Cache-Control": "no-cache"
         })
         self.feed_monitor.start()
 
@@ -100,13 +101,15 @@ class TrackerCog(commands.Cog):
 
     @tasks.loop(seconds=45)
     async def feed_monitor(self):
-        if not tracker_db["target_thread_id"]:
+        if not tracker_db.get("target_thread_id"):
             return
 
         new_events = []
-        tracked_names = [p["name"].lower() for p in tracker_db["tracked_players"] if isinstance(p, dict) and "name" in p]
+        
+        # We track both IDs (Primary) and Names (Fallback)
+        tracked_ids = [p["player_id"] for p in tracker_db["tracked_players"] if isinstance(p, dict) and p.get("player_id")]
+        tracked_names = [p["name"].lower() for p in tracker_db["tracked_players"] if isinstance(p, dict) and p.get("name")]
 
-        # Dynamically build cookie header if provided
         headers = {}
         if tracker_db.get("session_cookie"):
             headers["Cookie"] = tracker_db["session_cookie"]
@@ -119,6 +122,7 @@ class TrackerCog(commands.Cog):
             if not pid:
                 continue
 
+            # Fully constructed SuperJSON Payload (Matches frontend exact architecture)
             payload = {
                 "0": {
                     "json": {
@@ -129,7 +133,8 @@ class TrackerCog(commands.Cog):
                     "meta": {
                         "values": {
                             "serverId": ["undefined"]
-                        }
+                        },
+                        "v": 1
                     }
                 }
             }
@@ -141,20 +146,26 @@ class TrackerCog(commands.Cog):
             try:
                 response = await self.client.get(url, headers=headers)
                 if response.status_code != 200:
-                    print(f"📡 Telemetry Warning: Server returned status code {response.status_code}")
                     continue
-
-                # --- TELEMETRY DIAGNOSTICS LOG ---
-                print(f"🔍 RAW API RESPONSE FOR {player.get('name')}: {response.text}")
 
                 data = response.json()
                 
-                # Check for empty response or error response layouts
                 if not data or not isinstance(data, list) or "result" not in data[0]:
                     continue
                     
-                kills_array = data[0]["result"]["data"]["json"]
-                if not isinstance(kills_array, list):
+                json_data = data[0]["result"]["data"]["json"]
+                
+                # Infinite Query Parser: Safely extracts the array whether it's named 'items', 'data', or just a raw list
+                kills_array = []
+                if isinstance(json_data, list):
+                    kills_array = json_data
+                elif isinstance(json_data, dict):
+                    for val in json_data.values():
+                        if isinstance(val, list):
+                            kills_array = val
+                            break
+                
+                if not kills_array:
                     continue
                 
                 for event in kills_array:
@@ -165,34 +176,60 @@ class TrackerCog(commands.Cog):
                     if not kill_id or kill_id in tracker_db["processed_kills"]:
                         continue
                         
+                    # Register to memory to prevent duplicates
                     tracker_db["processed_kills"].insert(0, kill_id)
+                    
+                    # Spam Filter: If a kill is older than 2 hours, we skip broadcasting it 
+                    # This prevents the bot from dumping 50 historical kills when you track a new friend
+                    try:
+                        if event.get("timestamp"):
+                            event_time = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+                            if (datetime.now(timezone.utc) - event_time).total_seconds() > 7200:
+                                continue
+                    except:
+                        pass
+                        
                     new_events.append(event)
                     
             except Exception as e:
-                print(f"📡 API Telemetry Fault [{player.get('name', 'Unknown')}]: {e}")
+                print(f"📡 API Telemetry Fault [{player.get('name', 'Unknown')}]: {traceback.format_exc()}")
 
         if new_events:
-            if len(tracker_db["processed_kills"]) > 500:
-                tracker_db["processed_kills"] = tracker_db["processed_kills"][:500]
+            # Memory Management: Keep array lean
+            if len(tracker_db["processed_kills"]) > 600:
+                tracker_db["processed_kills"] = tracker_db["processed_kills"][:600]
             _save_tracker()
             
+            # Sort events chronologically so the Discord feed reads top-to-bottom accurately
             new_events.sort(key=lambda x: x.get("timestamp", ""))
-            await self.broadcast_kills(new_events, tracked_names)
+            await self.broadcast_kills(new_events, tracked_ids, tracked_names)
 
-    async def broadcast_kills(self, events, tracked_names):
-        channel = self.bot.get_channel(tracker_db["target_thread_id"])
-        if not channel:
+    async def broadcast_kills(self, events, tracked_ids, tracked_names):
+        channel_id = tracker_db.get("target_thread_id")
+        if not channel_id:
             return
 
+        # Hard-Fetch Fallback: Ensures private channels don't get dropped from bot cache
+        channel = self.bot.get_channel(int(channel_id))
+        if not channel:
+            try:
+                channel = await self.bot.fetch_channel(int(channel_id))
+            except Exception as e:
+                print(f"⚠️ Broadcast Error: Could not fetch channel {channel_id} - {e}")
+                return
+
         for event in events:
-            killer = event.get("killerName", "Unknown")
-            victim = event.get("victimName", "Unknown")
+            killer_id = event.get("killerId")
+            victim_id = event.get("victimId")
+            killer_name = event.get("killerName", "Unknown")
+            victim_name = event.get("victimName", "Unknown")
             weapon = event.get("weapon", "Unknown Weapon")
             distance = event.get("distance", 0)
             server_name = event.get("server", {}).get("shortName", "Unknown Server")
             
-            is_killer_tracked = killer.lower() in tracked_names
-            is_victim_tracked = victim.lower() in tracked_names
+            # Strict validation using UUIDs first, falling back to name checks
+            is_killer_tracked = (killer_id in tracked_ids) or (killer_name.lower() in tracked_names)
+            is_victim_tracked = (victim_id in tracked_ids) or (victim_name.lower() in tracked_names)
             
             if is_killer_tracked:
                 color = THEME_WIN
@@ -201,27 +238,33 @@ class TrackerCog(commands.Cog):
             else:
                 color = THEME_PRIMARY
 
+            event_time = datetime.now(timezone.utc)
+            try:
+                if event.get("timestamp"):
+                    event_time = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+            except:
+                pass
+
             embed = discord.Embed(
                 title=f"⚔️ Kill Feed | {server_name}",
-                description=f"**{killer}** eliminated **{victim}**",
+                description=f"**{killer_name}** eliminated **{victim_name}**",
                 color=color,
-                timestamp=datetime.utcnow()
+                timestamp=event_time
             )
             
             embed.add_field(name="🔫 Weapon", value=f"`{weapon}`", inline=True)
-            # Try/Except block to format numerical float safely
             try:
-                dist_val = float(distance)
-                embed.add_field(name="📏 Distance", value=f"`{dist_val:.1f}m`", inline=True)
+                embed.add_field(name="📏 Distance", value=f"`{float(distance):.1f}m`", inline=True)
             except:
                 embed.add_field(name="📏 Distance", value=f"`{distance}m`", inline=True)
                 
-            embed.set_footer(text="FTA.gg Live Telemetry")
+            embed.set_footer(text="FTA.gg API Telemetry")
             
             try:
                 await channel.send(embed=embed)
                 await asyncio.sleep(1.2)
-            except:
+            except Exception as e:
+                print(f"⚠️ Failed to send message to Discord: {e}")
                 break
 
     # --- SLASH COMMANDS ---
