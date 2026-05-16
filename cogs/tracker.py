@@ -60,7 +60,7 @@ class TrackerCog(commands.Cog):
         self.bot = bot
         self._load_data()
         self.client = httpx.AsyncClient(timeout=30.0, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "Accept": "application/json",
             "Referer": "https://fta.gg/"
         })
@@ -95,16 +95,34 @@ class TrackerCog(commands.Cog):
         if patched:
             _save_tracker()
 
-    # Define the engine FIRST
+    # THE TRANSLATOR: Converts Public URL GUIDs to Internal Database CUIDs
+    async def resolve_internal_cuid(self, guid: str):
+        # Database CUIDs always start with 'c'. If it already has it, skip the check.
+        if guid.startswith("c") and len(guid) > 15:
+            return guid
+            
+        payload = {"0": {"json": {"id": guid}}}
+        encoded = urllib.parse.quote(json.dumps(payload, separators=(',', ':')))
+        url = f"https://fta.gg/api/trpc/players.getProfile?batch=1&input={encoded}"
+        try:
+            res = await self.client.get(url)
+            if res.status_code == 200:
+                data = res.json()
+                cuid = data[0]["result"]["data"]["json"].get("id")
+                if cuid:
+                    return cuid
+        except Exception as e:
+            print(f"⚠️ CUID Resolve Error for {guid}: {e}")
+        return None
+
     @tasks.loop(seconds=45)
     async def feed_monitor(self):
         if not tracker_db.get("target_thread_id"):
             return
 
         new_events = []
-        tracked_ids = [p["player_id"] for p in tracker_db["tracked_players"] if isinstance(p, dict) and p.get("player_id")]
         tracked_names = [p["name"].lower() for p in tracker_db["tracked_players"] if isinstance(p, dict) and p.get("name")]
-
+        
         headers = {}
         if tracker_db.get("session_cookie"):
             headers["Cookie"] = tracker_db["session_cookie"]
@@ -118,6 +136,16 @@ class TrackerCog(commands.Cog):
             pid = player.get("player_id")
             if not pid:
                 continue
+
+            # Auto-Heal: If the bot detects an old URL GUID, it silently upgrades it to the database CUID.
+            if not pid.startswith("c"):
+                new_pid = await self.resolve_internal_cuid(pid)
+                if new_pid:
+                    player["player_id"] = new_pid
+                    pid = new_pid
+                    _save_tracker()
+                else:
+                    continue
 
             payload = {
                 "0": {
@@ -142,11 +170,9 @@ class TrackerCog(commands.Cog):
             try:
                 response = await self.client.get(api_url, params=query_params, headers=headers)
                 if response.status_code != 200:
-                    print(f"📡 HTTP {response.status_code} Error from FTA for {player.get('name')}")
                     continue
 
                 data = response.json()
-                
                 if not data or not isinstance(data, list) or "result" not in data[0]:
                     continue
                     
@@ -183,10 +209,11 @@ class TrackerCog(commands.Cog):
                 tracker_db["processed_kills"] = tracker_db["processed_kills"][:600]
             _save_tracker()
             
+            # Rebuild tracked IDs list with the newly resolved internal CUIDs
+            tracked_ids = [p["player_id"] for p in tracker_db["tracked_players"] if isinstance(p, dict) and p.get("player_id")]
             new_events.sort(key=lambda x: x.get("timestamp", ""))
             await self.broadcast_kills(new_events, tracked_ids, tracked_names)
 
-    # Attach the lock AFTER the engine is defined
     @feed_monitor.before_loop
     async def before_feed_monitor(self):
         await self.bot.wait_until_ready()
@@ -201,7 +228,6 @@ class TrackerCog(commands.Cog):
             try:
                 channel = await self.bot.fetch_channel(int(channel_id))
             except Exception as e:
-                print(f"⚠️ Discord Fetch Error: {e}")
                 return
 
         for event in events:
@@ -247,7 +273,6 @@ class TrackerCog(commands.Cog):
                 await channel.send(embed=embed)
                 await asyncio.sleep(1.2)
             except Exception as e:
-                print(f"⚠️ Discord Send Error (Permissions?): {e}")
                 break
 
     # --- SLASH COMMANDS ---
@@ -260,10 +285,15 @@ class TrackerCog(commands.Cog):
         player_id = extract_player_id(profile_url)
         if not player_id:
             return await ctx.respond("❌ Invalid URL.", ephemeral=True)
-        if any(isinstance(p, dict) and p.get("player_id") == player_id for p in tracker_db["tracked_players"]):
+            
+        cuid = await self.resolve_internal_cuid(player_id)
+        if not cuid:
+            return await ctx.respond(f"❌ Failed to find the internal database ID for {player_name}. Check the URL.", ephemeral=True)
+
+        if any(isinstance(p, dict) and p.get("player_id") == cuid for p in tracker_db["tracked_players"]):
             return await ctx.respond(f"⚠️ **{player_name}** is already tracked.", ephemeral=True)
 
-        tracker_db["tracked_players"].append({"name": player_name, "player_id": player_id, "profile_url": profile_url})
+        tracker_db["tracked_players"].append({"name": player_name, "player_id": cuid, "profile_url": profile_url})
         _save_tracker()
         await ctx.respond(f"✅ Telemetry locked onto: **{player_name}**", ephemeral=True)
 
@@ -296,6 +326,12 @@ class TrackerCog(commands.Cog):
         player = tracker_db["tracked_players"][0]
         pid = player.get("player_id")
         
+        # Resolve to internal CUID first to test real payload
+        if not pid.startswith("c"):
+            pid = await self.resolve_internal_cuid(pid)
+            if not pid:
+                return await ctx.respond("❌ Network Check Failed: Could not translate the URL GUID into the Database CUID.")
+        
         api_url = "https://fta.gg/api/trpc/players.getWcsKills"
         payload = {
             "0": {
@@ -322,7 +358,7 @@ class TrackerCog(commands.Cog):
                 
             data = response.json()
             data_text = json.dumps(data, indent=2)[:1500]
-            success_msg = f"✅ **HTTP 200 OK.** The server replied! Here is exactly what it gave the bot:\n```json\n{data_text}\n```"
+            success_msg = f"✅ **HTTP 200 OK.** Translating ID... Success! Here is exactly what the database returned:\n```json\n{data_text}\n```"
             await ctx.respond(success_msg)
             
         except Exception as e:
