@@ -115,7 +115,7 @@ class TrackerCog(commands.Cog):
             print(f"⚠️ CUID Resolve Error for {guid}: {e}")
         return None
 
-    @tasks.loop(seconds=45)
+    @tasks.loop(seconds=25)
     async def feed_monitor(self):
         if not tracker_db.get("target_thread_id"):
             return
