@@ -4,6 +4,7 @@ import json
 import asyncio
 import traceback
 import re
+import time
 import urllib.parse
 from pathlib import Path
 from datetime import datetime, timezone
@@ -61,7 +62,7 @@ class TrackerCog(commands.Cog):
         self.client = httpx.AsyncClient(timeout=30.0, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
             "Accept": "application/json",
-            "Referer": "https://fta.gg/"
+            "Referer": "[https://fta.gg/](https://fta.gg/)"
         })
         self.feed_monitor.start()
 
@@ -129,9 +130,8 @@ class TrackerCog(commands.Cog):
                 }
             }
             
-            # STRICT URL ENCODING - tRPC fails if spaces exist in the JSON payload
             encoded_payload = urllib.parse.quote(json.dumps(payload, separators=(',', ':')))
-            url = f"https://fta.gg/api/trpc/players.getWcsKills?batch=1&input={encoded_payload}"
+            url = f"[https://fta.gg/api/trpc/players.getWcsKills?batch=1&input=](https://fta.gg/api/trpc/players.getWcsKills?batch=1&input=){encoded_payload}"
 
             try:
                 response = await self.client.get(url, headers=headers)
@@ -293,17 +293,23 @@ class TrackerCog(commands.Cog):
             }
         }
         encoded = urllib.parse.quote(json.dumps(payload, separators=(',', ':')))
-        url = f"https://fta.gg/api/trpc/players.getWcsKills?batch=1&input={encoded}"
+        url = f"[https://fta.gg/api/trpc/players.getWcsKills?batch=1&input=](https://fta.gg/api/trpc/players.getWcsKills?batch=1&input=){encoded}"
         
         try:
             response = await self.client.get(url)
             if response.status_code != 200:
-                return await ctx.respond(f"❌ **Cloudflare/Server Blocked the Request (HTTP {response.status_code})**\n
-http://googleusercontent.com/immersive_entry_chip/0
-http://googleusercontent.com/immersive_entry_chip/1
+                resp_text = response.text[:1000]
+                error_msg = f"❌ **Cloudflare Blocked the Request (HTTP {response.status_code})**\n```html\n{resp_text}\n```"
+                return await ctx.respond(error_msg)
+                
+            data = response.json()
+            data_text = json.dumps(data, indent=2)[:1500]
+            success_msg = f"✅ **HTTP 200 OK.** The server replied! Here is exactly what it gave the bot:\n```json\n{data_text}\n```"
+            await ctx.respond(success_msg)
+            
+        except Exception as e:
+            err_msg = f"💥 **Fatal Network Error:**\n```\n{e}\n```"
+            await ctx.respond(err_msg)
 
-### **Your Execution Plan:**
-1. Push this code and let the server rebuild.
-2. Go to your `#kill-feed` thread and run `/tracker_config`. **If you do not see the bot reply with the `[System Check]` message in the open chat, your Discord channel permissions are blocking the bot from typing.**
-3. If the permissions are fine, run `/tracker_diagnostics`.
-4. Copy whatever the bot prints out in Discord and reply to me with it. That data is the final key.
+def setup(bot):
+    bot.add_cog(TrackerCog(bot))
