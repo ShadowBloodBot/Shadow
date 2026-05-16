@@ -4,13 +4,13 @@ import json
 import asyncio
 import traceback
 import re
+import urllib.parse
 from pathlib import Path
 from datetime import datetime
 
 import discord
 import httpx
-from bs4 import BeautifulSoup
-from discord import Option, Interaction
+from discord import Option
 from discord.ext import commands, tasks
 
 # --- CONSTANTS ---
@@ -25,17 +25,11 @@ try:
 except:
     PERSIST_ROOT = Path(".").resolve()
 
-TRACKER_STORE = (PERSIST_ROOT / "kill_tracker.json")
+TRACKER_STORE = (PERSIST_ROOT / "kill_tracker_api.json")
 tracker_db = {
     "target_thread_id": None,
-    "tracked_players": [],  # List of dicts: {"name": str, "profile_url": str}
-    "last_seen_ids": {},
-    "server_map": {
-        "Server 1": "https://fta.gg/servers/cmmhhqso80000p1h6vkd35n7x",
-        "Server 2": "https://fta.gg/servers/cmmisvn1j0000rr959s5dbvet",
-        "Server 3": "https://fta.gg/servers/cmmit0zmm0009rr953nn0mkwo",
-        "Server 4": "https://fta.gg/servers/cmmiwb0fa000wrr959azzr5my"
-    }
+    "tracked_players": [],  # Format: {"name": str, "player_id": str, "profile_url": str}
+    "processed_kills": []   # Array of raw kill IDs to prevent duplicates
 }
 
 def _atomic_write(file_path: Path, data):
@@ -50,13 +44,21 @@ def _atomic_write(file_path: Path, data):
 def _save_tracker():
     _atomic_write(TRACKER_STORE, tracker_db)
 
+def extract_player_id(url: str):
+    """Extracts the raw database UUID from an fta.gg profile link."""
+    match = re.search(r"/players/([^/?]+)", url)
+    if match:
+        return match.group(1)
+    return None
+
 # --- TELEMETRY COG ---
 class TrackerCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._load_data()
-        self.client = httpx.AsyncClient(timeout=30.0, follow_redirects=True, headers={
-            "User-Agent": "ShadowSyn Systems Architect/3.3 (Production Telemetry)"
+        self.client = httpx.AsyncClient(timeout=30.0, headers={
+            "User-Agent": "ShadowSyn Systems Architect/4.0 (Direct API Telemetry)",
+            "Accept": "application/json"
         })
         self.feed_monitor.start()
 
@@ -74,73 +76,80 @@ class TrackerCog(commands.Cog):
                         tracker_db[k] = v
             except:
                 pass
+                
+        # Auto-patch legacy entries to ensure they have the extracted player_id
+        patched = False
+        for p in tracker_db["tracked_players"]:
+            if not p.get("player_id") and p.get("profile_url"):
+                p["player_id"] = extract_player_id(p["profile_url"])
+                patched = True
+        if patched:
+            _save_tracker()
 
-    @tasks.loop(minutes=1)
+    @tasks.loop(seconds=45)
     async def feed_monitor(self):
         if not tracker_db["target_thread_id"]:
             return
 
-        tracked_names = [p["name"].lower() for p in tracker_db["tracked_players"]]
+        new_events = []
 
-        for server_name, url in tracker_db["server_map"].items():
+        for player in tracker_db["tracked_players"]:
+            pid = player.get("player_id")
+            if not pid:
+                continue
+
+            # Constructing the exact tRPC payload intercepted from the network
+            payload = {
+                "0": {
+                    "json": {
+                        "playerId": pid,
+                        "serverId": None,
+                        "limit": 15
+                    },
+                    "meta": {
+                        "values": {
+                            "serverId": ["undefined"]
+                        }
+                    }
+                }
+            }
+            
+            encoded_payload = urllib.parse.quote(json.dumps(payload))
+            url = f"https://fta.gg/api/trpc/players.getWcsKills?batch=1&input={encoded_payload}"
+
             try:
                 response = await self.client.get(url)
                 if response.status_code != 200:
                     continue
 
-                soup = BeautifulSoup(response.text, "html.parser")
-                # Detect activity elements (divs, table rows, or paragraphs containing 'killed')
-                activity_rows = soup.find_all(lambda tag: tag.name in ["div", "tr", "p"] and "killed" in tag.text.lower())
+                data = response.json()
                 
-                new_events = []
-                for row in activity_rows:
-                    full_text = row.get_text(separator=" ").strip()
-                    text = " ".join(full_text.split()) # Normalize whitespace
+                # Navigate the tRPC JSON architecture
+                kills_array = data[0]["result"]["data"]["json"]
+                
+                for event in kills_array:
+                    kill_id = event.get("id")
                     
-                    if "killed" not in text.lower():
-                        continue
-
-                    # Create unique anchor for this kill event
-                    event_id = str(hash(f"{server_name}_{text}"))
-                    if event_id == tracker_db["last_seen_ids"].get(server_name):
-                        break
-                    
-                    # Pattern matching: [Killer] killed [Victim] [KD: X.X]
-                    match = re.search(r"^(.*?)\s+killed\s+(.*?)(?:\s+\[KD:\s*([\d\.]+)\])?.*$", text, re.IGNORECASE)
-                    
-                    if not match:
+                    # Deduplication Engine
+                    if not kill_id or kill_id in tracker_db["processed_kills"]:
                         continue
                         
-                    killer_name = match.group(1).strip()
-                    victim_part = match.group(2).strip()
-                    # Isolate victim name from potential trailing text
-                    victim_name = victim_part.split(" ")[0].strip()
-                    kd = match.group(3) if match.group(3) else "N/A"
+                    # Register new kill
+                    tracker_db["processed_kills"].insert(0, kill_id)
+                    new_events.append(event)
+                    
+            except Exception as e:
+                print(f"📡 API Telemetry Fault [{player['name']}]: {e}")
 
-                    # Filtration logic
-                    is_relevant = False
-                    if not tracked_names:
-                        is_relevant = True # Global mode
-                    else:
-                        if killer_name.lower() in tracked_names or victim_name.lower() in tracked_names:
-                            is_relevant = True
-
-                    if is_relevant:
-                        new_events.append({
-                            "killer": killer_name,
-                            "victim": victim_name,
-                            "kd": kd,
-                            "server": server_name,
-                            "event_id": event_id
-                        })
-
-                if new_events:
-                    tracker_db["last_seen_ids"][server_name] = new_events[0]["event_id"]
-                    _save_tracker()
-                    await self.broadcast_kills(new_events[::-1])
-
-            except Exception:
-                print(f"📡 Telemetry Fault [{server_name}]: {traceback.format_exc()}")
+        if new_events:
+            # Memory Management: Keep deduplication array at 500 to prevent bloat
+            if len(tracker_db["processed_kills"]) > 500:
+                tracker_db["processed_kills"] = tracker_db["processed_kills"][:500]
+            _save_tracker()
+            
+            # Sort events by timestamp so they broadcast in chronological order
+            new_events.sort(key=lambda x: x.get("timestamp", ""))
+            await self.broadcast_kills(new_events)
 
     async def broadcast_kills(self, events):
         channel = self.bot.get_channel(tracker_db["target_thread_id"])
@@ -150,9 +159,15 @@ class TrackerCog(commands.Cog):
         tracked_names = [p["name"].lower() for p in tracker_db["tracked_players"]]
 
         for event in events:
+            killer = event.get("killerName", "Unknown")
+            victim = event.get("victimName", "Unknown")
+            weapon = event.get("weapon", "Unknown Weapon")
+            distance = event.get("distance", 0)
+            server_name = event.get("server", {}).get("shortName", "Unknown Server")
+            
             # Color logic based on friend/foe outcome
-            is_killer_tracked = event["killer"].lower() in tracked_names
-            is_victim_tracked = event["victim"].lower() in tracked_names
+            is_killer_tracked = killer.lower() in tracked_names
+            is_victim_tracked = victim.lower() in tracked_names
             
             if is_killer_tracked:
                 color = THEME_WIN
@@ -162,13 +177,16 @@ class TrackerCog(commands.Cog):
                 color = THEME_PRIMARY
 
             embed = discord.Embed(
-                title=f"⚔️ Kill Feed | {event['server']}",
-                description=f"**{event['killer']}** eliminated **{event['victim']}**",
+                title=f"⚔️ Kill Feed | {server_name}",
+                description=f"**{killer}** eliminated **{victim}**",
                 color=color,
                 timestamp=datetime.utcnow()
             )
-            embed.add_field(name="Current KD", value=f"📊 `{event['kd']}`", inline=True)
-            embed.set_footer(text="FTA.gg Live Analysis")
+            
+            # Injecting the precise data mined from the JSON payload
+            embed.add_field(name="🔫 Weapon", value=f"`{weapon}`", inline=True)
+            embed.add_field(name="📏 Distance", value=f"`{distance:.1f}m`", inline=True)
+            embed.set_footer(text="FTA.gg Direct API Link")
             
             try:
                 await channel.send(embed=embed)
@@ -178,18 +196,26 @@ class TrackerCog(commands.Cog):
 
     # --- SLASH COMMANDS ---
 
-    @discord.slash_command(name="track_player", description="Add a player to the watch list")
+    @discord.slash_command(name="track_player", description="Add a player to the live API watch list")
     async def track_player(self, ctx, 
                            player_name: Option(str, "Exact in-game name (e.g., warcrimes)"), 
-                           profile_url: Option(str, "Optional: Paste fta.gg link here", required=False, default="No Link Provided")):
+                           profile_url: Option(str, "Required: Paste fta.gg profile link here to extract their ID")):
         await ctx.defer(ephemeral=True)
         
-        if any(p["name"].lower() == player_name.lower() for p in tracker_db["tracked_players"]):
-            return await ctx.respond(f"⚠️ **{player_name}** is already being monitored.", ephemeral=True)
+        player_id = extract_player_id(profile_url)
+        if not player_id:
+            return await ctx.respond("❌ Invalid URL. I could not extract the database ID from that link.", ephemeral=True)
 
-        tracker_db["tracked_players"].append({"name": player_name, "profile_url": profile_url})
+        if any(p["player_id"] == player_id for p in tracker_db["tracked_players"]):
+            return await ctx.respond(f"⚠️ **{player_name}** is already locked into the telemetry array.", ephemeral=True)
+
+        tracker_db["tracked_players"].append({
+            "name": player_name, 
+            "player_id": player_id,
+            "profile_url": profile_url
+        })
         _save_tracker()
-        await ctx.respond(f"✅ Telemetry locked onto: **{player_name}**", ephemeral=True)
+        await ctx.respond(f"✅ Direct API Telemetry locked onto: **{player_name}** (`{player_id}`)", ephemeral=True)
 
     @discord.slash_command(name="untrack_player", description="Stop monitoring a player by name")
     async def untrack_player(self, ctx, player_name: Option(str, "Name of the player to remove")):
@@ -202,27 +228,23 @@ class TrackerCog(commands.Cog):
         else:
             await ctx.respond(f"❓ Player **{player_name}** not found in database.", ephemeral=True)
 
-    @discord.slash_command(name="tracker_config", description="Set THIS thread/channel for live fta.gg broadcasts")
+    @discord.slash_command(name="tracker_config", description="Set THIS thread/channel for live API broadcasts")
     async def tracker_config(self, ctx):
-        # UI Bypass: Automatically grabs the channel ID of wherever the command is executed.
         tracker_db["target_thread_id"] = ctx.channel.id
         _save_tracker()
-        await ctx.respond(f"🎯 Output thread synchronized to: {ctx.channel.mention}", ephemeral=True)
+        await ctx.respond(f"🎯 API Output synchronized to: {ctx.channel.mention}", ephemeral=True)
 
-    @discord.slash_command(name="tracker_list", description="List all monitored FTA profiles")
+    @discord.slash_command(name="tracker_list", description="List all monitored API profiles")
     async def tracker_list(self, ctx):
         players = tracker_db["tracked_players"]
         if not players:
-            return await ctx.respond("📝 Monitor list empty. Currently in Global Server Mode.", ephemeral=True)
+            return await ctx.respond("📝 Monitor list is currently empty.", ephemeral=True)
         
         desc = ""
         for p in players:
-            if "fta.gg" in p['profile_url']:
-                desc += f"• **{p['name']}** ([Profile]({p['profile_url']}))\n"
-            else:
-                desc += f"• **{p['name']}**\n"
+            desc += f"• **{p['name']}** ([Link]({p['profile_url']}))\n"
                 
-        embed = discord.Embed(title="📑 Current Watch List", description=desc, color=THEME_PRIMARY)
+        embed = discord.Embed(title="📑 Active API Watch List", description=desc, color=THEME_PRIMARY)
         await ctx.respond(embed=embed, ephemeral=True)
 
 def setup(bot):
