@@ -35,7 +35,7 @@ tracker_db = {
 
 def _atomic_write(file_path: Path, data):
     try:
-        content = json.dumps(data, indent=2)
+        content = json.dumps(list(data) if isinstance(data, set) else data, indent=2)
         temp_path = file_path.with_suffix(".tmp")
         temp_path.write_text(content, encoding='utf-8')
         temp_path.replace(file_path)
@@ -47,6 +47,8 @@ def _save_tracker():
 
 def extract_player_id(url: str):
     """Extracts the raw database UUID from an fta.gg profile link."""
+    if not url or not isinstance(url, str):
+        return None
     match = re.search(r"/players/([^/?]+)", url)
     if match:
         return match.group(1)
@@ -58,7 +60,7 @@ class TrackerCog(commands.Cog):
         self.bot = bot
         self._load_data()
         self.client = httpx.AsyncClient(timeout=30.0, headers={
-            "User-Agent": "ShadowSyn Systems Architect/4.1 (Cache-Busting API Telemetry)",
+            "User-Agent": "ShadowSyn Systems Architect/4.3 (Cache-Busting API Telemetry)",
             "Accept": "application/json"
         })
         self.feed_monitor.start()
@@ -78,12 +80,25 @@ class TrackerCog(commands.Cog):
             except:
                 pass
                 
-        # Auto-patch legacy entries to ensure they have the extracted player_id
+        # Armored Sanitation Filter to clean legacy structures
+        sanitized_players = []
         patched = False
+        
         for p in tracker_db["tracked_players"]:
-            if not p.get("player_id") and p.get("profile_url"):
-                p["player_id"] = extract_player_id(p["profile_url"])
+            if isinstance(p, str):
+                # If it's a legacy plain string, skip it to prevent '.get()' attribute crashes
                 patched = True
+                continue
+            elif isinstance(p, dict):
+                if not p.get("player_id") and p.get("profile_url"):
+                    p["player_id"] = extract_player_id(p["profile_url"])
+                    patched = True
+                if p.get("name") and p.get("player_id"):
+                    sanitized_players.append(p)
+            else:
+                patched = True
+
+        tracker_db["tracked_players"] = sanitized_players
         if patched:
             _save_tracker()
 
@@ -93,8 +108,12 @@ class TrackerCog(commands.Cog):
             return
 
         new_events = []
+        tracked_names = [p["name"].lower() for p in tracker_db["tracked_players"] if isinstance(p, dict) and "name" in p]
 
         for player in tracker_db["tracked_players"]:
+            if not isinstance(player, dict):
+                continue
+                
             pid = player.get("player_id")
             if not pid:
                 continue
@@ -117,7 +136,7 @@ class TrackerCog(commands.Cog):
             
             encoded_payload = urllib.parse.quote(json.dumps(payload))
             
-            # Cryptographic Cache Buster: Forces Cloudflare to treat this as a brand new request
+            # Cryptographic Cache Buster: Forces Cloudflare to pass fresh database values
             cache_buster = int(time.time() * 1000)
             url = f"https://fta.gg/api/trpc/players.getWcsKills?batch=1&input={encoded_payload}&_cb={cache_buster}"
 
@@ -127,40 +146,34 @@ class TrackerCog(commands.Cog):
                     continue
 
                 data = response.json()
-                
-                # Navigate the tRPC JSON architecture
                 kills_array = data[0]["result"]["data"]["json"]
                 
                 for event in kills_array:
+                    if not isinstance(event, dict):
+                        continue
+                        
                     kill_id = event.get("id")
-                    
-                    # Deduplication Engine
                     if not kill_id or kill_id in tracker_db["processed_kills"]:
                         continue
                         
-                    # Register new kill
                     tracker_db["processed_kills"].insert(0, kill_id)
                     new_events.append(event)
                     
             except Exception as e:
-                print(f"📡 API Telemetry Fault [{player['name']}]: {e}")
+                print(f"📡 API Telemetry Fault [{player.get('name', 'Unknown')}]: {e}")
 
         if new_events:
-            # Memory Management: Keep deduplication array at 500 to prevent bloat
             if len(tracker_db["processed_kills"]) > 500:
                 tracker_db["processed_kills"] = tracker_db["processed_kills"][:500]
             _save_tracker()
             
-            # Sort events by timestamp so they broadcast in chronological order
             new_events.sort(key=lambda x: x.get("timestamp", ""))
-            await self.broadcast_kills(new_events)
+            await self.broadcast_kills(new_events, tracked_names)
 
-    async def broadcast_kills(self, events):
+    async def broadcast_kills(self, events, tracked_names):
         channel = self.bot.get_channel(tracker_db["target_thread_id"])
         if not channel:
             return
-
-        tracked_names = [p["name"].lower() for p in tracker_db["tracked_players"]]
 
         for event in events:
             killer = event.get("killerName", "Unknown")
@@ -169,7 +182,6 @@ class TrackerCog(commands.Cog):
             distance = event.get("distance", 0)
             server_name = event.get("server", {}).get("shortName", "Unknown Server")
             
-            # Color logic based on friend/foe outcome
             is_killer_tracked = killer.lower() in tracked_names
             is_victim_tracked = victim.lower() in tracked_names
             
@@ -187,7 +199,6 @@ class TrackerCog(commands.Cog):
                 timestamp=datetime.utcnow()
             )
             
-            # Injecting the precise data mined from the JSON payload
             embed.add_field(name="🔫 Weapon", value=f"`{weapon}`", inline=True)
             embed.add_field(name="📏 Distance", value=f"`{distance:.1f}m`", inline=True)
             embed.set_footer(text="FTA.gg Live Telemetry")
@@ -210,7 +221,7 @@ class TrackerCog(commands.Cog):
         if not player_id:
             return await ctx.respond("❌ Invalid URL. I could not extract the database ID from that link.", ephemeral=True)
 
-        if any(p["player_id"] == player_id for p in tracker_db["tracked_players"]):
+        if any(isinstance(p, dict) and p.get("player_id") == player_id for p in tracker_db["tracked_players"]):
             return await ctx.respond(f"⚠️ **{player_name}** is already locked into the telemetry array.", ephemeral=True)
 
         tracker_db["tracked_players"].append({
@@ -224,7 +235,7 @@ class TrackerCog(commands.Cog):
     @discord.slash_command(name="untrack_player", description="Stop monitoring a player by name")
     async def untrack_player(self, ctx, player_name: Option(str, "Name of the player to remove")):
         initial = len(tracker_db["tracked_players"])
-        tracker_db["tracked_players"] = [p for p in tracker_db["tracked_players"] if p["name"].lower() != player_name.lower()]
+        tracker_db["tracked_players"] = [p for p in tracker_db["tracked_players"] if isinstance(p, dict) and p.get("name", "").lower() != player_name.lower()]
         
         if len(tracker_db["tracked_players"]) < initial:
             _save_tracker()
@@ -241,11 +252,12 @@ class TrackerCog(commands.Cog):
     @discord.slash_command(name="tracker_list", description="List all monitored API profiles")
     async def tracker_list(self, ctx):
         players = tracker_db["tracked_players"]
-        if not players:
+        valid_players = [p for p in players if isinstance(p, dict) and "name" in p]
+        if not valid_players:
             return await ctx.respond("📝 Monitor list is currently empty.", ephemeral=True)
         
         desc = ""
-        for p in players:
+        for p in valid_players:
             desc += f"• **{p['name']}** ([Link]({p['profile_url']}))\n"
                 
         embed = discord.Embed(title="📑 Active API Watch List", description=desc, color=THEME_PRIMARY)
