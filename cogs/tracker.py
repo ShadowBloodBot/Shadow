@@ -18,6 +18,7 @@ from discord.ext import commands, tasks
 THEME_PRIMARY = 0x2B0B35
 THEME_WIN = 0x43B581 
 THEME_LOSS = 0xF04747 
+ALLOWED_STATS_THREAD = 1408314132473843734  # Hardcoded Security Gate
 
 # --- PERSISTENCE ---
 PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve()
@@ -54,13 +55,17 @@ def extract_player_id(url: str):
         return match.group(1)
     return None
 
+# UI Autocomplete Helper (Provides drop-down menu of tracked players)
+async def autocomplete_tracked_players(ctx: discord.AutocompleteContext):
+    return [p["name"] for p in tracker_db["tracked_players"] if isinstance(p, dict) and "name" in p and ctx.value.lower() in p["name"].lower()][:25]
+
 # --- TELEMETRY COG ---
 class TrackerCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._load_data()
         self.client = httpx.AsyncClient(timeout=30.0, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
             "Accept": "application/json",
             "Referer": "https://fta.gg/"
         })
@@ -95,9 +100,7 @@ class TrackerCog(commands.Cog):
         if patched:
             _save_tracker()
 
-    # THE TRANSLATOR: Converts Public URL GUIDs to Internal Database CUIDs
     async def resolve_internal_cuid(self, guid: str):
-        # Database CUIDs always start with 'c'. If it already has it, skip the check.
         if guid.startswith("c") and len(guid) > 15:
             return guid
             
@@ -115,7 +118,7 @@ class TrackerCog(commands.Cog):
             print(f"⚠️ CUID Resolve Error for {guid}: {e}")
         return None
 
-    @tasks.loop(seconds=25)
+    @tasks.loop(seconds=45)
     async def feed_monitor(self):
         if not tracker_db.get("target_thread_id"):
             return
@@ -137,7 +140,6 @@ class TrackerCog(commands.Cog):
             if not pid:
                 continue
 
-            # Auto-Heal: If the bot detects an old URL GUID, it silently upgrades it to the database CUID.
             if not pid.startswith("c"):
                 new_pid = await self.resolve_internal_cuid(pid)
                 if new_pid:
@@ -209,7 +211,6 @@ class TrackerCog(commands.Cog):
                 tracker_db["processed_kills"] = tracker_db["processed_kills"][:600]
             _save_tracker()
             
-            # Rebuild tracked IDs list with the newly resolved internal CUIDs
             tracked_ids = [p["player_id"] for p in tracker_db["tracked_players"] if isinstance(p, dict) and p.get("player_id")]
             new_events.sort(key=lambda x: x.get("timestamp", ""))
             await self.broadcast_kills(new_events, tracked_ids, tracked_names)
@@ -277,6 +278,91 @@ class TrackerCog(commands.Cog):
 
     # --- SLASH COMMANDS ---
 
+    @discord.slash_command(name="stats", description="View the overall combat record of a tracked player")
+    async def stats(self, ctx, player_name: Option(str, "Select a tracked player", autocomplete=autocomplete_tracked_players)):
+        # SECURITY GATE: Enforce channel restriction
+        if ctx.channel.id != ALLOWED_STATS_THREAD:
+            return await ctx.respond(f"❌ Security Protocol: This command can only be executed inside the <#{ALLOWED_STATS_THREAD}> thread.", ephemeral=True)
+
+        await ctx.defer()
+        
+        # Look up player in DB
+        player = next((p for p in tracker_db["tracked_players"] if isinstance(p, dict) and p.get("name", "").lower() == player_name.lower()), None)
+        if not player:
+            return await ctx.respond(f"❌ Could not find **{player_name}** in the telemetry database.", ephemeral=True)
+
+        pid = player.get("player_id")
+        
+        # Translate GUID to CUID if necessary
+        if not pid.startswith("c"):
+            pid = await self.resolve_internal_cuid(pid)
+            if not pid:
+                return await ctx.respond("❌ Network Fault: Could not translate the URL GUID into the Database CUID.")
+
+        # Structure payload to hit the separate Stats API
+        api_url = "https://fta.gg/api/trpc/players.getWcsStats"
+        payload = {
+            "0": {
+                "json": {"playerId": pid, "serverId": None},
+                "meta": {"values": {"serverId": ["undefined"]}, "v": 1}
+            }
+        }
+        
+        query_params = {
+            "batch": "1",
+            "input": json.dumps(payload, separators=(',', ':'))
+        }
+        
+        headers = {}
+        if tracker_db.get("session_cookie"):
+            headers["Cookie"] = tracker_db["session_cookie"]
+
+        try:
+            response = await self.client.get(api_url, params=query_params, headers=headers)
+            if response.status_code != 200:
+                return await ctx.respond(f"❌ **Cloudflare Blocked the Request (HTTP {response.status_code})**")
+            
+            data = response.json()
+            stats_json = data[0]["result"]["data"]["json"]
+            
+            # Extract variables safely
+            kills = stats_json.get("kills", 0)
+            deaths = stats_json.get("deaths", 0)
+            headshots = stats_json.get("headshots", 0)
+            longest_kill = stats_json.get("longestKill", 0)
+            avg_kill_dist = stats_json.get("avgKillDistance", 0)
+            
+            # Calculate metrics
+            kd = round(kills / max(1, deaths), 2)
+            hs_pct = round((headshots / max(1, kills)) * 100, 1)
+
+            top_weapons = stats_json.get("topWeapons", [])
+            fav_weapon = top_weapons[0].get("weapon", "Unknown") if top_weapons else "Unknown"
+            fav_weapon_kills = top_weapons[0].get("kills", 0) if top_weapons else 0
+
+            # Build Dashboard
+            embed = discord.Embed(
+                title=f"📊 Combat Record | {player['name']}",
+                color=THEME_PRIMARY
+            )
+            embed.add_field(name="⚔️ Kills", value=f"`{kills:,}`", inline=True)
+            embed.add_field(name="💀 Deaths", value=f"`{deaths:,}`", inline=True)
+            embed.add_field(name="🎯 K/D Ratio", value=f"`{kd}`", inline=True)
+            
+            embed.add_field(name="🤯 Headshots", value=f"`{headshots:,}` ({hs_pct}%)", inline=True)
+            embed.add_field(name="📏 Longest Kill", value=f"`{longest_kill}m`", inline=True)
+            embed.add_field(name="📏 Avg Kill Dist", value=f"`{avg_kill_dist}m`", inline=True)
+            
+            embed.add_field(name="🏆 Favorite Weapon", value=f"**{fav_weapon}** (`{fav_weapon_kills:,}` kills)", inline=False)
+            
+            embed.set_thumbnail(url="https://fta.gg/favicon.ico")
+            embed.set_footer(text="FTA.gg Global Server Statistics")
+            
+            await ctx.respond(embed=embed)
+            
+        except Exception as e:
+             await ctx.respond(f"💥 **Data Extraction Error:**\n```\n{e}\n```")
+
     @discord.slash_command(name="track_player", description="Add a player to the live API watch list")
     async def track_player(self, ctx, 
                            player_name: Option(str, "Exact in-game name (e.g., warcrimes)"), 
@@ -296,6 +382,17 @@ class TrackerCog(commands.Cog):
         tracker_db["tracked_players"].append({"name": player_name, "player_id": cuid, "profile_url": profile_url})
         _save_tracker()
         await ctx.respond(f"✅ Telemetry locked onto: **{player_name}**", ephemeral=True)
+
+    @discord.slash_command(name="untrack_player", description="Stop monitoring a player by name")
+    async def untrack_player(self, ctx, player_name: Option(str, "Name of the player to remove", autocomplete=autocomplete_tracked_players)):
+        initial = len(tracker_db["tracked_players"])
+        tracker_db["tracked_players"] = [p for p in tracker_db["tracked_players"] if isinstance(p, dict) and p.get("name", "").lower() != player_name.lower()]
+        
+        if len(tracker_db["tracked_players"]) < initial:
+            _save_tracker()
+            await ctx.respond(f"🗑️ Released monitor for: **{player_name}**", ephemeral=True)
+        else:
+            await ctx.respond(f"❓ Player **{player_name}** not found in database.", ephemeral=True)
 
     @discord.slash_command(name="tracker_config", description="Set THIS thread/channel for live API broadcasts")
     async def tracker_config(self, ctx):
@@ -326,7 +423,6 @@ class TrackerCog(commands.Cog):
         player = tracker_db["tracked_players"][0]
         pid = player.get("player_id")
         
-        # Resolve to internal CUID first to test real payload
         if not pid.startswith("c"):
             pid = await self.resolve_internal_cuid(pid)
             if not pid:
