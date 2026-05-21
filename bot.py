@@ -26,7 +26,8 @@ cogs_list = [
     "cogs.jtc",
     "cogs.audit_logs",
     "cogs.tts",
-    "cogs.tracker"
+    "cogs.tracker",
+    "cogs.oracle" # Added ShadowSyn Oracle integration
 ]
 
 for cog in cogs_list:
