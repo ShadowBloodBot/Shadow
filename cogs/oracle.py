@@ -27,7 +27,7 @@ class ShadowSynOracle(commands.Cog):
         self.persist_dir = os.getenv("PERSIST_PATH", "/data")
         self.state_file = os.path.join(self.persist_dir, "oracle_state.json")
         self.api_key = os.getenv("GEMINI_API_KEY")
-        self.api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+        self.api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
         
         self._initialize_persistence()
         self.state = self._load_state()
