@@ -122,13 +122,7 @@ class ShadowSynOracle(commands.Cog):
     ):
         await ctx.defer()
         try:
-            system_instruction = (
-                "You are the ShadowSyn System Oracle. Your cognitive matrix is tuned to elite systems analysis, "
-                "extreme logic, mechanical precision, and structural optimization. Strip all superficial narrative fluff, "
-                "platitudes, and conversational padding. Output raw, high-leverage insights, structural frameworks, "
-                "or mathematical representations based strictly on the user input. Think in terms of systems, game theory, "
-                "and leverage."
-            )
+            system_instruction = """You are the ShadowSyn System Oracle. Your cognitive matrix is tuned to elite systems analysis, extreme logic, mechanical precision, and structural optimization. Strip all superficial narrative fluff, platitudes, and conversational padding. Output raw, high-leverage insights, structural frameworks, or mathematical representations based strictly on the user input. Think in terms of systems, game theory, and leverage."""
             
             if deep_insights:
                 system_instruction += " Enforce an advanced deep-dive framework tracing tertiary implications and hidden vectors."
@@ -159,8 +153,7 @@ class ShadowSynOracle(commands.Cog):
                 color=0x2B0B35
             )
             embed.add_field(name="Input Matrix Query", value=query[:1024], inline=False)
-            embed.description = f"```markdown\n{clean_output}\n
-```"
+            embed.description = f"```markdown\n{clean_output}\n```"
             
             # Persistent State Registration Tracking
             self.state["analytics_history"].append({
