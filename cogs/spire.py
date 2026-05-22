@@ -2,10 +2,9 @@
 import os
 import json
 import random
-import uuid
 import traceback
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 
 import discord
 from discord import Option, ButtonStyle, Interaction
@@ -18,14 +17,43 @@ THEME_CYAN = 0x00F0FF
 THEME_PINK = 0xFF003C 
 THEME_HACK = 0x00FF00 
 
+# --- INFRASTRUCTURE & PERSISTENCE ---
 PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve() 
 try:
     PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
-except Exception:
+except Exception as e:
+    print(f"[SYSTEM WARN] Using fallback local directory. Error: {e}")
     PERSIST_ROOT = Path(".").resolve()
 
 SPIRE_STORE = (PERSIST_ROOT / "spire_db.json") 
 spire_db: Dict[str, Any] = {}
+
+def _atomic_write(file_path: Path, data: Any):
+    try:
+        content = json.dumps(data, indent=2)
+        temp_path = file_path.with_suffix(".tmp")
+        temp_path.write_text(content, encoding="utf-8")
+        temp_path.replace(file_path)
+    except Exception as e:
+        print(f"[SYSTEM ERR] Persistence Failure during atomic write: {e}") 
+
+def _save_db(): 
+    _atomic_write(SPIRE_STORE, spire_db)
+
+async def safe_reply(ctx_or_inter, *args, **kwargs):
+    try:
+        if hasattr(ctx_or_inter, "respond"):
+            return await ctx_or_inter.respond(*args, **kwargs)
+        elif hasattr(ctx_or_inter, "response"):
+            if not ctx_or_inter.response.is_done():
+                return await ctx_or_inter.response.send_message(*args, **kwargs)
+            else:
+                return await ctx_or_inter.followup.send(*args, **kwargs)
+    except discord.NotFound:
+        pass
+    except Exception as e:
+        print(f"[SYSTEM WARN] Reply Execution Failed: {e}")
+    return None 
 
 # --- CARD & ENTITY MATRIX ---
 CLASSES = {
@@ -82,34 +110,6 @@ ENEMIES = {
     4: [{"name": "Black-ICE Avatar", "hp": 80, "pattern": [{"dmg": 10, "apply": {"vuln": 1}}, {"dmg": 18}, {"blk": 15}]}],
     5: [{"name": "Megacorp CEO (Boss)", "hp": 150, "pattern": [{"dmg": 15}, {"blk": 20, "apply_self": {"str": 2}}, {"dmg": 25}]}]
 }
-
-# --- PERSISTENCE & TELEMETRY ---
-def _atomic_write(file_path: Path, data: Any):
-    try:
-        content = json.dumps(data, indent=2)
-        temp_path = file_path.with_suffix(".tmp")
-        temp_path.write_text(content, encoding='utf-8')
-        temp_path.replace(file_path)
-    except Exception as e:
-        print(f"[SYSTEM ERR] Persistence Failure: {e}") 
-
-def _save_db(): 
-    _atomic_write(SPIRE_STORE, spire_db)
-
-async def safe_reply(ctx_or_inter, *args, **kwargs):
-    try:
-        if hasattr(ctx_or_inter, 'respond'):
-            return await ctx_or_inter.respond(*args, **kwargs)
-        elif hasattr(ctx_or_inter, 'response'):
-            if not ctx_or_inter.response.is_done():
-                return await ctx_or_inter.response.send_message(*args, **kwargs)
-            else:
-                return await ctx_or_inter.followup.send(*args, **kwargs)
-    except discord.NotFound:
-        pass
-    except Exception as e:
-        print(f"[SYSTEM WARN] Reply Failed: {e}")
-    return None 
 
 # --- STATE MANAGEMENT ---
 def init_player(user_id: str):
@@ -187,9 +187,26 @@ def apply_damage(amount: int, is_player_source: bool, run: Dict) -> int:
         
     return max(0, amount)
 
+def deal_damage_to_enemy(run: Dict, dmg: int):
+    c = run["combat"]
+    if c["e_block"] > 0:
+        blocked = min(c["e_block"], dmg)
+        c["e_block"] -= blocked
+        dmg -= blocked
+    c["e_hp"] -= dmg
+
+def deal_damage_to_player(run: Dict, dmg: int):
+    c = run["combat"]
+    if c["p_block"] > 0:
+        blocked = min(c["p_block"], dmg)
+        c["p_block"] -= blocked
+        dmg -= blocked
+    run["hp"] -= dmg
+
 def execute_card(run: Dict, card_idx: int) -> bool:
     c = run["combat"]
-    if card_idx >= len(c["hand"]): return False
+    if card_idx >= len(c["hand"]): 
+        return False
     
     card_id = c["hand"][card_idx]
     card = CARDS[card_id]
@@ -244,32 +261,17 @@ def execute_card(run: Dict, card_idx: int) -> bool:
         
     return True
 
-def deal_damage_to_enemy(run: Dict, dmg: int):
-    c = run["combat"]
-    if c["e_block"] > 0:
-        blocked = min(c["e_block"], dmg)
-        c["e_block"] -= blocked
-        dmg -= blocked
-    c["e_hp"] -= dmg
-
-def deal_damage_to_player(run: Dict, dmg: int):
-    c = run["combat"]
-    if c["p_block"] > 0:
-        blocked = min(c["p_block"], dmg)
-        c["p_block"] -= blocked
-        dmg -= blocked
-    run["hp"] -= dmg
-
 def process_enemy_turn(run: Dict):
     c = run["combat"]
     
-    # Apply Corrosion before turn
+    # Apply Corrosion before turn execution
     if c["e_status"].get("corrosion", 0) > 0:
         corr_dmg = c["e_status"]["corrosion"]
         c["e_hp"] -= corr_dmg
         c["e_status"]["corrosion"] -= 1
         run["log"].append(f"Enemy takes {corr_dmg} Corrosion DMG.")
-        if c["e_hp"] <= 0: return
+        if c["e_hp"] <= 0: 
+            return
         
     pattern_idx = c["turn"] % len(c["pattern"])
     intent = c["pattern"][pattern_idx]
@@ -292,12 +294,12 @@ def process_enemy_turn(run: Dict):
         deal_damage_to_player(run, dmg)
         run["log"].append(f"Enemy dealt {dmg} DMG.")
 
-    # Status Decay
+    # Status Decay Phase
     for stat in ["vuln", "weak"]:
         if c["p_status"][stat] > 0: c["p_status"][stat] -= 1
         if c["e_status"][stat] > 0: c["e_status"][stat] -= 1
 
-    # End Turn State Reset
+    # End Turn State Reset Phase
     c["turn"] += 1
     c["p_block"] = 0
     c["discard_pile"].extend(c["hand"])
@@ -326,16 +328,18 @@ def get_enemy_intent_string(run: Dict) -> str:
 class HandCardButton(Button):
     def __init__(self, card_idx: int, card_id: str, row: int):
         card = CARDS[card_id]
+        btn_style = ButtonStyle.primary if card["type"] == "Attack" else ButtonStyle.secondary
         super().__init__(
             label=f"{card['name']} ({card['cost']})",
-            style=ButtonStyle.primary if card["type"] == "Attack" else ButtonStyle.secondary,
+            style=btn_style,
             row=row
         )
         self.card_idx = card_idx
 
     async def callback(self, interaction: Interaction):
         view: CombatView = self.view
-        if interaction.user.id != view.user_id: return
+        if interaction.user.id != view.user_id: 
+            return await interaction.response.send_message("🚫 Unauthorized.", ephemeral=True)
         
         success = execute_card(view.run, self.card_idx)
         if success:
@@ -367,7 +371,9 @@ class CombatView(View):
         self.add_item(end_turn_btn)
 
     async def end_turn(self, interaction: Interaction):
-        if interaction.user.id != self.user_id: return
+        if interaction.user.id != self.user_id: 
+            return await interaction.response.send_message("🚫 Unauthorized.", ephemeral=True)
+        
         process_enemy_turn(self.run)
         
         if self.run["hp"] <= 0:
@@ -381,23 +387,34 @@ class CombatView(View):
 
     def build_embed(self) -> discord.Embed:
         c = self.run["combat"]
+        char_name = self.run["char"]
+        char_emoji = CLASSES[char_name]["emoji"]
+        
         embed = discord.Embed(title=f"Floor {self.run['floor']} | 🆚 {c['enemy']}", color=THEME_DARK_PURPLE)
         
-        # Enemy Status
+        # Enemy Status Block
         e_stat = f"❤️ HP: {c['e_hp']}/{c['e_max_hp']} | 🛡️ Blk: {c['e_block']}"
-        if c['e_status']['vuln'] > 0: e_stat += f"\n⚠️ Vuln: {c['e_status']['vuln']}"
-        if c['e_status']['weak'] > 0: e_stat += f"\n📉 Weak: {c['e_status']['weak']}"
-        if c['e_status']['corrosion'] > 0: e_stat += f"\n🧪 Corrosion: {c['e_status']['corrosion']}"
+        if c["e_status"]["vuln"] > 0: 
+            e_stat += f"\n⚠️ Vuln: {c['e_status']['vuln']}"
+        if c["e_status"]["weak"] > 0: 
+            e_stat += f"\n📉 Weak: {c['e_status']['weak']}"
+        if c["e_status"]["corrosion"] > 0: 
+            e_stat += f"\n🧪 Corrosion: {c['e_status']['corrosion']}"
+            
         embed.add_field(name="Target Entity", value=f"{e_stat}\n**Intent:** {get_enemy_intent_string(self.run)}", inline=False)
         
-        # Player Status
+        # Player Status Block
         p_stat = f"❤️ HP: {self.run['hp']}/{self.run['max_hp']} | 🛡️ Blk: {c['p_block']}\n⚡ Energy: {c['energy']}/{self.run['max_energy']}"
-        if c['p_status']['str'] > 0: p_stat += f"\n💪 Str: {c['p_status']['str']}"
-        if c['p_status']['vuln'] > 0: p_stat += f"\n⚠️ Vuln: {c['p_status']['vuln']}"
-        if c['p_status']['weak'] > 0: p_stat += f"\n📉 Weak: {c['p_status']['weak']}"
-        embed.add_field(name=f"{CLASSES[self.run['char']]['emoji']} Operator ({self.run['char']})", value=p_stat, inline=False)
+        if c["p_status"]["str"] > 0: 
+            p_stat += f"\n💪 Str: {c['p_status']['str']}"
+        if c["p_status"]["vuln"] > 0: 
+            p_stat += f"\n⚠️ Vuln: {c['p_status']['vuln']}"
+        if c["p_status"]["weak"] > 0: 
+            p_stat += f"\n📉 Weak: {c['p_status']['weak']}"
+            
+        embed.add_field(name=f"{char_emoji} Operator ({char_name})", value=p_stat, inline=False)
         
-        # Logs & Deck Info
+        # Logs & Deck Info Block
         log_text = "\n".join(self.run["log"][-5:])
         embed.add_field(name="System Log", value=f"```ansi\n{log_text}\n
 ```", inline=False)
@@ -422,7 +439,8 @@ class RewardView(View):
     def _generate_rewards(self) -> List[str]:
         pool = []
         for cid, cdata in CARDS.items():
-            if cid in ["strike", "defend"]: continue
+            if cid in ["strike", "defend"]: 
+                continue
             pool.append(cid)
         return random.sample(pool, min(3, len(pool)))
 
@@ -439,7 +457,8 @@ class RewardView(View):
         self.add_item(skip_btn)
 
     async def claim_reward(self, interaction: Interaction):
-        if interaction.user.id != self.user_id: return
+        if interaction.user.id != self.user_id: 
+            return await interaction.response.send_message("🚫 Unauthorized.", ephemeral=True)
         
         cid = interaction.data.get("custom_id")
         if cid != "skip_reward":
@@ -451,11 +470,13 @@ class RewardView(View):
             clear_run(self.user_id)
             spire_db[str(self.user_id)]["victories"] += 1
             _save_db()
-            await interaction.response.edit_message(embed=discord.Embed(title="🏆 RUN COMPLETE", description="You conquered the Megacorp Spire.", color=THEME_CYAN), view=None)
+            embed = discord.Embed(title="🏆 RUN COMPLETE", description="You conquered the Megacorp Spire.", color=THEME_CYAN)
+            await interaction.response.edit_message(embed=embed, view=None)
             return
 
         _save_db()
-        await interaction.response.edit_message(embed=discord.Embed(title="Navigation", description="Move to the next sector?", color=THEME_DARK_PURPLE), view=MapView(self.user_id, self.run))
+        embed = discord.Embed(title="Navigation", description="Move to the next sector?", color=THEME_DARK_PURPLE)
+        await interaction.response.edit_message(embed=embed, view=MapView(self.user_id, self.run))
 
 class MapView(View):
     def __init__(self, user_id: int, run: Dict):
@@ -468,7 +489,9 @@ class MapView(View):
         self.add_item(btn)
 
     async def start_combat(self, interaction: Interaction):
-        if interaction.user.id != self.user_id: return
+        if interaction.user.id != self.user_id: 
+            return await interaction.response.send_message("🚫 Unauthorized.", ephemeral=True)
+            
         init_combat(self.run)
         _save_db()
         view = CombatView(self.user_id, self.run)
@@ -485,7 +508,9 @@ class CharSelectView(View):
             self.add_item(btn)
 
     async def select_char(self, interaction: Interaction):
-        if interaction.user.id != self.user_id: return
+        if interaction.user.id != self.user_id: 
+            return await interaction.response.send_message("🚫 Unauthorized.", ephemeral=True)
+            
         char_name = interaction.data["custom_id"].split("_")[1]
         run = create_run(str(self.user_id), char_name)
         
@@ -524,7 +549,8 @@ class SpireCog(commands.Cog):
                     await safe_reply(ctx, embed=view.build_embed(), view=view)
                 else:
                     view = MapView(ctx.author.id, run)
-                    await safe_reply(ctx, embed=discord.Embed(title="Navigation", description="Resume infiltration.", color=THEME_DARK_PURPLE), view=view)
+                    embed = discord.Embed(title="Navigation", description="Resume infiltration.", color=THEME_DARK_PURPLE)
+                    await safe_reply(ctx, embed=embed, view=view)
             else:
                 embed = discord.Embed(title="Select Your Operator", color=THEME_CYAN)
                 for name, data in CLASSES.items():
