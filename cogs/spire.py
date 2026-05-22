@@ -255,21 +255,35 @@ ENEMIES = {
 }
 
 # --- STATE MANAGEMENT ---
-def init_player(user_id: str):
+def init_player(user_id: str) -> Dict:
+    needs_save = False
     if user_id not in spire_db:
-        spire_db[user_id] = {
-            "runs": 0, "victories": 0, "active_run": None,
-            "credits": 0, "bounty": 0, "kills": 0, 
-            "deaths": 0, "data_shards": 0, "sector": 1
-        }
+        spire_db[user_id] = {}
+        needs_save = True
+
     d = spire_db[user_id]
-    key_list = [
-        "credits", "bounty", "kills", 
-        "deaths", "data_shards", "sector"
-    ]
-    for key in key_list:
+    
+    # Enforce complete schema blueprint
+    schema_matrix = {
+        "runs": 0, 
+        "victories": 0, 
+        "active_run": None,
+        "credits": 0, 
+        "bounty": 0, 
+        "kills": 0, 
+        "deaths": 0, 
+        "data_shards": 0, 
+        "sector": 1
+    }
+
+    for key, default_value in schema_matrix.items():
         if key not in d: 
-            d[key] = 0
+            d[key] = default_value
+            needs_save = True
+            
+    if needs_save:
+        _save_db()
+        
     return d
 
 def create_run(user_id: str, char_class: str):
@@ -776,6 +790,9 @@ class CharSelectView(View):
         char_name = custom_id.split("_")[1]
         
         uid_str = str(self.user_id)
+        
+        # Enforce existence of schema prior to increment
+        init_player(uid_str)
         spire_db[uid_str]["runs"] += 1
         
         run = create_run(uid_str, char_name)
