@@ -118,15 +118,17 @@ def init_player(user_id: str):
     return spire_db[user_id]
 
 def create_run(user_id: str, char_class: str):
-    base = CLASSES[char_class]
+    base_hp = CLASSES[char_class]["hp"]
+    base_deck = CLASSES[char_class]["deck"].copy()
+    
     run = {
         "char": char_class,
-        "hp": base["hp"],
-        "max_hp": base["hp"],
+        "hp": base_hp,
+        "max_hp": base_hp,
         "credits": 99,
         "floor": 1,
         "max_energy": 3,
-        "deck": base["deck"].copy(),
+        "deck": base_deck,
         "combat": None,
         "log": ["Run initialized."]
     }
@@ -142,10 +144,13 @@ def clear_run(user_id: str):
 def init_combat(run: Dict):
     floor = min(run["floor"], 5)
     enemy_template = random.choice(ENEMIES[floor])
+    enemy_name = enemy_template["name"]
+    enemy_hp = enemy_template["hp"]
+    
     run["combat"] = {
-        "enemy": enemy_template["name"],
-        "e_hp": enemy_template["hp"],
-        "e_max_hp": enemy_template["hp"],
+        "enemy": enemy_name,
+        "e_hp": enemy_hp,
+        "e_max_hp": enemy_hp,
         "pattern": enemy_template["pattern"],
         "turn": 0,
         "e_block": 0,
@@ -159,7 +164,7 @@ def init_combat(run: Dict):
         "energy": run["max_energy"]
     }
     random.shuffle(run["combat"]["draw_pile"])
-    run["log"] = [f"Engaged: {run['combat']['enemy']}!"]
+    run["log"] = [f"Engaged: {enemy_name}!"]
     draw_cards(run, 5)
 
 def draw_cards(run: Dict, count: int):
@@ -210,14 +215,16 @@ def execute_card(run: Dict, card_idx: int) -> bool:
     
     card_id = c["hand"][card_idx]
     card = CARDS[card_id]
+    card_name = card["name"]
+    card_cost = card["cost"]
     
-    if c["energy"] < card["cost"]:
-        run["log"].append(f"❌ Not enough energy for {card['name']}.")
+    if c["energy"] < card_cost:
+        run["log"].append(f"❌ Not enough energy for {card_name}.")
         return False
         
-    c["energy"] -= card["cost"]
+    c["energy"] -= card_cost
     c["hand"].pop(card_idx)
-    run["log"].append(f"> Played **{card['name']}**.")
+    run["log"].append(f"> Played **{card_name}**.")
     
     # Process Effects
     if "blk" in card:
@@ -277,18 +284,21 @@ def process_enemy_turn(run: Dict):
     intent = c["pattern"][pattern_idx]
     
     c["e_block"] = 0
-    run["log"].append(f"Enemy turn [{c['turn']}]:")
+    current_turn = c["turn"]
+    run["log"].append(f"Enemy turn [{current_turn}]:")
     
     if "blk" in intent:
         c["e_block"] += intent["blk"]
-        run["log"].append(f"Enemy gained {intent['blk']} Block.")
+        blk_amt = intent["blk"]
+        run["log"].append(f"Enemy gained {blk_amt} Block.")
     if "apply_self" in intent:
         for k, v in intent["apply_self"].items():
             c["e_status"][k] = c["e_status"].get(k, 0) + v
     if "apply" in intent:
         for k, v in intent["apply"].items():
             c["p_status"][k] = c["p_status"].get(k, 0) + v
-            run["log"].append(f"Enemy applied {v} {k.capitalize()}.")
+            stat_name = str(k).capitalize()
+            run["log"].append(f"Enemy applied {v} {stat_name}.")
     if "dmg" in intent:
         dmg = apply_damage(intent["dmg"], False, run)
         deal_damage_to_player(run, dmg)
@@ -296,8 +306,10 @@ def process_enemy_turn(run: Dict):
 
     # Status Decay Phase
     for stat in ["vuln", "weak"]:
-        if c["p_status"][stat] > 0: c["p_status"][stat] -= 1
-        if c["e_status"][stat] > 0: c["e_status"][stat] -= 1
+        if c["p_status"][stat] > 0: 
+            c["p_status"][stat] -= 1
+        if c["e_status"][stat] > 0: 
+            c["e_status"][stat] -= 1
 
     # End Turn State Reset Phase
     c["turn"] += 1
@@ -317,7 +329,8 @@ def get_enemy_intent_string(run: Dict) -> str:
         dmg = apply_damage(intent["dmg"], False, run)
         out.append(f"⚔️ {dmg}")
     if "blk" in intent:
-        out.append(f"🛡️ {intent['blk']}")
+        blk_val = intent["blk"]
+        out.append(f"🛡️ {blk_val}")
     if "apply" in intent:
         out.append("⚠️ Debuff")
     if "apply_self" in intent:
@@ -328,9 +341,13 @@ def get_enemy_intent_string(run: Dict) -> str:
 class HandCardButton(Button):
     def __init__(self, card_idx: int, card_id: str, row: int):
         card = CARDS[card_id]
-        btn_style = ButtonStyle.primary if card["type"] == "Attack" else ButtonStyle.secondary
+        card_name = card["name"]
+        card_cost = card["cost"]
+        card_type = card["type"]
+        
+        btn_style = ButtonStyle.primary if card_type == "Attack" else ButtonStyle.secondary
         super().__init__(
-            label=f"{card['name']} ({card['cost']})",
+            label=f"{card_name} ({card_cost})",
             style=btn_style,
             row=row
         )
@@ -348,11 +365,14 @@ class HandCardButton(Button):
                 view.run["floor"] += 1
                 view.run["credits"] += random.randint(15, 30)
                 _save_db()
-                await interaction.response.edit_message(embed=view.build_victory_embed(), view=RewardView(view.user_id, view.run))
-                return
+                vic_embed = view.build_victory_embed()
+                vic_view = RewardView(view.user_id, view.run)
+                return await interaction.response.edit_message(embed=vic_embed, view=vic_view)
         
         _save_db()
-        await interaction.response.edit_message(embed=view.build_embed(), view=CombatView(view.user_id, view.run))
+        next_embed = view.build_embed()
+        next_view = CombatView(view.user_id, view.run)
+        await interaction.response.edit_message(embed=next_embed, view=next_view)
 
 class CombatView(View):
     def __init__(self, user_id: int, run: Dict):
@@ -378,54 +398,78 @@ class CombatView(View):
         
         if self.run["hp"] <= 0:
             clear_run(self.user_id)
-            embed = discord.Embed(title="💀 FLATLINED", description="Your system has been purged.", color=THEME_PINK)
-            await interaction.response.edit_message(embed=embed, view=None)
-            return
+            dead_embed = discord.Embed(title="💀 FLATLINED", description="Your system has been purged.", color=THEME_PINK)
+            return await interaction.response.edit_message(embed=dead_embed, view=None)
             
         _save_db()
-        await interaction.response.edit_message(embed=self.build_embed(), view=CombatView(self.user_id, self.run))
+        next_embed = self.build_embed()
+        next_view = CombatView(self.user_id, self.run)
+        await interaction.response.edit_message(embed=next_embed, view=next_view)
 
     def build_embed(self) -> discord.Embed:
         c = self.run["combat"]
         char_name = self.run["char"]
         char_emoji = CLASSES[char_name]["emoji"]
+        floor_num = self.run["floor"]
+        enemy_name = c["enemy"]
         
-        embed = discord.Embed(title=f"Floor {self.run['floor']} | 🆚 {c['enemy']}", color=THEME_DARK_PURPLE)
+        embed = discord.Embed(title=f"Floor {floor_num} | 🆚 {enemy_name}", color=THEME_DARK_PURPLE)
         
-        # Enemy Status Block
-        e_stat = f"❤️ HP: {c['e_hp']}/{c['e_max_hp']} | 🛡️ Blk: {c['e_block']}"
-        if c["e_status"]["vuln"] > 0: 
-            e_stat += f"\n⚠️ Vuln: {c['e_status']['vuln']}"
-        if c["e_status"]["weak"] > 0: 
-            e_stat += f"\n📉 Weak: {c['e_status']['weak']}"
-        if c["e_status"]["corrosion"] > 0: 
-            e_stat += f"\n🧪 Corrosion: {c['e_status']['corrosion']}"
+        # Enemy Status Extraction
+        e_hp = c["e_hp"]
+        e_max = c["e_max_hp"]
+        e_blk = c["e_block"]
+        e_vuln = c["e_status"]["vuln"]
+        e_weak = c["e_status"]["weak"]
+        e_corr = c["e_status"]["corrosion"]
+        
+        e_stat = f"❤️ HP: {e_hp}/{e_max} | 🛡️ Blk: {e_blk}"
+        if e_vuln > 0: e_stat += f"\n⚠️ Vuln: {e_vuln}"
+        if e_weak > 0: e_stat += f"\n📉 Weak: {e_weak}"
+        if e_corr > 0: e_stat += f"\n🧪 Corrosion: {e_corr}"
             
-        embed.add_field(name="Target Entity", value=f"{e_stat}\n**Intent:** {get_enemy_intent_string(self.run)}", inline=False)
+        intent_str = get_enemy_intent_string(self.run)
+        embed.add_field(name="Target Entity", value=f"{e_stat}\n**Intent:** {intent_str}", inline=False)
         
-        # Player Status Block
-        p_stat = f"❤️ HP: {self.run['hp']}/{self.run['max_hp']} | 🛡️ Blk: {c['p_block']}\n⚡ Energy: {c['energy']}/{self.run['max_energy']}"
-        if c["p_status"]["str"] > 0: 
-            p_stat += f"\n💪 Str: {c['p_status']['str']}"
-        if c["p_status"]["vuln"] > 0: 
-            p_stat += f"\n⚠️ Vuln: {c['p_status']['vuln']}"
-        if c["p_status"]["weak"] > 0: 
-            p_stat += f"\n📉 Weak: {c['p_status']['weak']}"
+        # Player Status Extraction
+        p_hp = self.run["hp"]
+        p_max = self.run["max_hp"]
+        p_blk = c["p_block"]
+        p_nrg = c["energy"]
+        p_max_nrg = self.run["max_energy"]
+        
+        p_str = c["p_status"]["str"]
+        p_vuln = c["p_status"]["vuln"]
+        p_weak = c["p_status"]["weak"]
+        
+        p_stat = f"❤️ HP: {p_hp}/{p_max} | 🛡️ Blk: {p_blk}\n⚡ Energy: {p_nrg}/{p_max_nrg}"
+        if p_str > 0: p_stat += f"\n💪 Str: {p_str}"
+        if p_vuln > 0: p_stat += f"\n⚠️ Vuln: {p_vuln}"
+        if p_weak > 0: p_stat += f"\n📉 Weak: {p_weak}"
             
         embed.add_field(name=f"{char_emoji} Operator ({char_name})", value=p_stat, inline=False)
         
         # Logs & Deck Info Block
-        log_text = "\n".join(self.run["log"][-5:])
+        log_lines = self.run["log"][-5:]
+        log_text = "\n".join(log_lines)
         embed.add_field(name="System Log", value=f"```ansi\n{log_text}\n
 ```", inline=False)
-        embed.set_footer(text=f"Draw: {len(c['draw_pile'])} | Discard: {len(c['discard_pile'])} | Exhaust: {len(c['exhaust_pile'])}")
+        
+        draw_len = len(c["draw_pile"])
+        disc_len = len(c["discard_pile"])
+        exh_len = len(c["exhaust_pile"])
+        embed.set_footer(text=f"Draw: {draw_len} | Discard: {disc_len} | Exhaust: {exh_len}")
         
         return embed
 
     def build_victory_embed(self) -> discord.Embed:
+        run_hp = self.run["hp"]
+        run_max = self.run["max_hp"]
+        run_cred = self.run["credits"]
+        
         embed = discord.Embed(title="✅ Threat Neutralized", description="Area clear. Accessing root nodes...", color=THEME_HACK)
-        embed.add_field(name="Integrity", value=f"❤️ {self.run['hp']}/{self.run['max_hp']}")
-        embed.add_field(name="Credits", value=f"💳 {self.run['credits']}")
+        embed.add_field(name="Integrity", value=f"❤️ {run_hp}/{run_max}")
+        embed.add_field(name="Credits", value=f"💳 {run_cred}")
         return embed
 
 class RewardView(View):
@@ -446,7 +490,8 @@ class RewardView(View):
 
     def render_rewards(self):
         for idx, card_id in enumerate(self.choices):
-            btn = Button(label=CARDS[card_id]["name"], style=ButtonStyle.primary, row=0)
+            card_name = CARDS[card_id]["name"]
+            btn = Button(label=card_name, style=ButtonStyle.primary, row=0)
             btn.custom_id = f"reward_{idx}"
             btn.callback = self.claim_reward
             self.add_item(btn)
@@ -470,13 +515,12 @@ class RewardView(View):
             clear_run(self.user_id)
             spire_db[str(self.user_id)]["victories"] += 1
             _save_db()
-            embed = discord.Embed(title="🏆 RUN COMPLETE", description="You conquered the Megacorp Spire.", color=THEME_CYAN)
-            await interaction.response.edit_message(embed=embed, view=None)
-            return
+            win_embed = discord.Embed(title="🏆 RUN COMPLETE", description="You conquered the Megacorp Spire.", color=THEME_CYAN)
+            return await interaction.response.edit_message(embed=win_embed, view=None)
 
         _save_db()
-        embed = discord.Embed(title="Navigation", description="Move to the next sector?", color=THEME_DARK_PURPLE)
-        await interaction.response.edit_message(embed=embed, view=MapView(self.user_id, self.run))
+        map_embed = discord.Embed(title="Navigation", description="Move to the next sector?", color=THEME_DARK_PURPLE)
+        await interaction.response.edit_message(embed=map_embed, view=MapView(self.user_id, self.run))
 
 class MapView(View):
     def __init__(self, user_id: int, run: Dict):
@@ -484,7 +528,8 @@ class MapView(View):
         self.user_id = user_id
         self.run = run
         
-        btn = Button(label=f"Enter Floor {run['floor']}", style=ButtonStyle.danger, emoji="⚔️")
+        floor_num = run["floor"]
+        btn = Button(label=f"Enter Floor {floor_num}", style=ButtonStyle.danger, emoji="⚔️")
         btn.callback = self.start_combat
         self.add_item(btn)
 
@@ -495,14 +540,16 @@ class MapView(View):
         init_combat(self.run)
         _save_db()
         view = CombatView(self.user_id, self.run)
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+        next_embed = view.build_embed()
+        await interaction.response.edit_message(embed=next_embed, view=view)
 
 class CharSelectView(View):
     def __init__(self, user_id: int):
         super().__init__(timeout=300)
         self.user_id = user_id
         for c_name, c_data in CLASSES.items():
-            btn = Button(label=c_name, style=ButtonStyle.primary, emoji=c_data["emoji"])
+            c_emoji = c_data["emoji"]
+            btn = Button(label=c_name, style=ButtonStyle.primary, emoji=c_emoji)
             btn.custom_id = f"char_{c_name}"
             btn.callback = self.select_char
             self.add_item(btn)
@@ -511,13 +558,15 @@ class CharSelectView(View):
         if interaction.user.id != self.user_id: 
             return await interaction.response.send_message("🚫 Unauthorized.", ephemeral=True)
             
-        char_name = interaction.data["custom_id"].split("_")[1]
+        custom_id = interaction.data.get("custom_id", "")
+        char_name = custom_id.split("_")[1]
         run = create_run(str(self.user_id), char_name)
         
         init_combat(run)
         _save_db()
         view = CombatView(self.user_id, run)
-        await interaction.response.edit_message(embed=view.build_embed(), view=view)
+        next_embed = view.build_embed()
+        await interaction.response.edit_message(embed=next_embed, view=view)
 
 # --- COG SETUP ---
 class SpireCog(commands.Cog):
@@ -546,17 +595,21 @@ class SpireCog(commands.Cog):
                 run = player["active_run"]
                 if run.get("combat"):
                     view = CombatView(ctx.author.id, run)
-                    await safe_reply(ctx, embed=view.build_embed(), view=view)
+                    active_embed = view.build_embed()
+                    await safe_reply(ctx, embed=active_embed, view=view)
                 else:
                     view = MapView(ctx.author.id, run)
-                    embed = discord.Embed(title="Navigation", description="Resume infiltration.", color=THEME_DARK_PURPLE)
-                    await safe_reply(ctx, embed=embed, view=view)
+                    map_embed = discord.Embed(title="Navigation", description="Resume infiltration.", color=THEME_DARK_PURPLE)
+                    await safe_reply(ctx, embed=map_embed, view=view)
             else:
-                embed = discord.Embed(title="Select Your Operator", color=THEME_CYAN)
+                sel_embed = discord.Embed(title="Select Your Operator", color=THEME_CYAN)
                 for name, data in CLASSES.items():
-                    embed.add_field(name=f"{data['emoji']} {name}", value=f"HP: {data['hp']}\n{data['desc']}", inline=False)
+                    c_emoji = data["emoji"]
+                    c_hp = data["hp"]
+                    c_desc = data["desc"]
+                    sel_embed.add_field(name=f"{c_emoji} {name}", value=f"HP: {c_hp}\n{c_desc}", inline=False)
                 view = CharSelectView(ctx.author.id)
-                await safe_reply(ctx, embed=embed, view=view)
+                await safe_reply(ctx, embed=sel_embed, view=view)
                 
         except Exception as e:
             traceback.print_exc()
