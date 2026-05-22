@@ -18,6 +18,12 @@ THEME_PINK = 0xFF003C
 THEME_HACK = 0x00FF00 
 THEME_CORP = 0xFCEE0A
 
+ANSI_CYAN = "\u001b[36m"
+ANSI_RED = "\u001b[31m"
+ANSI_GREEN = "\u001b[32m"
+ANSI_YELLOW = "\u001b[33m"
+ANSI_RESET = "\u001b[0m"
+
 # --- INFRASTRUCTURE & PERSISTENCE ---
 PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve() 
 try:
@@ -298,7 +304,7 @@ def create_run(user_id: str, char_class: str):
         "max_energy": 3,
         "deck": base_deck,
         "combat": None,
-        "log": ["Run initialized."]
+        "log": [f"{ANSI_YELLOW}System Initialized.{ANSI_RESET}"]
     }
     spire_db[user_id]["active_run"] = run
     _save_db()
@@ -332,7 +338,7 @@ def init_combat(run: Dict):
         "energy": run["max_energy"]
     }
     random.shuffle(run["combat"]["draw_pile"])
-    run["log"] = ["Engaged: " + e_name + "!"]
+    run["log"] = [f"{ANSI_RED}Engaged: {e_name}!{ANSI_RESET}"]
     draw_cards(run, 5)
 
 def draw_cards(run: Dict, count: int):
@@ -391,12 +397,12 @@ def execute_card(run: Dict, card_idx: int) -> bool:
     c_cost = card["cost"]
     
     if c["energy"] < c_cost:
-        run["log"].append("Not enough energy for " + c_name)
+        run["log"].append(f"{ANSI_YELLOW}[!] Not enough energy for {c_name}{ANSI_RESET}")
         return False
         
     c["energy"] -= c_cost
     c["hand"].pop(card_idx)
-    run["log"].append("Played " + c_name)
+    run["log"].append(f"{ANSI_CYAN}[Operator] {c_name}{ANSI_RESET}")
     
     if "blk" in card:
         c["p_block"] += card["blk"]
@@ -412,7 +418,7 @@ def execute_card(run: Dict, card_idx: int) -> bool:
         has_corr = c["e_status"].get("corrosion", 0) > 0
         if card.get("bane", False) and has_corr:
             deal_damage_to_enemy(run, dmg)
-            run["log"].append("Bane triggered twice!")
+            run["log"].append(f"{ANSI_CYAN}[Operator] Bane combo!{ANSI_RESET}")
 
     if "apply" in card:
         for k, v in card["apply"].items():
@@ -448,7 +454,7 @@ def process_enemy_turn(run: Dict):
         corr_dmg = c["e_status"]["corrosion"]
         c["e_hp"] -= corr_dmg
         c["e_status"]["corrosion"] -= 1
-        run["log"].append("Enemy took " + str(corr_dmg) + " Corr DMG")
+        run["log"].append(f"{ANSI_GREEN}[Status] Target took {corr_dmg} Corr DMG{ANSI_RESET}")
         if c["e_hp"] <= 0: 
             return
         
@@ -456,12 +462,12 @@ def process_enemy_turn(run: Dict):
     intent = c["pattern"][pattern_idx]
     
     c["e_block"] = 0
-    cur_turn = str(c["turn"])
-    run["log"].append("Enemy turn " + cur_turn + ":")
+    cur_turn = str(c["turn"] + 1)
+    run["log"].append(f"{ANSI_RED}--- Target Turn {cur_turn} ---{ANSI_RESET}")
     
     if "blk" in intent:
         c["e_block"] += intent["blk"]
-        run["log"].append("Enemy gained " + str(intent["blk"]) + " Blk")
+        run["log"].append(f"{ANSI_RED}[Target] Gained {intent['blk']} Blk{ANSI_RESET}")
         
     if "apply_self" in intent:
         for k, v in intent["apply_self"].items():
@@ -470,12 +476,12 @@ def process_enemy_turn(run: Dict):
     if "apply" in intent:
         for k, v in intent["apply"].items():
             c["p_status"][k] = c["p_status"].get(k, 0) + v
-            run["log"].append("Enemy applied " + str(v) + " " + str(k))
+            run["log"].append(f"{ANSI_RED}[Target] Applied {v} {k.capitalize()}{ANSI_RESET}")
             
     if "dmg" in intent:
         dmg = apply_damage(intent["dmg"], False, run)
         deal_damage_to_player(run, dmg)
-        run["log"].append("Enemy dealt " + str(dmg) + " DMG")
+        run["log"].append(f"{ANSI_RED}[Target] Dealt {dmg} DMG{ANSI_RESET}")
 
     for stat in ["vuln", "weak"]:
         if c["p_status"][stat] > 0: 
@@ -498,13 +504,13 @@ def get_enemy_intent_string(run: Dict) -> str:
     out = []
     if "dmg" in intent:
         dmg_val = apply_damage(intent["dmg"], False, run)
-        out.append("ATK: " + str(dmg_val))
+        out.append(f"⚔️ {dmg_val}")
     if "blk" in intent:
-        out.append("DEF: " + str(intent["blk"]))
+        out.append(f"🛡️ {intent['blk']}")
     if "apply" in intent:
-        out.append("Debuff")
+        out.append("⚠️ Debuff")
     if "apply_self" in intent:
-        out.append("Buff")
+        out.append("📈 Buff")
     
     if len(out) > 0:
         return " | ".join(out)
@@ -516,13 +522,18 @@ class HandCardButton(Button):
         card = CARDS[card_id]
         c_name = card["name"]
         c_cost = str(card["cost"])
+        c_desc = card.get("desc", "")
         
         btn_style = ButtonStyle.secondary
         if card["type"] == "Attack":
             btn_style = ButtonStyle.primary
             
+        label_text = f"{c_name} ({c_cost}) | {c_desc}"
+        if len(label_text) > 80:
+            label_text = label_text[:77] + "..."
+            
         super().__init__(
-            label=c_name + " (" + c_cost + ")",
+            label=label_text,
             style=btn_style,
             row=row
         )
@@ -547,8 +558,8 @@ class HandCardButton(Button):
                 spire_db[uid_str]["credits"] += creds
                 _save_db()
                 
-                vic_embed = view.build_victory_embed(creds)
                 vic_view = RewardView(view.user_id, view.run)
+                vic_embed = view.build_victory_embed(creds, vic_view.choices)
                 return await interaction.response.edit_message(
                     embed=vic_embed, view=vic_view
                 )
@@ -655,7 +666,7 @@ class CombatView(View):
             inline=False
         )
         
-        log_lines = self.run["log"][-5:]
+        log_lines = self.run["log"][-8:]
         log_text = "\n".join(log_lines)
         ansi_log = "```ansi\n" + log_text + "\n```"
         embed.add_field(name="System Log", value=ansi_log, inline=False)
@@ -669,7 +680,7 @@ class CombatView(View):
         
         return embed
 
-    def build_victory_embed(self, creds_won: int) -> discord.Embed:
+    def build_victory_embed(self, creds_won: int, choices: List[str] = None) -> discord.Embed:
         r_hp = str(self.run["hp"])
         r_max = str(self.run["max_hp"])
         
@@ -678,8 +689,16 @@ class CombatView(View):
             description="Area clear. Accessing root nodes...", 
             color=THEME_HACK
         )
-        embed.add_field(name="Integrity", value="HP: " + r_hp + "/" + r_max)
-        embed.add_field(name="Loot", value=str(creds_won) + " CR")
+        embed.add_field(name="Integrity", value=f"HP: {r_hp}/{r_max}")
+        embed.add_field(name="Loot", value=f"{creds_won} CR")
+        
+        if choices:
+            r_text = ""
+            for cid in choices:
+                c = CARDS[cid]
+                r_text += f"**{c['name']}** ({c['cost']} NRG) - *{c['desc']}*\n"
+            embed.add_field(name="Available Upgrades", value=r_text, inline=False)
+            
         return embed
 
 class RewardView(View):
@@ -700,7 +719,9 @@ class RewardView(View):
     def render_rewards(self):
         for idx, card_id in enumerate(self.choices):
             c_name = CARDS[card_id]["name"]
-            btn = Button(label=c_name, style=ButtonStyle.primary, row=0)
+            c_cost = str(CARDS[card_id]["cost"])
+            
+            btn = Button(label=f"{c_name} ({c_cost})", style=ButtonStyle.primary, row=0)
             btn.custom_id = "reward_" + str(idx)
             btn.callback = self.claim_reward
             self.add_item(btn)
