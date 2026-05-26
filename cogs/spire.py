@@ -63,6 +63,13 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
         print("[SYSTEM WARN] Reply Execution Failed: " + str(e))
     return None 
 
+# --- UI UTILITIES ---
+def _render_bar(val: int, max_val: int, length: int = 12) -> str:
+    """Generates an ASCII progress bar for HP."""
+    if max_val <= 0: return "░" * length
+    filled = max(0, min(length, int((val / max_val) * length)))
+    return "█" * filled + "░" * (length - filled)
+
 # --- PROGRESSION & UNLOCK ENGINE ---
 def get_player_level(user_id: str) -> int:
     d = spire_db.get(str(user_id), {})
@@ -122,13 +129,13 @@ POTIONS = {
 }
 
 ENEMIES = {
-    1: [{"name": "Scrap Drone", "hp": 20, "pattern": [{"dmg": 5}, {"blk": 5}, {"dmg": 6}]}],
-    2: [{"name": "Corrupt Guard", "hp": 35, "pattern": [{"dmg": 8}, {"apply": {"weak": 1}}, {"dmg": 10}]}],
-    3: [{"name": "Cyber-Hound", "hp": 55, "pattern": [{"dmg": 12}, {"blk": 10}, {"dmg": 15}]}],
-    4: [{"name": "Black-ICE", "hp": 80, "pattern": [{"dmg": 10, "apply": {"vuln": 1}}, {"dmg": 18}, {"blk": 15}]}],
-    5: [{"name": "CEO Boss", "hp": 150, "pattern": [{"dmg": 15}, {"blk": 20, "apply_self": {"str": 2}}, {"dmg": 25}]}],
-    "elite_1": [{"name": "Hunter Killer", "hp": 65, "pattern": [{"dmg": 12, "apply": {"vuln": 1}}, {"dmg": 16}]}],
-    "elite_2": [{"name": "SysAdmin", "hp": 110, "pattern": [{"blk": 20}, {"dmg": 20}, {"apply": {"weak": 2, "vuln": 1}}]}]
+    1: [{"name": "Scrap Drone", "hp": 25, "pattern": [{"blk": 5, "apply_self": {"str": 1}}, {"dmg": 6}, {"dmg": 8}]}],
+    2: [{"name": "Corrupt Guard", "hp": 40, "pattern": [{"blk": 10}, {"apply": {"weak": 1, "vuln": 1}}, {"dmg": 12}]}],
+    3: [{"name": "Cyber-Hound", "hp": 60, "pattern": [{"dmg": 6}, {"dmg": 6}, {"blk": 15, "apply_self": {"str": 2}}, {"dmg": 15}]}],
+    4: [{"name": "Black-ICE", "hp": 85, "pattern": [{"apply": {"vuln": 2}}, {"dmg": 15}, {"blk": 20}, {"dmg": 20}]}],
+    5: [{"name": "CEO Boss", "hp": 200, "pattern": [{"apply_self": {"str": 2}, "blk": 20}, {"dmg": 15}, {"apply": {"corrosion": 3, "weak": 2}}, {"dmg": 25}, {"blk": 30}]}],
+    "elite_1": [{"name": "Hunter Killer", "hp": 75, "pattern": [{"apply_self": {"str": 2}, "blk": 10}, {"apply": {"vuln": 2}}, {"dmg": 18}]}],
+    "elite_2": [{"name": "SysAdmin", "hp": 130, "pattern": [{"blk": 25, "apply": {"weak": 2}}, {"dmg": 15}, {"apply_self": {"str": 3}}, {"dmg": 25}]}]
 }
 
 # --- STATE MANAGEMENT ---
@@ -445,11 +452,11 @@ def get_enemy_intent_string(run: Dict) -> str:
         dmg_val = apply_damage(intent["dmg"], False, run)
         net_dmg = max(0, dmg_val - c["p_block"])
         if net_dmg == 0:
-            out.append(f"⚔️ {dmg_val} ➡️ [🛡️ {c['p_block']}] ➡️ 🟢 Blocked")
+            out.append(f"⚔️ `{dmg_val}` ➡️ [🛡️ `{c['p_block']}`] ➡️ 🟢 Blocked")
         else:
-            out.append(f"⚔️ {dmg_val} ➡️ [🛡️ {c['p_block']}] ➡️ 🩸 -{net_dmg} HP")
+            out.append(f"⚔️ `{dmg_val}` ➡️ [🛡️ `{c['p_block']}`] ➡️ 🩸 -{net_dmg} HP")
     if "blk" in intent:
-        out.append(f"🛡️ {intent['blk']} BLK")
+        out.append(f"🛡️ `{intent['blk']}` Defend")
     if "apply" in intent:
         out.append("⚠️ Debuff")
     if "apply_self" in intent:
@@ -594,45 +601,45 @@ class CombatView(View):
             color=THEME_DARK_PURPLE
         )
         
-        e_hp = str(c["e_hp"])
-        e_max = str(c["e_max_hp"])
-        e_blk = str(c["e_block"])
+        # UI Formatting Engine - Target
+        e_hp_bar = _render_bar(c["e_hp"], c["e_max_hp"])
+        e_stat = f"❤️ **HP:** `{c['e_hp']:02d} / {c['e_max_hp']:02d}`  `[{e_hp_bar}]`\n🛡️ **Block:** `{c['e_block']:02d}`"
         
-        e_stat = f"**HP:** {e_hp}/{e_max} | **Block:** {e_blk}"
-        if c["e_status"]["vuln"] > 0: e_stat += f"\n> **Vuln: {c['e_status']['vuln']}** *(DMG Taken x1.5)*"
-        if c["e_status"]["weak"] > 0: e_stat += f"\n> **Weak: {c['e_status']['weak']}** *(ATK x0.75)*"
-        if c["e_status"]["corrosion"] > 0: e_stat += f"\n> **Corr: {c['e_status']['corrosion']}** *(Takes true DMG every turn)*"
+        if c["e_status"]["vuln"] > 0: e_stat += f"\n> 📉 **Vuln: {c['e_status']['vuln']}** *(Takes 1.5x DMG)*"
+        if c["e_status"]["weak"] > 0: e_stat += f"\n> ⚠️ **Weak: {c['e_status']['weak']}** *(Deals 0.75x DMG)*"
+        if c["e_status"]["corrosion"] > 0: e_stat += f"\n> 🧪 **Corr: {c['e_status']['corrosion']}** *(Takes True DMG)*"
+        if c["e_status"]["str"] > 0: e_stat += f"\n> 💪 **Str: {c['e_status']['str']}** *(+DMG Output)*"
             
         i_str = get_enemy_intent_string(self.run)
-        embed.add_field(name="Target Entity", value=e_stat + f"\n\n**Intent:** {i_str}", inline=False)
+        embed.add_field(name=f"🤖 Target Entity: {c['enemy']}", value=e_stat + f"\n\n🔮 **Intent:** {i_str}", inline=False)
         
-        p_hp = str(self.run["hp"])
-        p_max = str(self.run["max_hp"])
-        p_blk = str(c["p_block"])
+        # UI Formatting Engine - Operator
+        p_hp_bar = _render_bar(self.run["hp"], self.run["max_hp"])
+        p_stat = f"❤️ **HP:** `{self.run['hp']:02d} / {self.run['max_hp']:02d}`  `[{p_hp_bar}]`\n🛡️ **Block:** `{c['p_block']:02d}`"
         
         nrg = c["energy"]
         max_nrg = c["max_e"]
         energy_visual = ("⚡" * nrg) + ("🌑" * (max_nrg - nrg))
+        p_stat += f"\n🔋 **Energy:** {energy_visual}"
         
-        p_stat = f"**HP:** {p_hp}/{p_max} | **Block:** {p_blk}\n**Energy:** {energy_visual}"
-        
-        if c["p_status"]["str"] > 0: p_stat += f"\n> **Str: {c['p_status']['str']}** *(+DMG to attacks)*"
-        if c["p_status"]["vuln"] > 0: p_stat += f"\n> **Vuln: {c['p_status']['vuln']}** *(DMG Taken x1.5)*"
-        if c["p_status"]["weak"] > 0: p_stat += f"\n> **Weak: {c['p_status']['weak']}** *(ATK x0.75)*"
+        if c["p_status"]["str"] > 0: p_stat += f"\n> 💪 **Str: {c['p_status']['str']}** *(+DMG Output)*"
+        if c["p_status"]["vuln"] > 0: p_stat += f"\n> 📉 **Vuln: {c['p_status']['vuln']}** *(Takes 1.5x DMG)*"
+        if c["p_status"]["weak"] > 0: p_stat += f"\n> ⚠️ **Weak: {c['p_status']['weak']}** *(Deals 0.75x DMG)*"
             
-        embed.add_field(name=f"Operator ({self.run['char']})", value=p_stat, inline=False)
+        embed.add_field(name=f"👤 Operator ({self.run['char']})", value=p_stat, inline=False)
         
+        # UI Formatting Engine - Logs & Meta
         log_lines = self.run["log"][-8:]
         log_text = "\n".join(log_lines)
         ansi_log = f"```ansi\n{log_text}\n```"
-        embed.add_field(name="System Log", value=ansi_log, inline=False)
+        embed.add_field(name="🖥️ System Log", value=ansi_log, inline=False)
         
         d_len = str(len(c["draw_pile"]))
         dis_len = str(len(c["discard_pile"]))
         ex_len = str(len(c["exhaust_pile"]))
         
         relics_str = ", ".join([RELICS[r]["name"] for r in self.run["relics"]]) if self.run["relics"] else "None"
-        embed.add_field(name="Hardware Relics", value=relics_str, inline=False)
+        embed.add_field(name="⚙️ Hardware Relics", value=relics_str, inline=False)
         
         ftr = f"Draw: {d_len} | Disc: {dis_len} | Exh: {ex_len} | Gold: {self.run['gold']} CR"
         embed.set_footer(text=ftr)
