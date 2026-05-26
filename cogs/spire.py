@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Any
 
 import discord
-from discord import Option, ButtonStyle, Interaction
+from discord import Option, ButtonStyle, Interaction, SelectOption
 from discord.ui import View, Button, Select
 from discord.ext import commands
 
@@ -63,182 +63,62 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
         print("[SYSTEM WARN] Reply Execution Failed: " + str(e))
     return None 
 
-# --- CARD & ENTITY MATRIX ---
+# --- PROGRESSION & UNLOCK ENGINE ---
+def get_player_level(user_id: str) -> int:
+    d = spire_db.get(str(user_id), {})
+    runs = d.get("runs", 0)
+    victories = d.get("victories", 0)
+    return (runs // 3) + (victories * 2) + 1
+
+# --- GAME DATA MATRIX ---
 CLASSES = {
     "Vanguard": {
         "desc": "Heavy armor and kinetic force.",
         "hp": 80,
-        "deck": [
-            "strike", "strike", "strike", "strike", 
-            "defend", "defend", "defend", "defend", "breach"
-        ]
+        "deck": ["strike", "strike", "strike", "strike", "defend", "defend", "defend", "defend", "breach"]
     },
     "Phantom": {
         "desc": "Agile assassin. Relies on Poison and rapid strikes.",
         "hp": 70,
-        "deck": [
-            "strike", "strike", "strike", "strike", 
-            "defend", "defend", "defend", "defend", "acid_flask"
-        ]
+        "deck": ["strike", "strike", "strike", "strike", "defend", "defend", "defend", "defend", "acid_flask"]
     },
     "Netrunner": {
         "desc": "Tech specialist. Manipulates Energy.",
         "hp": 75,
-        "deck": [
-            "strike", "strike", "strike", "strike", 
-            "defend", "defend", "defend", "defend", "overclock"
-        ]
+        "deck": ["strike", "strike", "strike", "strike", "defend", "defend", "defend", "defend", "overclock"]
     }
 }
 
 CARDS = {
-    "strike": {
-        "name": "Strike", 
-        "cost": 1, 
-        "type": "Attack", 
-        "dmg": 6, 
-        "desc": "Deal 6 DMG.",
-        "tags": ["Basic"]
-    },
-    "defend": {
-        "name": "Defend", 
-        "cost": 1, 
-        "type": "Skill", 
-        "blk": 5, 
-        "desc": "Gain 5 Block.",
-        "tags": ["Basic"]
-    },
-    "breach": {
-        "name": "Breach", 
-        "cost": 2, 
-        "type": "Attack", 
-        "dmg": 8, 
-        "apply": {"vuln": 2}, 
-        "desc": "Deal 8 DMG. Apply 2 Vulnerable.",
-        "tags": ["Debuff"]
-    },
-    "iron_wave": {
-        "name": "Iron Wave", 
-        "cost": 1, 
-        "type": "Attack", 
-        "dmg": 5, 
-        "blk": 5, 
-        "desc": "Gain 5 Block. Deal 5 DMG.",
-        "tags": ["Hybrid"]
-    },
-    "inflame": {
-        "name": "Inflame", 
-        "cost": 1, 
-        "type": "Power", 
-        "apply_self": {"str": 2}, 
-        "desc": "Gain 2 Strength. (Exhausts)", 
-        "exhaust": True,
-        "tags": ["Scaling"]
-    },
-    "cleave": {
-        "name": "Cleave", 
-        "cost": 1, 
-        "type": "Attack", 
-        "dmg": 8, 
-        "desc": "Deal 8 DMG.",
-        "tags": ["Standard"]
-    },
-    "heavy_blade": {
-        "name": "Heavy Blade", 
-        "cost": 3, 
-        "type": "Attack", 
-        "dmg": 14, 
-        "str_mult": 3, 
-        "desc": "Deal 14 DMG. Str affects this 3x.",
-        "tags": ["Finisher", "Scaling"]
-    },
-    "acid_flask": {
-        "name": "Acid Flask", 
-        "cost": 1, 
-        "type": "Skill", 
-        "apply": {"corrosion": 4}, 
-        "desc": "Apply 4 Corrosion.",
-        "tags": ["Corrosion Engine"]
-    },
-    "flurry": {
-        "name": "Flurry", 
-        "cost": 0, 
-        "type": "Attack", 
-        "dmg": 4, 
-        "desc": "Deal 4 DMG.",
-        "tags": ["Zero-Cost"]
-    },
-    "deadly_poison": {
-        "name": "Deadly Poison", 
-        "cost": 1, 
-        "type": "Skill", 
-        "apply": {"corrosion": 5}, 
-        "desc": "Apply 5 Corrosion.",
-        "tags": ["Corrosion Engine"]
-    },
-    "backflip": {
-        "name": "Backflip", 
-        "cost": 1, 
-        "type": "Skill", 
-        "blk": 5, 
-        "draw": 2, 
-        "desc": "Gain 5 Block. Draw 2 cards.",
-        "tags": ["Engine"]
-    },
-    "bane": {
-        "name": "Bane", 
-        "cost": 1, 
-        "type": "Attack", 
-        "dmg": 7, 
-        "bane": True, 
-        "desc": "Deal 7 DMG. Deal again if Corroded.",
-        "tags": ["Combo"]
-    },
-    "overclock": {
-        "name": "Overclock", 
-        "cost": 0, 
-        "type": "Skill", 
-        "energy": 1, 
-        "draw": 1, 
-        "desc": "Gain 1 NRG. Draw 1. (Exhausts)", 
-        "exhaust": True,
-        "tags": ["Engine"]
-    },
-    "glitch": {
-        "name": "Glitch", 
-        "cost": 1, 
-        "type": "Attack", 
-        "dmg": 7, 
-        "apply": {"weak": 1}, 
-        "desc": "Deal 7 DMG. Apply 1 Weak.",
-        "tags": ["Debuff"]
-    },
-    "compile": {
-        "name": "Compile", 
-        "cost": 2, 
-        "type": "Skill", 
-        "blk": 10, 
-        "draw": 2, 
-        "desc": "Gain 10 Block. Draw 2 cards.",
-        "tags": ["Engine"]
-    },
-    "laser": {
-        "name": "Orbital Laser", 
-        "cost": 2, 
-        "type": "Attack", 
-        "dmg": 15, 
-        "desc": "Deal 15 DMG.",
-        "tags": ["Heavy"]
-    },
-    "reboot": {
-        "name": "Reboot", 
-        "cost": 3, 
-        "type": "Skill", 
-        "desc": "Shuffle Discard to Draw. Draw 5.", 
-        "special": "reboot", 
-        "exhaust": True,
-        "tags": ["Engine"]
-    }
+    "strike": {"name": "Strike", "cost": 1, "type": "Attack", "dmg": 6, "desc": "Deal 6 DMG.", "tags": ["Basic"], "req_lvl": 1},
+    "defend": {"name": "Defend", "cost": 1, "type": "Skill", "blk": 5, "desc": "Gain 5 Block.", "tags": ["Basic"], "req_lvl": 1},
+    "breach": {"name": "Breach", "cost": 2, "type": "Attack", "dmg": 8, "apply": {"vuln": 2}, "desc": "Deal 8 DMG. Apply 2 Vuln.", "tags": ["Debuff"], "req_lvl": 1},
+    "iron_wave": {"name": "Iron Wave", "cost": 1, "type": "Attack", "dmg": 5, "blk": 5, "desc": "Gain 5 Blk. Deal 5 DMG.", "tags": ["Hybrid"], "req_lvl": 1},
+    "inflame": {"name": "Inflame", "cost": 1, "type": "Power", "apply_self": {"str": 2}, "desc": "Gain 2 Str. (Exhausts)", "exhaust": True, "tags": ["Scaling"], "req_lvl": 1},
+    "cleave": {"name": "Cleave", "cost": 1, "type": "Attack", "dmg": 8, "desc": "Deal 8 DMG.", "tags": ["Standard"], "req_lvl": 1},
+    "acid_flask": {"name": "Acid Flask", "cost": 1, "type": "Skill", "apply": {"corrosion": 4}, "desc": "Apply 4 Corr.", "tags": ["Corrosion"], "req_lvl": 1},
+    "overclock": {"name": "Overclock", "cost": 0, "type": "Skill", "energy": 1, "draw": 1, "desc": "Gain 1 NRG. Draw 1. (Exhausts)", "exhaust": True, "tags": ["Engine"], "req_lvl": 1},
+    "heavy_blade": {"name": "Heavy Blade", "cost": 3, "type": "Attack", "dmg": 14, "str_mult": 3, "desc": "Deal 14 DMG. Str affects this 3x.", "tags": ["Finisher"], "req_lvl": 2},
+    "reboot": {"name": "Reboot", "cost": 3, "type": "Skill", "desc": "Shuffle Discard to Draw. Draw 5.", "special": "reboot", "exhaust": True, "tags": ["Engine"], "req_lvl": 2},
+    "laser": {"name": "Orbital Laser", "cost": 2, "type": "Attack", "dmg": 15, "desc": "Deal 15 DMG.", "tags": ["Heavy"], "req_lvl": 3},
+    "bane": {"name": "Bane", "cost": 1, "type": "Attack", "dmg": 7, "bane": True, "desc": "Deal 7 DMG. Deal again if Corroded.", "tags": ["Combo"], "req_lvl": 3},
+    "glitch": {"name": "Glitch", "cost": 1, "type": "Attack", "dmg": 7, "apply": {"weak": 1}, "desc": "Deal 7 DMG. Apply 1 Weak.", "tags": ["Debuff"], "req_lvl": 4},
+    "compile": {"name": "Compile", "cost": 2, "type": "Skill", "blk": 10, "draw": 2, "desc": "Gain 10 Block. Draw 2 cards.", "tags": ["Engine"], "req_lvl": 4}
+}
+
+RELICS = {
+    "blood_vial": {"name": "Blood Vial", "desc": "Heal 2 HP at the start of combat.", "tier": 1, "req_lvl": 1},
+    "vajra": {"name": "Vajra Core", "desc": "Gain 1 Strength at the start of combat.", "tier": 2, "req_lvl": 1},
+    "anchor": {"name": "Heavy Anchor", "desc": "Gain 10 Block on turn 1.", "tier": 1, "req_lvl": 2},
+    "battery": {"name": "Fusion Battery", "desc": "Gain +1 Max Energy.", "tier": 3, "req_lvl": 3},
+    "toxin_gland": {"name": "Toxin Gland", "desc": "Apply 1 Corrosion to all enemies turn 1.", "tier": 2, "req_lvl": 4}
+}
+
+POTIONS = {
+    "block_pot": {"name": "Shield Stim", "desc": "Gain 12 Block.", "tier": 1, "req_lvl": 1},
+    "str_pot": {"name": "Adrenaline Shot", "desc": "Gain 2 Strength.", "tier": 1, "req_lvl": 1},
+    "energy_pot": {"name": "Plasma Cell", "desc": "Gain 2 Energy.", "tier": 2, "req_lvl": 2},
+    "heal_pot": {"name": "Nano-Meds", "desc": "Heal 15 HP.", "tier": 2, "req_lvl": 3}
 }
 
 ENEMIES = {
@@ -261,17 +141,9 @@ def init_player(user_id: str) -> Dict:
     d = spire_db[user_id]
     
     schema_matrix = {
-        "runs": 0, 
-        "victories": 0, 
-        "active_run": None,
-        "credits": 0, 
-        "bounty": 0, 
-        "kills": 0, 
-        "deaths": 0, 
-        "data_shards": 0, 
-        "sector": 1,
-        "defense_grid": [],
-        "last_deck": []
+        "runs": 0, "victories": 0, "active_run": None,
+        "credits": 0, "bounty": 0, "kills": 0, "deaths": 0, 
+        "data_shards": 0, "sector": 1, "defense_grid": [], "last_deck": []
     }
 
     for key, default_value in schema_matrix.items():
@@ -279,21 +151,19 @@ def init_player(user_id: str) -> Dict:
             d[key] = default_value
             needs_save = True
             
-    if needs_save:
-        _save_db()
-        
+    if needs_save: _save_db()
     return d
 
 def generate_map_nodes(floor: int) -> List[str]:
+    if floor == 4:
+        return ["safehouse"] 
     if floor == 5:
         return ["boss"]
     
-    pool = ["combat", "combat", "elite", "safehouse"]
+    pool = ["combat", "merchant", "elite", "safehouse"]
     choices = random.sample(pool, 3)
-    
     if "combat" not in choices and "elite" not in choices:
         choices[0] = "combat"
-        
     return choices
 
 def create_run(user_id: str, char_class: str):
@@ -307,7 +177,11 @@ def create_run(user_id: str, char_class: str):
         "floor": 1,
         "max_energy": 3,
         "deck": base_deck,
+        "relics": [],
+        "potions": [],
+        "gold": 99, 
         "combat": None,
+        "shop": None,
         "next_nodes": generate_map_nodes(1),
         "log": [f"{ANSI_YELLOW}System Initialized.{ANSI_RESET}"]
     }
@@ -319,7 +193,35 @@ def clear_run(user_id: str):
     spire_db[str(user_id)]["active_run"] = None
     _save_db()
 
+# --- ITEM & UNLOCK POOLS ---
+def get_pool(item_type: str, player_lvl: int) -> List[str]:
+    if item_type == "cards":
+        return [k for k, v in CARDS.items() if v.get("req_lvl", 1) <= player_lvl and k not in ["strike", "defend"]]
+    elif item_type == "relics":
+        return [k for k, v in RELICS.items() if v.get("req_lvl", 1) <= player_lvl]
+    elif item_type == "potions":
+        return [k for k, v in POTIONS.items() if v.get("req_lvl", 1) <= player_lvl]
+    return []
+
 # --- COMBAT ENGINE ---
+def trigger_relics(run: Dict, timing: str):
+    c = run["combat"]
+    for rel_id in run["relics"]:
+        if timing == "combat_start":
+            if rel_id == "blood_vial":
+                run["hp"] = min(run["max_hp"], run["hp"] + 2)
+                run["log"].append(f"{ANSI_GREEN}[Relic] Blood Vial healed 2 HP.{ANSI_RESET}")
+            elif rel_id == "vajra":
+                c["p_status"]["str"] = c["p_status"].get("str", 0) + 1
+                run["log"].append(f"{ANSI_GREEN}[Relic] Vajra granted 1 Str.{ANSI_RESET}")
+            elif rel_id == "toxin_gland":
+                c["e_status"]["corrosion"] = c["e_status"].get("corrosion", 0) + 1
+                run["log"].append(f"{ANSI_GREEN}[Relic] Toxin Gland applied 1 Corr.{ANSI_RESET}")
+        elif timing == "turn_1":
+            if rel_id == "anchor":
+                c["p_block"] += 10
+                run["log"].append(f"{ANSI_GREEN}[Relic] Anchor granted 10 Block.{ANSI_RESET}")
+
 def init_combat(run: Dict, node_type: str = "combat"):
     floor = min(run["floor"], 5)
     
@@ -334,6 +236,10 @@ def init_combat(run: Dict, node_type: str = "combat"):
     e_name = enemy_template["name"]
     e_hp = enemy_template["hp"]
     
+    max_e = run["max_energy"]
+    if "battery" in run["relics"]:
+        max_e += 1
+
     run["combat"] = {
         "enemy": e_name,
         "e_hp": e_hp,
@@ -348,10 +254,14 @@ def init_combat(run: Dict, node_type: str = "combat"):
         "hand": [],
         "discard_pile": [],
         "exhaust_pile": [],
-        "energy": run["max_energy"]
+        "energy": max_e,
+        "max_e": max_e
     }
     random.shuffle(run["combat"]["draw_pile"])
     run["log"] = [f"{ANSI_RED}Engaged: {e_name}!{ANSI_RESET}"]
+    
+    trigger_relics(run, "combat_start")
+    trigger_relics(run, "turn_1")
     draw_cards(run, 5)
 
 def draw_cards(run: Dict, count: int):
@@ -398,6 +308,24 @@ def deal_damage_to_player(run: Dict, dmg: int):
         c["p_block"] -= blocked
         dmg -= blocked
     run["hp"] -= dmg
+
+def use_potion(run: Dict, pot_idx: int) -> bool:
+    if pot_idx >= len(run["potions"]): return False
+    pot_id = run["potions"].pop(pot_idx)
+    pot = POTIONS[pot_id]
+    c = run["combat"]
+    
+    if pot_id == "block_pot":
+        c["p_block"] += 12
+    elif pot_id == "str_pot":
+        c["p_status"]["str"] = c["p_status"].get("str", 0) + 2
+    elif pot_id == "energy_pot":
+        c["energy"] += 2
+    elif pot_id == "heal_pot":
+        run["hp"] = min(run["max_hp"], run["hp"] + 15)
+        
+    run["log"].append(f"{ANSI_CYAN}[Operator] Injected {pot['name']}{ANSI_RESET}")
+    return True
 
 def execute_card(run: Dict, card_idx: int) -> bool:
     c = run["combat"]
@@ -497,16 +425,14 @@ def process_enemy_turn(run: Dict):
         run["log"].append(f"{ANSI_RED}[Target] Dealt {dmg} DMG{ANSI_RESET}")
 
     for stat in ["vuln", "weak"]:
-        if c["p_status"][stat] > 0: 
-            c["p_status"][stat] -= 1
-        if c["e_status"][stat] > 0: 
-            c["e_status"][stat] -= 1
+        if c["p_status"][stat] > 0: c["p_status"][stat] -= 1
+        if c["e_status"][stat] > 0: c["e_status"][stat] -= 1
 
     c["turn"] += 1
     c["p_block"] = 0
     c["discard_pile"].extend(c["hand"])
     c["hand"] = []
-    c["energy"] = run["max_energy"]
+    c["energy"] = c["max_e"]
     draw_cards(run, 5)
 
 def get_enemy_intent_string(run: Dict) -> str:
@@ -576,15 +502,38 @@ class HandCardButton(Button):
                 view.run["floor"] += 1
                 view.run["next_nodes"] = generate_map_nodes(view.run["floor"])
                 
-                creds = random.randint(15, 30)
-                spire_db[uid_str]["credits"] += creds
+                gold_won = random.randint(15, 30)
+                if view.run["floor"] > 5: gold_won += 50
+                view.run["gold"] += gold_won
+                
                 _save_db()
                 
                 vic_view = RewardView(view.user_id, view.run)
-                vic_embed = view.build_victory_embed(creds, vic_view.choices)
+                vic_embed = view.build_victory_embed(gold_won, vic_view.choices)
                 return await interaction.response.edit_message(embed=vic_embed, view=vic_view)
         
         _save_db()
+        next_embed = view.build_embed()
+        next_view = CombatView(view.user_id, view.run)
+        await interaction.response.edit_message(embed=next_embed, view=next_view)
+
+class PotionSelect(Select):
+    def __init__(self, run: Dict, row: int):
+        options = []
+        for idx, pot_id in enumerate(run["potions"]):
+            pot = POTIONS[pot_id]
+            options.append(SelectOption(label=f"Use {pot['name']}", value=str(idx), description=pot["desc"]))
+        super().__init__(placeholder="Inject Potion...", min_values=1, max_values=1, options=options, row=row)
+
+    async def callback(self, interaction: Interaction):
+        view: CombatView = self.view
+        if interaction.user.id != view.user_id: 
+            return await interaction.response.send_message("Unauthorized.", ephemeral=True)
+            
+        pot_idx = int(self.values[0])
+        use_potion(view.run, pot_idx)
+        _save_db()
+        
         next_embed = view.build_embed()
         next_view = CombatView(view.user_id, view.run)
         await interaction.response.edit_message(embed=next_embed, view=next_view)
@@ -594,9 +543,9 @@ class CombatView(View):
         super().__init__(timeout=600)
         self.user_id = user_id
         self.run = run
-        self.render_hand()
+        self.render_ui()
 
-    def render_hand(self):
+    def render_ui(self):
         c = self.run["combat"]
         current_energy = c["energy"]
         
@@ -605,8 +554,11 @@ class CombatView(View):
 
         for idx, card_id in enumerate(c["hand"][:5]):
             self.add_item(HandCardButton(idx, card_id, 0, current_energy))
+            
+        if self.run["potions"]:
+            self.add_item(PotionSelect(self.run, 1))
         
-        btn = Button(label="End Turn", style=ButtonStyle.success, row=1)
+        btn = Button(label="End Turn", style=ButtonStyle.success, row=2)
         btn.callback = self.end_turn
         self.add_item(btn)
 
@@ -647,12 +599,9 @@ class CombatView(View):
         e_blk = str(c["e_block"])
         
         e_stat = f"**HP:** {e_hp}/{e_max} | **Block:** {e_blk}"
-        if c["e_status"]["vuln"] > 0: 
-            e_stat += f"\n> **Vuln: {c['e_status']['vuln']}** *(DMG Taken x1.5)*"
-        if c["e_status"]["weak"] > 0: 
-            e_stat += f"\n> **Weak: {c['e_status']['weak']}** *(ATK x0.75)*"
-        if c["e_status"]["corrosion"] > 0: 
-            e_stat += f"\n> **Corr: {c['e_status']['corrosion']}** *(Takes true DMG every turn)*"
+        if c["e_status"]["vuln"] > 0: e_stat += f"\n> **Vuln: {c['e_status']['vuln']}** *(DMG Taken x1.5)*"
+        if c["e_status"]["weak"] > 0: e_stat += f"\n> **Weak: {c['e_status']['weak']}** *(ATK x0.75)*"
+        if c["e_status"]["corrosion"] > 0: e_stat += f"\n> **Corr: {c['e_status']['corrosion']}** *(Takes true DMG every turn)*"
             
         i_str = get_enemy_intent_string(self.run)
         embed.add_field(name="Target Entity", value=e_stat + f"\n\n**Intent:** {i_str}", inline=False)
@@ -662,17 +611,14 @@ class CombatView(View):
         p_blk = str(c["p_block"])
         
         nrg = c["energy"]
-        max_nrg = self.run["max_energy"]
+        max_nrg = c["max_e"]
         energy_visual = ("⚡" * nrg) + ("🌑" * (max_nrg - nrg))
         
         p_stat = f"**HP:** {p_hp}/{p_max} | **Block:** {p_blk}\n**Energy:** {energy_visual}"
         
-        if c["p_status"]["str"] > 0: 
-            p_stat += f"\n> **Str: {c['p_status']['str']}** *(+DMG to attacks)*"
-        if c["p_status"]["vuln"] > 0: 
-            p_stat += f"\n> **Vuln: {c['p_status']['vuln']}** *(DMG Taken x1.5)*"
-        if c["p_status"]["weak"] > 0: 
-            p_stat += f"\n> **Weak: {c['p_status']['weak']}** *(ATK x0.75)*"
+        if c["p_status"]["str"] > 0: p_stat += f"\n> **Str: {c['p_status']['str']}** *(+DMG to attacks)*"
+        if c["p_status"]["vuln"] > 0: p_stat += f"\n> **Vuln: {c['p_status']['vuln']}** *(DMG Taken x1.5)*"
+        if c["p_status"]["weak"] > 0: p_stat += f"\n> **Weak: {c['p_status']['weak']}** *(ATK x0.75)*"
             
         embed.add_field(name=f"Operator ({self.run['char']})", value=p_stat, inline=False)
         
@@ -681,20 +627,19 @@ class CombatView(View):
         ansi_log = f"```ansi\n{log_text}\n```"
         embed.add_field(name="System Log", value=ansi_log, inline=False)
         
-        draw_atk = sum(1 for cid in c["draw_pile"] if CARDS[cid]["type"] == "Attack")
-        draw_skl = sum(1 for cid in c["draw_pile"] if CARDS[cid]["type"] == "Skill")
-        draw_pwr = sum(1 for cid in c["draw_pile"] if CARDS[cid]["type"] == "Power")
-        
         d_len = str(len(c["draw_pile"]))
         dis_len = str(len(c["discard_pile"]))
         ex_len = str(len(c["exhaust_pile"]))
         
-        ftr = f"Draw: {d_len} [⚔️ {draw_atk} | 🛡️ {draw_skl} | ⚡ {draw_pwr}] | Disc: {dis_len} | Exh: {ex_len}"
+        relics_str = ", ".join([RELICS[r]["name"] for r in self.run["relics"]]) if self.run["relics"] else "None"
+        embed.add_field(name="Hardware Relics", value=relics_str, inline=False)
+        
+        ftr = f"Draw: {d_len} | Disc: {dis_len} | Exh: {ex_len} | Gold: {self.run['gold']} CR"
         embed.set_footer(text=ftr)
         
         return embed
 
-    def build_victory_embed(self, creds_won: int, choices: List[str] = None) -> discord.Embed:
+    def build_victory_embed(self, gold_won: int, choices: List[str] = None) -> discord.Embed:
         r_hp = str(self.run["hp"])
         r_max = str(self.run["max_hp"])
         
@@ -704,7 +649,7 @@ class CombatView(View):
             color=THEME_HACK
         )
         embed.add_field(name="Integrity", value=f"HP: {r_hp}/{r_max}")
-        embed.add_field(name="Loot", value=f"{creds_won} CR")
+        embed.add_field(name="Loot", value=f"{gold_won} Gold")
         
         if choices:
             r_text = ""
@@ -725,10 +670,8 @@ class RewardView(View):
         self.render_rewards()
 
     def _generate_rewards(self) -> List[str]:
-        pool = []
-        for cid in CARDS.keys():
-            if cid not in ["strike", "defend"]: 
-                pool.append(cid)
+        lvl = get_player_level(str(self.user_id))
+        pool = get_pool("cards", lvl)
         return random.sample(pool, min(3, len(pool)))
 
     def render_rewards(self):
@@ -741,7 +684,7 @@ class RewardView(View):
             btn.callback = self.claim_reward
             self.add_item(btn)
             
-        skip_btn = Button(label="Skip (+10 CR, +5 HP)", style=ButtonStyle.secondary, row=1)
+        skip_btn = Button(label="Skip (+10 Gold, +5 HP)", style=ButtonStyle.secondary, row=1)
         skip_btn.custom_id = "skip_reward"
         skip_btn.callback = self.claim_reward
         self.add_item(skip_btn)
@@ -754,7 +697,7 @@ class RewardView(View):
         cid = interaction.data.get("custom_id")
         
         if cid == "skip_reward":
-            spire_db[uid_str]["credits"] += 10
+            self.run["gold"] += 10
             self.run["hp"] = min(self.run["max_hp"], self.run["hp"] + 5)
         else:
             idx = int(cid.split("_")[1])
@@ -764,8 +707,8 @@ class RewardView(View):
             spire_db[uid_str]["victories"] += 1
             spire_db[uid_str]["sector"] += 1
             spire_db[uid_str]["data_shards"] += 1
+            spire_db[uid_str]["credits"] += self.run["gold"] 
             
-            # Defense Grid snapshot
             best_cards = [c for c in self.run["deck"] if c not in ["strike", "defend"]]
             spire_db[uid_str]["defense_grid"] = best_cards[:5] if best_cards else ["strike"] * 5
             spire_db[uid_str]["last_deck"] = self.run["deck"].copy()
@@ -775,7 +718,7 @@ class RewardView(View):
             
             win_embed = discord.Embed(
                 title="RUN COMPLETE", 
-                description="Megacorp Spire conquered. Sector advanced. Defense Grid updated.", 
+                description=f"Megacorp Spire conquered. Sector advanced. Extracted {self.run['gold']} CR to persistent balance.", 
                 color=THEME_CYAN
             )
             return await interaction.response.edit_message(embed=win_embed, view=None)
@@ -838,6 +781,113 @@ class SafehouseView(View):
         view = MapView(self.user_id, self.run)
         await interaction.response.edit_message(embed=map_embed, view=view)
 
+class MerchantView(View):
+    def __init__(self, user_id: int, run: Dict):
+        super().__init__(timeout=600)
+        self.user_id = user_id
+        self.run = run
+        self._init_shop_data()
+        self.render_shop()
+
+    def _init_shop_data(self):
+        if not self.run.get("shop"):
+            lvl = get_player_level(str(self.user_id))
+            
+            c_pool = get_pool("cards", lvl)
+            r_pool = [r for r in get_pool("relics", lvl) if r not in self.run["relics"]]
+            p_pool = get_pool("potions", lvl)
+            
+            cards = random.sample(c_pool, min(5, len(c_pool)))
+            relics = random.sample(r_pool, min(3, len(r_pool)))
+            potions = random.sample(p_pool, min(3, len(p_pool)))
+            
+            self.run["shop"] = {
+                "cards": [{"id": c, "price": CARDS[c]["cost"] * 20 + 30} for c in cards],
+                "relics": [{"id": r, "price": RELICS[r]["tier"] * 60 + 40} for r in relics],
+                "potions": [{"id": p, "price": POTIONS[p]["tier"] * 25 + 20} for p in potions]
+            }
+
+    def render_shop(self):
+        s = self.run["shop"]
+        
+        if s["cards"]:
+            card_ops = [SelectOption(label=CARDS[x["id"]]["name"], value=f"c_{i}", description=f"{x['price']} Gold | {CARDS[x['id']]['desc']}") for i, x in enumerate(s["cards"])]
+            card_sel = Select(placeholder="Purchase Cards...", options=card_ops, row=0)
+            card_sel.callback = self.buy_item
+            self.add_item(card_sel)
+            
+        if s["relics"]:
+            rel_ops = [SelectOption(label=RELICS[x["id"]]["name"], value=f"r_{i}", description=f"{x['price']} Gold | {RELICS[x['id']]['desc']}") for i, x in enumerate(s["relics"])]
+            rel_sel = Select(placeholder="Purchase Relics...", options=rel_ops, row=1)
+            rel_sel.callback = self.buy_item
+            self.add_item(rel_sel)
+            
+        if s["potions"]:
+            pot_ops = [SelectOption(label=POTIONS[x["id"]]["name"], value=f"p_{i}", description=f"{x['price']} Gold | {POTIONS[x['id']]['desc']}") for i, x in enumerate(s["potions"])]
+            pot_sel = Select(placeholder="Purchase Potions...", options=pot_ops, row=2)
+            pot_sel.callback = self.buy_item
+            self.add_item(pot_sel)
+            
+        leave_btn = Button(label="Leave Shop", style=ButtonStyle.danger, row=3)
+        leave_btn.callback = self.leave_shop
+        self.add_item(leave_btn)
+
+    async def buy_item(self, interaction: Interaction):
+        if interaction.user.id != self.user_id: 
+            return await interaction.response.send_message("Unauthorized.", ephemeral=True)
+            
+        val = interaction.data["values"][0]
+        i_type, idx = val.split("_")[0], int(val.split("_")[1])
+        cat = "cards" if i_type == "c" else "relics" if i_type == "r" else "potions"
+        
+        item_data = self.run["shop"][cat][idx]
+        price = item_data["price"]
+        item_id = item_data["id"]
+        
+        if self.run["gold"] < price:
+            return await interaction.response.send_message("Insufficient Gold.", ephemeral=True)
+            
+        if cat == "potions" and len(self.run["potions"]) >= 3:
+            return await interaction.response.send_message("Potion slots full (Max 3).", ephemeral=True)
+            
+        self.run["gold"] -= price
+        self.run["shop"][cat].pop(idx)
+        
+        if cat == "cards":
+            self.run["deck"].append(item_id)
+        elif cat == "relics":
+            self.run["relics"].append(item_id)
+        elif cat == "potions":
+            self.run["potions"].append(item_id)
+            
+        _save_db()
+        embed = build_shop_embed(self.run)
+        new_view = MerchantView(self.user_id, self.run)
+        await interaction.response.edit_message(embed=embed, view=new_view)
+
+    async def leave_shop(self, interaction: Interaction):
+        if interaction.user.id != self.user_id: return
+        self.run["shop"] = None
+        self.run["floor"] += 1
+        self.run["next_nodes"] = generate_map_nodes(self.run["floor"])
+        _save_db()
+        
+        map_embed = discord.Embed(
+            title="Navigation Matrix", 
+            description="Select your next infiltration vector.", 
+            color=THEME_DARK_PURPLE
+        )
+        view = MapView(self.user_id, self.run)
+        await interaction.response.edit_message(embed=map_embed, view=view)
+
+def build_shop_embed(run: Dict) -> discord.Embed:
+    embed = discord.Embed(
+        title="Black Market Merchant",
+        description=f"**Current Gold:** {run['gold']} CR\n\nTrade your credits for hardware upgrades.",
+        color=THEME_CORP
+    )
+    return embed
+
 class MapView(View):
     def __init__(self, user_id: int, run: Dict):
         super().__init__(timeout=600)
@@ -853,6 +903,8 @@ class MapView(View):
                 btn = Button(label="Black-ICE Node", style=ButtonStyle.danger, emoji="☠️")
             elif n_type == "safehouse":
                 btn = Button(label="Safehouse", style=ButtonStyle.success, emoji="🏕️")
+            elif n_type == "merchant":
+                btn = Button(label="Black Market", style=ButtonStyle.primary, emoji="🛒")
             elif n_type == "boss":
                 btn = Button(label="CEO Executive Suite", style=ButtonStyle.danger, emoji="🏢")
                 
@@ -874,6 +926,10 @@ class MapView(View):
                 color=THEME_CYAN
             )
             view = SafehouseView(self.user_id, self.run)
+            await interaction.response.edit_message(embed=embed, view=view)
+        elif n_type == "merchant":
+            view = MerchantView(self.user_id, self.run)
+            embed = build_shop_embed(self.run)
             await interaction.response.edit_message(embed=embed, view=view)
         else:
             init_combat(self.run, n_type)
@@ -900,7 +956,6 @@ class CharSelectView(View):
         char_name = custom_id.split("_")[1]
         
         uid_str = str(self.user_id)
-        
         init_player(uid_str)
         spire_db[uid_str]["runs"] += 1
         
@@ -932,10 +987,7 @@ class SpireCog(commands.Cog):
         else:
             spire_db = {}
 
-    @discord.slash_command(
-        name="spire", 
-        description="Infiltrate the Megacorp Spire."
-    )
+    @discord.slash_command(name="spire", description="Infiltrate the Megacorp Spire.")
     async def spire(self, ctx: discord.ApplicationContext):
         try:
             uid = str(ctx.author.id)
@@ -947,6 +999,9 @@ class SpireCog(commands.Cog):
                     view = CombatView(ctx.author.id, run)
                     active_embed = view.build_embed()
                     await safe_reply(ctx, embed=active_embed, view=view)
+                elif run.get("shop"):
+                    view = MerchantView(ctx.author.id, run)
+                    await safe_reply(ctx, embed=build_shop_embed(run), view=view)
                 else:
                     view = MapView(ctx.author.id, run)
                     map_embed = discord.Embed(
@@ -956,7 +1011,8 @@ class SpireCog(commands.Cog):
                     )
                     await safe_reply(ctx, embed=map_embed, view=view)
             else:
-                sel_embed = discord.Embed(title="Select Operator", color=THEME_CYAN)
+                lvl = get_player_level(uid)
+                sel_embed = discord.Embed(title="Select Operator", description=f"**Current Sync Level:** {lvl}", color=THEME_CYAN)
                 for name, data in CLASSES.items():
                     c_hp = str(data["hp"])
                     c_desc = str(data["desc"])
@@ -969,10 +1025,7 @@ class SpireCog(commands.Cog):
             traceback.print_exc()
             await safe_reply(ctx, "Error: " + str(e), ephemeral=True)
 
-    @discord.slash_command(
-        name="spire_abandon", 
-        description="Terminate your active run."
-    )
+    @discord.slash_command(name="spire_abandon", description="Terminate your active run.")
     async def spire_abandon(self, ctx: discord.ApplicationContext):
         uid = str(ctx.author.id)
         if uid in spire_db and spire_db[uid].get("active_run"):
@@ -980,138 +1033,6 @@ class SpireCog(commands.Cog):
             await safe_reply(ctx, "Run terminated. Save cleared.")
         else:
             await safe_reply(ctx, "No active run found.", ephemeral=True)
-
-    @discord.slash_command(
-        name="spire_heist", 
-        description="Invade a target network's Defense Grid."
-    )
-    async def spire_heist(
-        self, 
-        ctx: discord.ApplicationContext, 
-        target: Option(discord.Member, description="Target to hack.")
-    ):
-        try:
-            if ctx.author.id == target.id: 
-                msg = "Cannot target own network."
-                return await safe_reply(ctx, msg, ephemeral=True)
-            
-            uid_1 = str(ctx.author.id)
-            uid_2 = str(target.id)
-            
-            u1 = init_player(uid_1)
-            u2 = init_player(uid_2)
-            
-            if u2["runs"] == 0 and u2["sector"] == 1:
-                return await safe_reply(ctx, "Target inactive.", ephemeral=True)
-                
-            if not u1.get("last_deck"):
-                return await safe_reply(ctx, "You must complete a Spire run to establish a deck first.", ephemeral=True)
-            
-            # Defense Grid Auto-Battler Logic
-            def calculate_power(deck: List[str]) -> int:
-                power = 0
-                for cid in deck:
-                    if cid in CARDS:
-                        card = CARDS[cid]
-                        power += card.get("dmg", 0) * 2
-                        power += card.get("blk", 0) * 1.5
-                        power += card.get("cost", 1) * 3
-                return int(power)
-
-            atk_power = calculate_power(random.sample(u1["last_deck"], min(5, len(u1["last_deck"]))))
-            atk_power += (u1.get("sector", 1) * 10) + random.randint(1, 20)
-            
-            def_grid = u2.get("defense_grid", ["strike", "defend"])
-            def_power = calculate_power(def_grid)
-            def_power += (u2.get("sector", 1) * 10) + random.randint(1, 20)
-
-            embed = discord.Embed(title="Shadow-Net Breach", color=THEME_PINK)
-            embed.add_field(name="Attacker Logic", value=f"Power Rating: {atk_power}")
-            embed.add_field(name="Defender Grid", value=f"Power Rating: {def_power}")
-            
-            if atk_power > def_power:
-                stolen = int(u2["credits"] * 0.15)
-                u2["credits"] -= stolen
-                u1["credits"] += stolen + u2["bounty"]
-                u1["kills"] += 1
-                u2["deaths"] += 1
-                
-                msg = f"{ctx.author.display_name} breached {target.display_name}'s grid.\n\nStolen: {stolen} CR"
-                if u2["bounty"] > 0:
-                    msg += f"\nBounty Claimed: {u2['bounty']} CR"
-                u2["bounty"] = 0
-                
-                embed.description = msg
-                embed.color = THEME_HACK
-            else:
-                stolen = int(u1["credits"] * 0.15)
-                u1["credits"] -= stolen
-                u2["credits"] += stolen
-                u2["kills"] += 1
-                u1["deaths"] += 1
-                
-                msg = f"{ctx.author.display_name} was isolated by {target.display_name}'s Defense Grid.\n\nLost: {stolen} CR\nConnection severed."
-                
-                embed.description = msg
-                embed.color = THEME_PINK
-
-            _save_db()
-            await safe_reply(ctx, embed=embed)
-        except Exception as e:
-            await safe_reply(ctx, "Error: " + str(e), ephemeral=True)
-
-    @discord.slash_command(
-        name="spire_bounty", 
-        description="Place a hit on a rival."
-    )
-    async def spire_bounty(
-        self, 
-        ctx: discord.ApplicationContext, 
-        target: Option(discord.Member, description="Target player"), 
-        amount: Option(int, description="Credits to place on bounty")
-    ):
-        if amount <= 0: 
-            return await safe_reply(ctx, "Must be > 0.", ephemeral=True)
-        
-        u1 = init_player(str(ctx.author.id))
-        if u1["credits"] < amount: 
-            return await safe_reply(ctx, "Insufficient funds.", ephemeral=True)
-            
-        u2 = init_player(str(target.id))
-        u1["credits"] -= amount
-        u2["bounty"] += amount
-        _save_db()
-        
-        b_embed = discord.Embed(
-            title="Contract Issued", 
-            description=f"Bounty of {amount} CR placed on {target.display_name}.", 
-            color=THEME_CORP
-        )
-        await safe_reply(ctx, embed=b_embed)
-
-    @discord.slash_command(
-        name="spire_board", 
-        description="View the Shadow-Net Leaderboard."
-    )
-    async def spire_board(self, ctx: discord.ApplicationContext):
-        p_list = [(uid, data) for uid, data in spire_db.items() if isinstance(data, dict)]
-                
-        if not p_list: 
-            return await safe_reply(ctx, "No data.", ephemeral=True)
-        
-        embed = discord.Embed(title="The Shadow-Net", color=THEME_CYAN)
-        
-        top_inf = sorted(p_list, key=lambda x: x[1].get("sector", 0), reverse=True)[:5]
-        i_lines = [f"<@{u}>: Sector {d.get('sector', 0)}" for u, d in top_inf]
-        inf_str = "\n".join(i_lines) if i_lines else "None"
-        
-        top_hack = sorted(p_list, key=lambda x: x[1].get("kills", 0), reverse=True)[:5]
-        h_lines = [f"<@{u}>: {d.get('kills', 0)} Hacks" for u, d in top_hack if d.get("kills", 0) > 0]
-        hack_str = "\n".join(h_lines) if h_lines else "None"
-        
-        embed.add_field(name="Top Infiltrators", value=inf_str, inline=False)
-        embed.add_field(name="Apex Hackers", value=hack_str, inline=False)
-        await safe_reply(ctx, embed=embed)
 
 def setup(bot):
     bot.add_cog(SpireCog(bot))
