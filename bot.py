@@ -27,7 +27,6 @@ cogs_list = [
     "cogs.audit_logs",
     "cogs.tts",
     "cogs.tracker",
-    "cogs.oracle" # Added ShadowSyn Oracle integration
 ]
 
 for cog in cogs_list:
