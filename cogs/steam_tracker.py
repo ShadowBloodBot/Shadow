@@ -12,18 +12,17 @@ from discord.ext import commands, tasks
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | [ShadowSyn] %(levelname)s | %(message)s",
-    handlers=[logging.StreamHandler()]  # Strictly stdout, no local .log files
+    handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger("ShadowSyn.SteamTracker")
 
-# Railway stateless compliance: Persistent storage must target the mounted volume
 PERSIST_PATH = os.getenv("PERSIST_PATH", "/data")
 STEAM_STATE_FILE = os.path.join(PERSIST_PATH, "steam_releases.json")
 STEAM_TEMP_FILE = os.path.join(PERSIST_PATH, "steam_releases.tmp")
 
-# Standardized UX
 SHADOWSYN_COLOR = discord.Color(0x2B0B35)
 STEAM_API_URL = "https://store.steampowered.com/api/featuredcategories"
+STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
 
 # ==============================================================================
 # CORE COG ARCHITECTURE: STEAM RELEASES TRACKER
@@ -33,11 +32,9 @@ class SteamReleasesTracker(discord.Cog):
         self.bot = bot
         self.session = None
         
-        # In-memory state tracking
-        self.targets = []      # List of Channel/Thread IDs to post in
-        self.seen_apps = []    # List of recently posted App IDs to prevent duplicates
+        self.targets = {}      # Dictionary tracking {channel_id_str: genre_filter_str_or_None}
+        self.seen_apps = []    
         
-        # Initialize architecture
         self._ensure_persist_dir()
         self._load_state()
         self.release_scanner.start()
@@ -64,25 +61,32 @@ class SteamReleasesTracker(discord.Cog):
             try:
                 with open(STEAM_STATE_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    self.targets = data.get("targets", [])
+                    
+                    raw_targets = data.get("targets", {})
+                    # ZERO-REGRESSION: Seamlessly migrate legacy list architecture to the new dictionary structure
+                    if isinstance(raw_targets, list):
+                        self.targets = {str(t): None for t in raw_targets}
+                        self._save_state() 
+                    else:
+                        self.targets = raw_targets
+                        
                     self.seen_apps = data.get("seen_apps", [])
                 logger.info(f"Loaded {len(self.targets)} targets and {len(self.seen_apps)} seen apps.")
             except Exception as e:
                 logger.error(f"Corruption detected in {STEAM_STATE_FILE}, starting fresh. Error: {e}")
-                self.targets = []
+                self.targets = {}
                 self.seen_apps = []
         else:
             logger.info("No existing Steam state file found. Initializing empty state.")
-            self.targets = []
+            self.targets = {}
             self.seen_apps = []
 
     def _save_state(self):
         data = {
             "targets": self.targets,
-            "seen_apps": self.seen_apps[-1000:]  # Cap at 1000 to prevent unbounded memory scaling
+            "seen_apps": self.seen_apps[-1000:]  
         }
         try:
-            # Atomic save: Write to temp, then replace
             with open(STEAM_TEMP_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4)
             os.replace(STEAM_TEMP_FILE, STEAM_STATE_FILE)
@@ -96,13 +100,14 @@ class SteamReleasesTracker(discord.Cog):
     @tasks.loop(minutes=30)
     async def release_scanner(self):
         if not self.targets:
-            return  # No point querying API if we have zero configured output channels
+            return  
 
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
 
         try:
-            async with self.session.get(STEAM_API_URL, timeout=15) as response:
+            # Injecting 'cc=au' enforces localized Australian (AUD) response metrics regardless of container IP
+            async with self.session.get(f"{STEAM_API_URL}?cc=au", timeout=15) as response:
                 if response.status != 200:
                     logger.warning(f"Steam API returned non-200 status: {response.status}")
                     return
@@ -111,9 +116,8 @@ class SteamReleasesTracker(discord.Cog):
                 
         except Exception as e:
             logger.error(f"Network failure while fetching Steam API: {e}")
-            return # Silent fail on network errors, will retry next loop iteration
+            return 
 
-        # Safely extract new releases
         new_releases = data.get("new_releases", {}).get("items", [])
         new_items_found = False
 
@@ -122,11 +126,33 @@ class SteamReleasesTracker(discord.Cog):
             if not app_id or app_id in self.seen_apps:
                 continue
 
-            # App is newly discovered
             self.seen_apps.append(app_id)
             new_items_found = True
             
+            # Secondary API Fetch: Required to extract genre arrays and precise AUD overrides
+            try:
+                async with self.session.get(f"{STEAM_APP_DETAILS_URL}?appids={app_id}&cc=au", timeout=15) as detail_res:
+                    if detail_res.status == 200:
+                        detail_data = await detail_res.json()
+                        app_data = detail_data.get(str(app_id), {}).get("data")
+                        
+                        if app_data:
+                            price_overview = app_data.get("price_overview")
+                            if price_overview:
+                                item["final_price"] = price_overview.get("final")
+                                item["currency"] = price_overview.get("currency")
+                            elif app_data.get("is_free"):
+                                item["final_price"] = 0
+                                item["currency"] = "AUD"
+                            
+                            genres = [g.get("description") for g in app_data.get("genres", [])]
+                            item["genres"] = genres
+            except Exception as e:
+                logger.error(f"Failed secondary appdetails fetch for {app_id}: {e}")
+                item["genres"] = [] 
+            
             await self._dispatch_release(item)
+            await asyncio.sleep(1.5)  # Throttling to prevent secondary endpoint rate-limiting
 
         if new_items_found:
             self._save_state()
@@ -144,10 +170,10 @@ class SteamReleasesTracker(discord.Cog):
         name = item.get("name", "Unknown Title")
         store_url = f"https://store.steampowered.com/app/{app_id}/"
         image_url = item.get("header_image")
+        genres = item.get("genres", [])
         
-        # Price formatting
         price_cents = item.get("final_price", 0)
-        currency = item.get("currency", "USD")
+        currency = item.get("currency", "AUD")
         if price_cents == 0:
             price_str = "Free / TBD"
         else:
@@ -163,11 +189,22 @@ class SteamReleasesTracker(discord.Cog):
         
         embed.add_field(name="Price", value=price_str, inline=True)
         embed.add_field(name="Platforms", value=self._format_platforms(item), inline=True)
+        
+        if genres:
+            embed.add_field(name="Genres", value=", ".join(genres[:5]), inline=False)
+            
         embed.set_footer(text=f"App ID: {app_id} | ShadowSyn Network")
 
-        # Fan out to all registered targets
         targets_to_remove = []
-        for target_id in self.targets:
+        for target_id_str, genre_filter in self.targets.items():
+            target_id = int(target_id_str)
+            
+            # Logic Gate: Drop payload if genre filter exists and no match is found
+            if genre_filter and genres:
+                match_found = any(genre_filter.lower() in g.lower() for g in genres)
+                if not match_found:
+                    continue
+
             try:
                 channel = self.bot.get_channel(target_id)
                 if not channel:
@@ -176,18 +213,17 @@ class SteamReleasesTracker(discord.Cog):
                 await channel.send(embed=embed)
             except discord.Forbidden:
                 logger.warning(f"Missing permissions for target {target_id}. Scheduling removal.")
-                targets_to_remove.append(target_id)
+                targets_to_remove.append(target_id_str)
             except discord.NotFound:
                 logger.warning(f"Target {target_id} no longer exists. Scheduling removal.")
-                targets_to_remove.append(target_id)
+                targets_to_remove.append(target_id_str)
             except Exception as e:
                 logger.error(f"Failed to dispatch to {target_id}: {e}")
 
-        # Cleanup dead targets to prevent memory/API waste
         if targets_to_remove:
             for t in targets_to_remove:
                 if t in self.targets:
-                    self.targets.remove(t)
+                    del self.targets[t]
             self._save_state()
 
     def _format_platforms(self, item: dict) -> str:
@@ -207,33 +243,37 @@ class SteamReleasesTracker(discord.Cog):
     )
 
     @steam_admin.command(name="register_thread", description="Bind Steam new releases feed to the current channel or thread.")
-    async def register_thread(self, ctx: discord.ApplicationContext):
-        target_id = ctx.channel.id
+    async def register_thread(
+        self, 
+        ctx: discord.ApplicationContext,
+        genre_filter: discord.Option(str, "Optional: Only post games containing this genre (e.g., RPG, Shooter)", required=False, default=None)
+    ):
+        target_id = str(ctx.channel.id)
         
-        if target_id in self.targets:
-            await ctx.respond("This thread/channel is already registered for Steam releases.", ephemeral=True)
-            return
-
-        self.targets.append(target_id)
+        self.targets[target_id] = genre_filter
         self._save_state()
         
+        msg = f"✅ Steam New Releases will now be routed to <#{target_id}>."
+        if genre_filter:
+            msg += f"\n🎯 Genre Filter Active: **{genre_filter}**"
+            
         embed = discord.Embed(
             title="System Bound",
-            description=f"✅ Steam New Releases will now be routed to <#{target_id}>.",
+            description=msg,
             color=SHADOWSYN_COLOR
         )
         await ctx.respond(embed=embed, ephemeral=True)
-        logger.info(f"Target {target_id} bound to Steam tracking by {ctx.author}.")
+        logger.info(f"Target {target_id} bound to Steam tracking. Filter: {genre_filter}")
 
     @steam_admin.command(name="unregister_thread", description="Unbind Steam new releases feed from the current channel or thread.")
     async def unregister_thread(self, ctx: discord.ApplicationContext):
-        target_id = ctx.channel.id
+        target_id = str(ctx.channel.id)
         
         if target_id not in self.targets:
             await ctx.respond("This thread/channel is not currently registered.", ephemeral=True)
             return
 
-        self.targets.remove(target_id)
+        del self.targets[target_id]
         self._save_state()
         
         embed = discord.Embed(
@@ -244,6 +284,26 @@ class SteamReleasesTracker(discord.Cog):
         await ctx.respond(embed=embed, ephemeral=True)
         logger.info(f"Target {target_id} unbound from Steam tracking by {ctx.author}.")
 
+    @steam_admin.command(name="test", description="Send a dummy Steam release to test thread permissions.")
+    async def test_steam(self, ctx: discord.ApplicationContext):
+        if not self.targets:
+            return await ctx.respond("❌ No threads registered. Run `/steam register_thread` first.", ephemeral=True)
+
+        await ctx.respond("🚀 Firing test transmission to all registered targets...", ephemeral=True)
+        
+        dummy_item = {
+            "id": 400,
+            "name": "Portal (System Test)",
+            "header_image": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/400/header.jpg",
+            "final_price": 1450,
+            "currency": "AUD",
+            "windows_available": True,
+            "mac_available": True,
+            "linux_available": True,
+            "genres": ["Action", "Puzzle", "Sci-Fi"]
+        }
+        
+        await self._dispatch_release(dummy_item)
 
 # ==============================================================================
 # ENTRY POINT
@@ -252,7 +312,6 @@ def setup(bot: discord.Bot):
     bot.add_cog(SteamReleasesTracker(bot))
 
 if __name__ == "__main__":
-    # Provides fully runnable standalone execution if initialized directly
     bot = discord.Bot(intents=discord.Intents.default())
     setup(bot)
     
