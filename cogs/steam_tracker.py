@@ -32,7 +32,7 @@ class SteamReleasesTracker(discord.Cog):
         self.bot = bot
         self.session = None
         
-        self.targets = {}      # Dictionary tracking {channel_id_str: genre_filter_str_or_None}
+        self.targets = {}      # Dictionary tracking {channel_id_str: filter_string_or_None}
         self.seen_apps = []    
         
         self._ensure_persist_dir()
@@ -63,7 +63,6 @@ class SteamReleasesTracker(discord.Cog):
                     data = json.load(f)
                     
                     raw_targets = data.get("targets", {})
-                    # ZERO-REGRESSION: Seamlessly migrate legacy list architecture to the new dictionary structure
                     if isinstance(raw_targets, list):
                         self.targets = {str(t): None for t in raw_targets}
                         self._save_state() 
@@ -106,7 +105,6 @@ class SteamReleasesTracker(discord.Cog):
             self.session = aiohttp.ClientSession()
 
         try:
-            # Injecting 'cc=au' enforces localized Australian (AUD) response metrics regardless of container IP
             async with self.session.get(f"{STEAM_API_URL}?cc=au", timeout=15) as response:
                 if response.status != 200:
                     logger.warning(f"Steam API returned non-200 status: {response.status}")
@@ -129,7 +127,10 @@ class SteamReleasesTracker(discord.Cog):
             self.seen_apps.append(app_id)
             new_items_found = True
             
-            # Secondary API Fetch: Required to extract genre arrays and precise AUD overrides
+            # Initialize classification arrays
+            item["genres"] = []
+            item["categories"] = []
+
             try:
                 async with self.session.get(f"{STEAM_APP_DETAILS_URL}?appids={app_id}&cc=au", timeout=15) as detail_res:
                     if detail_res.status == 200:
@@ -137,6 +138,7 @@ class SteamReleasesTracker(discord.Cog):
                         app_data = detail_data.get(str(app_id), {}).get("data")
                         
                         if app_data:
+                            # Extract explicit currency information
                             price_overview = app_data.get("price_overview")
                             if price_overview:
                                 item["final_price"] = price_overview.get("final")
@@ -145,14 +147,14 @@ class SteamReleasesTracker(discord.Cog):
                                 item["final_price"] = 0
                                 item["currency"] = "AUD"
                             
-                            genres = [g.get("description") for g in app_data.get("genres", [])]
-                            item["genres"] = genres
+                            # Extract primary classification metadata arrays
+                            item["genres"] = [g.get("description", "") for g in app_data.get("genres", [])]
+                            item["categories"] = [c.get("description", "") for c in app_data.get("categories", [])]
             except Exception as e:
                 logger.error(f"Failed secondary appdetails fetch for {app_id}: {e}")
-                item["genres"] = [] 
             
             await self._dispatch_release(item)
-            await asyncio.sleep(1.5)  # Throttling to prevent secondary endpoint rate-limiting
+            await asyncio.sleep(1.5)  # Throttling metric to stay within API bounds
 
         if new_items_found:
             self._save_state()
@@ -170,8 +172,13 @@ class SteamReleasesTracker(discord.Cog):
         name = item.get("name", "Unknown Title")
         store_url = f"https://store.steampowered.com/app/{app_id}/"
         image_url = item.get("header_image")
-        genres = item.get("genres", [])
         
+        genres = item.get("genres", [])
+        categories = item.get("categories", [])
+        
+        # Merge both metadata datasets to evaluate user taxonomy filters accurately
+        combined_metadata = [meta.lower() for meta in (genres + categories) if meta]
+
         price_cents = item.get("final_price", 0)
         currency = item.get("currency", "AUD")
         if price_cents == 0:
@@ -192,16 +199,19 @@ class SteamReleasesTracker(discord.Cog):
         
         if genres:
             embed.add_field(name="Genres", value=", ".join(genres[:5]), inline=False)
+        if categories:
+            # Displays things like Single-player, Multi-player, Co-op, Full controller support
+            embed.add_field(name="Features", value=", ".join(categories[:5]), inline=False)
             
         embed.set_footer(text=f"App ID: {app_id} | ShadowSyn Network")
 
         targets_to_remove = []
-        for target_id_str, genre_filter in self.targets.items():
+        for target_id_str, metadata_filter in self.targets.items():
             target_id = int(target_id_str)
             
-            # Logic Gate: Drop payload if genre filter exists and no match is found
-            if genre_filter and genres:
-                match_found = any(genre_filter.lower() in g.lower() for g in genres)
+            # Logic Gate: Validate combined taxonomy metadata before routing payload
+            if metadata_filter:
+                match_found = any(metadata_filter.lower() in meta for meta in combined_metadata)
                 if not match_found:
                     continue
 
@@ -246,7 +256,7 @@ class SteamReleasesTracker(discord.Cog):
     async def register_thread(
         self, 
         ctx: discord.ApplicationContext,
-        genre_filter: discord.Option(str, "Optional: Only post games containing this genre (e.g., RPG, Shooter)", required=False, default=None)
+        genre_filter: discord.Option(str, "Optional: Filter by genre or feature (e.g., RPG, Co-op, Action, Single-player)", required=False, default=None)
     ):
         target_id = str(ctx.channel.id)
         
@@ -255,7 +265,7 @@ class SteamReleasesTracker(discord.Cog):
         
         msg = f"✅ Steam New Releases will now be routed to <#{target_id}>."
         if genre_filter:
-            msg += f"\n🎯 Genre Filter Active: **{genre_filter}**"
+            msg += f"\n🎯 Metadata Filter Active: **{genre_filter}**"
             
         embed = discord.Embed(
             title="System Bound",
@@ -300,7 +310,8 @@ class SteamReleasesTracker(discord.Cog):
             "windows_available": True,
             "mac_available": True,
             "linux_available": True,
-            "genres": ["Action", "Puzzle", "Sci-Fi"]
+            "genres": ["Action", "Puzzle", "Sci-Fi"],
+            "categories": ["Single-player", "Co-op", "Full controller support"]
         }
         
         await self._dispatch_release(dummy_item)
