@@ -27,6 +27,7 @@ cogs_list = [
     "cogs.audit_logs",
     "cogs.tts",
     "cogs.tracker",
+    "cogs.steam_tracker",
 ]
 
 for cog in cogs_list:
