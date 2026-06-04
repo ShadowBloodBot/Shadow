@@ -200,7 +200,6 @@ class SteamReleasesTracker(discord.Cog):
         if genres:
             embed.add_field(name="Genres", value=", ".join(genres[:5]), inline=False)
         if categories:
-            # Displays things like Single-player, Multi-player, Co-op, Full controller support
             embed.add_field(name="Features", value=", ".join(categories[:5]), inline=False)
             
         embed.set_footer(text=f"App ID: {app_id} | ShadowSyn Network")
@@ -211,7 +210,15 @@ class SteamReleasesTracker(discord.Cog):
             
             # Logic Gate: Validate combined taxonomy metadata before routing payload
             if metadata_filter:
-                match_found = any(metadata_filter.lower() in meta for meta in combined_metadata)
+                # Split the user's input by commas to allow multi-tag targeting
+                required_tags = [tag.strip().lower() for tag in metadata_filter.split(",")]
+                
+                # Verify that ALL required tags exist in the game's metadata
+                match_found = all(
+                    any(req_tag in meta for meta in combined_metadata)
+                    for req_tag in required_tags
+                )
+                
                 if not match_found:
                     continue
 
@@ -256,7 +263,7 @@ class SteamReleasesTracker(discord.Cog):
     async def register_thread(
         self, 
         ctx: discord.ApplicationContext,
-        genre_filter: discord.Option(str, "Optional: Filter by genre or feature (e.g., RPG, Co-op, Action, Single-player)", required=False, default=None)
+        genre_filter: discord.Option(str, "Filter by genre/feature (e.g., Survival, Co-op, PvP)", required=False, default=None)
     ):
         target_id = str(ctx.channel.id)
         
@@ -303,15 +310,15 @@ class SteamReleasesTracker(discord.Cog):
         
         dummy_item = {
             "id": 400,
-            "name": "Portal (System Test)",
+            "name": "ShadowSyn Tracker (System Test)",
             "header_image": "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/400/header.jpg",
-            "final_price": 1450,
+            "final_price": 2999,
             "currency": "AUD",
             "windows_available": True,
             "mac_available": True,
-            "linux_available": True,
-            "genres": ["Action", "Puzzle", "Sci-Fi"],
-            "categories": ["Single-player", "Co-op", "Full controller support"]
+            "linux_available": False,
+            "genres": ["Action", "Survival", "Indie"],
+            "categories": ["Co-op", "Multi-player", "PvP"]
         }
         
         await self._dispatch_release(dummy_item)
