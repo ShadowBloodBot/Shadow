@@ -26,3 +26,6 @@ COPY . .
 
 # ---- Start the bot
 CMD ["python", "-u", "bot.py"]
+
+RUN playwright install chromium
+RUN playwright install-deps chromium
