@@ -7,7 +7,7 @@ from typing import Set
 
 import discord
 from discord import ButtonStyle, SelectOption, Interaction
-from discord.ui import View, Button, Modal, TextInput, Select
+from discord.ui import View, Button, Modal, TextInput, Select, RoleSelect
 from discord.ext import commands
 from discord.utils import get
 
@@ -77,20 +77,23 @@ class KickMemberView(View):
     def __init__(self, vc, members):
         super().__init__(timeout=30); self.add_item(KickMemberDropdown(vc, members))
 
-class DynamicRoleRestrictSelect(Select):
-    def __init__(self, vc, creator, guild):
+class DynamicRoleRestrictSelect(RoleSelect):
+    def __init__(self, vc, creator):
         self.vc = vc
         self.creator = creator
-        options = [SelectOption(label="Everyone (default)", value="everyone")]
-        # Dynamically fetch roles at the time of invocation
-        roles = sorted([r for r in guild.roles if r != guild.default_role and not r.managed], key=lambda r: r.position, reverse=True)[:24]
-        for r in roles: options.append(SelectOption(label=(r.name or "Role")[:100], value=str(r.id)))
-        super().__init__(placeholder="Select a role to restrict...", options=options, min_values=1, max_values=1, custom_id="dynamic_restrict_role_select")
+        super().__init__(placeholder="Search and select any server role...", min_values=1, max_values=1, custom_id="dynamic_restrict_role_select")
 
     async def callback(self, interaction: Interaction):
         if interaction.user.id != self.creator.id: return await interaction.response.send_message("🚫 Only creator.", ephemeral=True)
         try:
-            if self.values[0] == "everyone":
+            # Pycord values can be Objects or IDs depending on state; handling both to be bulletproof
+            val = self.values[0]
+            role = val if isinstance(val, discord.Role) else interaction.guild.get_role(int(val))
+            
+            if not role:
+                return await interaction.response.send_message("⚠️ Role not found.", ephemeral=True)
+
+            if role == interaction.guild.default_role:
                 await self.vc.set_permissions(interaction.guild.default_role, connect=None)
                 if self.vc.category:
                     for target, overwrite in self.vc.category.overwrites.items():
@@ -98,24 +101,22 @@ class DynamicRoleRestrictSelect(Select):
                             await self.vc.set_permissions(target, connect=None)
                 await interaction.response.send_message("✅ Restriction cleared.", ephemeral=True)
             else:
-                role = interaction.guild.get_role(int(self.values[0]))
-                if role:
-                    await self.vc.set_permissions(interaction.guild.default_role, connect=False)
-                    await self.vc.set_permissions(role, connect=True); await self.vc.set_permissions(self.creator, connect=True)
-                    for oid in MASTER_OWNERS:
-                        owner = interaction.guild.get_member(oid)
-                        if owner: await self.vc.set_permissions(owner, connect=True)
-                    if self.vc.category:
-                        for target, overwrite in self.vc.category.overwrites.items():
-                            if isinstance(target, discord.Role) and target != interaction.guild.default_role and target.id != role.id and not target.permissions.administrator:
-                                await self.vc.set_permissions(target, connect=False)
-                    await interaction.response.send_message(f"🔐 Restricted to {role.name}.", ephemeral=True)
+                await self.vc.set_permissions(interaction.guild.default_role, connect=False)
+                await self.vc.set_permissions(role, connect=True); await self.vc.set_permissions(self.creator, connect=True)
+                for oid in MASTER_OWNERS:
+                    owner = interaction.guild.get_member(oid)
+                    if owner: await self.vc.set_permissions(owner, connect=True)
+                if self.vc.category:
+                    for target, overwrite in self.vc.category.overwrites.items():
+                        if isinstance(target, discord.Role) and target != interaction.guild.default_role and target.id != role.id and not target.permissions.administrator:
+                            await self.vc.set_permissions(target, connect=False)
+                await interaction.response.send_message(f"🔐 Restricted to {role.name}.", ephemeral=True)
         except Exception as e: await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
 
 class DynamicRoleRestrictView(View):
-    def __init__(self, vc, creator, guild):
+    def __init__(self, vc, creator):
         super().__init__(timeout=60)
-        self.add_item(DynamicRoleRestrictSelect(vc, creator, guild))
+        self.add_item(DynamicRoleRestrictSelect(vc, creator))
 
 class VCControlPanel(View):
     def __init__(self, vc, creator):
@@ -155,7 +156,7 @@ class VCControlPanel(View):
     @discord.ui.button(label="🛡️ Restrict", style=ButtonStyle.primary, custom_id="restrict_vc_btn")
     async def restrict(self, button, i):
         if not await self._check(i): return
-        await i.response.send_message("Select a role to restrict this VC to:", view=DynamicRoleRestrictView(self.vc, self.creator, i.guild), ephemeral=True)
+        await i.response.send_message("Select a role to restrict this VC to:", view=DynamicRoleRestrictView(self.vc, self.creator), ephemeral=True)
 
     @discord.ui.button(label="❌ Delete", style=ButtonStyle.red, custom_id="delete_vc")
     async def delete(self, button, i):
@@ -165,7 +166,7 @@ class VCControlPanel(View):
     @discord.ui.button(label="✏️ Rename", style=ButtonStyle.blurple, custom_id="rename_vc")
     async def rename(self, button, i):
         if not await self._check(i): return
-        await i.response.send_message("Please submit the new name.", view=None, ephemeral=True) # Send modal requires no deferring prior, ensuring safe invocation
+        await i.response.send_message("Please submit the new name.", view=None, ephemeral=True)
         await i.response.send_modal(VCNameModal(self.vc))
         
     @discord.ui.button(label="👢 Kick", style=ButtonStyle.gray, custom_id="kick_members")
