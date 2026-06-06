@@ -1,211 +1,478 @@
-# cogs/tts.py
+# cogs/jtc.py
 import os
+import json
 import asyncio
-import uuid
-import shutil
 from pathlib import Path
+from typing import Dict
 
 import discord
+from discord import ButtonStyle, SelectOption, Interaction
+from discord.ui import View, Button, Modal, TextInput, Select
 from discord.ext import commands
-from discord import Option, OptionChoice
-from gtts import gTTS
-from deep_translator import GoogleTranslator
+from discord.utils import get
 
 # --- CONSTANTS ---
-THEME_PRIMARY      = 0x2B0B35
-TTS_ROLE_ID        = 955600320287887400
-MAX_TEXT_LENGTH    = 250   # Protects against mega-spam timeouts
-AUTO_LEAVE_TIMEOUT = 120   # Leaves VC after 2 minutes of silence
+THEME_PRIMARY             = 0x2B0B35
+ROLE_ADMIN_ID             = 1214794734770323466
+MASTER_OWNERS             = [132451058961219584, 482463400929263627]
+ADMIN_ROLE_NAME           = "SHADOW"
+JOIN_TO_CREATE_CHANNEL_ID = 1398618132788281364
+VC_CATEGORY_ID            = 908659586536468542
+VC_DEFAULT_BITRATE        = 64000
 
-TEMP_AUDIO_DIR = Path("temp_audio")
+# --- PERSISTENCE ---
+PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve()
+try:
+    PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
+except Exception:
+    PERSIST_ROOT = Path(".").resolve()
 
-# --- LANGUAGE CONFIGURATION ---
-TTS_LANGUAGES = [
-    OptionChoice(name="English (US)",          value="en"),
-    OptionChoice(name="English (Australian)",  value="au"),
-    OptionChoice(name="English (UK)",          value="uk"),
-    OptionChoice(name="Spanish",               value="es"),
-    OptionChoice(name="French",                value="fr"),
-    OptionChoice(name="German",                value="de"),
-    OptionChoice(name="Italian",               value="it"),
-    OptionChoice(name="Japanese",              value="ja"),
-    OptionChoice(name="Korean",                value="ko"),
-    OptionChoice(name="Russian",               value="ru"),
-]
+ACTIVE_VCS_STORE = PERSIST_ROOT / "active_vcs.json"
 
-def has_tts_role(user):
-    if not isinstance(user, discord.Member): return False
-    return any(r.id == TTS_ROLE_ID for r in user.roles)
+def _atomic_write(file_path: Path, data):
+    try:
+        content  = json.dumps(data, indent=2)
+        tmp_path = file_path.with_suffix(".tmp")
+        tmp_path.write_text(content, encoding="utf-8")
+        tmp_path.replace(file_path)
+    except Exception as e:
+        print(f"⚠️ Persistence Error [{file_path.name}]: {e}")
 
-
-class TTSCog(commands.Cog):
-    def __init__(self, bot):
-        self.bot          = bot
-        self.leave_timer  = None         # asyncio.Task — AFK disconnect timer
-        self.queue        = asyncio.Queue()  # pending TTS items
-        self.queue_worker = None         # asyncio.Task — sequential playback worker
-        self._startup_cleanup()
-
-    # -------------------------------------------------------------------------
-    # 🧹 GARBAGE COLLECTOR: Wipes old temp files on boot
-    # -------------------------------------------------------------------------
-    def _startup_cleanup(self):
-        if TEMP_AUDIO_DIR.exists():
-            try:
-                shutil.rmtree(TEMP_AUDIO_DIR)
-                print("🧹 Cleared leftover TTS audio files.")
-            except Exception as e:
-                print(f"⚠️ Failed to clean temp dir: {e}")
-        TEMP_AUDIO_DIR.mkdir(exist_ok=True)
-
-    # -------------------------------------------------------------------------
-    # ⏳ AUTO-DISCONNECT: fires after queue empties and silence timeout elapses
-    # -------------------------------------------------------------------------
-    async def _schedule_leave(self, guild):
-        await asyncio.sleep(AUTO_LEAVE_TIMEOUT)
-        vc = guild.voice_client
-        if vc and vc.is_connected() and not vc.is_playing():
-            await vc.disconnect()
-            print(f"👋 Auto-disconnected from {guild.name} due to inactivity.")
-
-    # -------------------------------------------------------------------------
-    # 🎵 QUEUE WORKER: processes TTS clips one at a time, never overlapping
-    # -------------------------------------------------------------------------
-    async def _queue_worker(self, guild: discord.Guild):
+def _load_active_vcs() -> Dict[int, int]:
+    """
+    Load {channel_id: creator_id}.
+    Handles migration from the old list-of-ints format automatically.
+    """
+    if ACTIVE_VCS_STORE.exists():
         try:
-            while not self.queue.empty():
-                source, file_path = await self.queue.get()
+            data = json.loads(ACTIVE_VCS_STORE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                print("⚠️ JTC: Migrating active_vcs.json from old list format.")
+                return {int(cid): 0 for cid in data}
+            elif isinstance(data, dict):
+                return {int(k): v for k, v in data.items()}
+        except Exception as e:
+            print(f"⚠️ JTC: Failed to load active VCs — starting fresh: {e}")
+    return {}
 
-                vc = guild.voice_client
-                if not vc or not vc.is_connected():
-                    _safe_delete(file_path)
+def _save_active_vcs(vcs: Dict[int, int]) -> None:
+    _atomic_write(ACTIVE_VCS_STORE, {str(k): v for k, v in vcs.items()})
+
+# --- HELPERS ---
+def _to_sans_bold_italic(text: str) -> str:
+    _map = {
+        "A": "𝘼", "B": "𝘽", "C": "𝘾", "D": "𝘿", "E": "𝙀", "F": "𝙁", "G": "𝙂",
+        "H": "𝙃", "I": "𝙄", "J": "𝙅", "K": "𝙆", "L": "𝙇", "M": "𝙈", "N": "𝙉",
+        "O": "𝙊", "P": "𝙋", "Q": "𝙌", "R": "𝙍", "S": "𝙎", "T": "𝙏", "U": "𝙐",
+        "V": "𝙑", "W": "𝙒", "X": "𝙓", "Y": "𝙔", "Z": "𝙕", "a": "𝙖", "b": "𝙗",
+        "c": "𝙘", "d": "𝙙", "e": "𝙚", "f": "𝙛", "g": "𝙜", "h": "𝙝", "i": "𝙞",
+        "j": "𝙟", "k": "𝙠", "l": "𝙡", "m": "𝙢", "n": "𝙣", "o": "𝙤", "p": "𝙥",
+        "q": "𝙦", "r": "𝙧", "s": "s",  "t": "𝙩", "u": "𝙪", "v": "𝙫", "w": "𝙬",
+        "x": "𝙭", "y": "𝙮", "z": "𝙯"
+    }
+    return "".join(_map.get(ch, ch) for ch in text)
+
+def _limit_channel_name(name: str, limit: int = 100) -> str:
+    return name[:limit] if len(name) > limit else name
+
+# =============================================================================
+# UI COMPONENTS
+# =============================================================================
+
+class VCNameModal(Modal):
+    def __init__(self, vc: discord.VoiceChannel):
+        super().__init__(title="Rename Voice Channel")
+        self.vc = vc
+        self.add_item(TextInput(label="New VC Name", placeholder="Enter name...", required=True, max_length=50))
+
+    async def callback(self, interaction: Interaction):
+        try:
+            new_name = _limit_channel_name(_to_sans_bold_italic(self.children[0].value))
+            await self.vc.edit(name=new_name)
+            await interaction.response.send_message("✅ Renamed.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+
+class KickMemberDropdown(Select):
+    def __init__(self, vc: discord.VoiceChannel, members):
+        self.vc = vc
+        options = [SelectOption(label=m.display_name, value=str(m.id)) for m in members]
+        super().__init__(placeholder="Select member to kick...", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: Interaction):
+        try:
+            member = self.vc.guild.get_member(int(self.values[0]))
+            if member and member in self.vc.members:
+                await member.move_to(None)
+                await interaction.response.send_message(f"👢 Kicked {member.display_name}.", ephemeral=True)
+            else:
+                await interaction.response.send_message("⚠️ Member not found in channel.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+
+class KickMemberView(View):
+    def __init__(self, vc: discord.VoiceChannel, members):
+        super().__init__(timeout=30)
+        self.add_item(KickMemberDropdown(vc, members))
+
+
+class RoleRestrictSelect(Select):
+    """
+    Built fresh on every click — always reflects the server's current role list.
+    Not persistent; lives inside an ephemeral RoleRestrictView with a 60s timeout.
+    """
+    def __init__(self, vc: discord.VoiceChannel, creator_id: int):
+        self.vc         = vc
+        self.creator_id = creator_id
+
+        # Build from live guild roles at call time — always current
+        options = [SelectOption(label="🌐 Everyone (remove restriction)", value="everyone")]
+        roles   = sorted(
+            [r for r in vc.guild.roles if r != vc.guild.default_role and not r.managed],
+            key=lambda r: r.position, reverse=True
+        )[:24]
+        for r in roles:
+            options.append(SelectOption(label=(r.name or "Role")[:100], value=str(r.id)))
+
+        super().__init__(
+            placeholder="Select a role to restrict to...",
+            options=options,
+            min_values=1,
+            max_values=1
+        )
+
+    async def callback(self, interaction: Interaction):
+        if interaction.user.id != self.creator_id:
+            return await interaction.response.send_message("🚫 Only the creator can restrict this channel.", ephemeral=True)
+        try:
+            if self.values[0] == "everyone":
+                await self.vc.set_permissions(interaction.guild.default_role, connect=None)
+                if self.vc.category:
+                    for target, overwrite in self.vc.category.overwrites.items():
+                        if isinstance(target, discord.Role) and target != interaction.guild.default_role:
+                            await self.vc.set_permissions(target, connect=None)
+                await interaction.response.send_message("✅ Restriction cleared — open to everyone.", ephemeral=True)
+            else:
+                role = interaction.guild.get_role(int(self.values[0]))
+                if role:
+                    await self.vc.set_permissions(interaction.guild.default_role, connect=False)
+                    await self.vc.set_permissions(role, connect=True)
+                    creator = interaction.guild.get_member(self.creator_id)
+                    if creator:
+                        await self.vc.set_permissions(creator, connect=True)
+                    for oid in MASTER_OWNERS:
+                        owner = interaction.guild.get_member(oid)
+                        if owner:
+                            await self.vc.set_permissions(owner, connect=True)
+                    if self.vc.category:
+                        for target, overwrite in self.vc.category.overwrites.items():
+                            if (isinstance(target, discord.Role)
+                                    and target != interaction.guild.default_role
+                                    and target.id != role.id
+                                    and not target.permissions.administrator):
+                                await self.vc.set_permissions(target, connect=False)
+                    await interaction.response.send_message(f"🔐 Restricted to **{role.name}**.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+
+class RoleRestrictView(View):
+    """
+    Ephemeral view spawned when the Restrict button is clicked.
+    Builds RoleRestrictSelect at that moment — always has the live role list.
+    """
+    def __init__(self, vc: discord.VoiceChannel, creator_id: int):
+        super().__init__(timeout=60)
+        self.add_item(RoleRestrictSelect(vc, creator_id))
+
+
+class VCControlPanel(View):
+    """
+    Persistent control panel for a JTC voice channel.
+    Uses VC-scoped custom_ids so multiple panels coexist and survive restarts.
+    """
+    def __init__(self, vc: discord.VoiceChannel, creator_id: int, cog: 'JTCCog'):
+        super().__init__(timeout=None)
+        self.vc         = vc
+        self.creator_id = creator_id
+        self.cog        = cog
+        vid             = str(vc.id)
+
+        # --- Row 1: Action buttons ---
+        btn_defs = [
+            ("🔒 Lock",     ButtonStyle.danger,  f"jtc_lock_{vid}",     self._lock),
+            ("🔓 Unlock",   ButtonStyle.success, f"jtc_unlock_{vid}",   self._unlock),
+            ("❌ Delete",   ButtonStyle.red,     f"jtc_delete_{vid}",   self._delete),
+            ("✏️ Rename",   ButtonStyle.blurple, f"jtc_rename_{vid}",   self._rename),
+            ("👢 Kick",     ButtonStyle.gray,    f"jtc_kick_{vid}",     self._kick),
+        ]
+        for label, style, cid, cb in btn_defs:
+            btn          = Button(label=label, style=style, custom_id=cid)
+            btn.callback = cb
+            self.add_item(btn)
+
+        # --- Row 2: Restrict button ---
+        # FIX: button spawns a fresh RoleRestrictSelect at click time
+        # so the role list always reflects the server's current roles
+        btn_restrict          = Button(
+            label="🔐 Restrict to Role",
+            style=ButtonStyle.gray,
+            custom_id=f"jtc_restrict_{vid}"
+        )
+        btn_restrict.callback = self._restrict
+        self.add_item(btn_restrict)
+
+        # --- Row 3: Bitrate select ---
+        s_bitrate          = Select(
+            placeholder="Bitrate",
+            options=[SelectOption(label="64k", value="64000"), SelectOption(label="384k", value="384000")],
+            custom_id=f"jtc_bitrate_{vid}"
+        )
+        s_bitrate.callback = self._bitrate
+        self.add_item(s_bitrate)
+
+        # --- Row 4: User limit select ---
+        s_limit            = Select(
+            placeholder="User Limit",
+            options=[
+                SelectOption(label="Unlimited", value="0"),
+                SelectOption(label="5",          value="5"),
+                SelectOption(label="10",         value="10"),
+            ],
+            custom_id=f"jtc_limit_{vid}"
+        )
+        s_limit.callback   = self._limit
+        self.add_item(s_limit)
+
+    # -------------------------------------------------------------------------
+    # PERMISSION CHECK
+    # -------------------------------------------------------------------------
+    async def _check(self, i: Interaction) -> bool:
+        if i.user.id == self.creator_id:
+            return True
+        if i.data.get("custom_id") == f"jtc_delete_{self.vc.id}":
+            if any(r.name == ADMIN_ROLE_NAME or r.id == ROLE_ADMIN_ID for r in i.user.roles):
+                return True
+        await i.response.send_message("🚫 Only the channel creator can do that.", ephemeral=True)
+        return False
+
+    # -------------------------------------------------------------------------
+    # BUTTON CALLBACKS
+    # -------------------------------------------------------------------------
+    async def _lock(self, i: Interaction):
+        if not await self._check(i): return
+        await i.response.defer(ephemeral=True)
+        try:
+            for m in self.vc.members:
+                await self.vc.set_permissions(m, connect=True)
+            for oid in MASTER_OWNERS:
+                owner = i.guild.get_member(oid)
+                if owner and owner not in self.vc.members:
+                    await self.vc.set_permissions(owner, connect=True)
+            await self.vc.set_permissions(i.guild.default_role, connect=False)
+            if self.vc.category:
+                for target, overwrite in self.vc.category.overwrites.items():
+                    if isinstance(target, discord.Role) and target != i.guild.default_role and not target.permissions.administrator:
+                        await self.vc.set_permissions(target, connect=False)
+            await i.followup.send("🔒 Locked.", ephemeral=True)
+        except Exception as e:
+            await i.followup.send(f"❌ Failed to lock: {e}", ephemeral=True)
+
+    async def _unlock(self, i: Interaction):
+        if not await self._check(i): return
+        await i.response.defer(ephemeral=True)
+        try:
+            await self.vc.set_permissions(i.guild.default_role, connect=None)
+            if self.vc.category:
+                for target, overwrite in self.vc.category.overwrites.items():
+                    if isinstance(target, discord.Role) and target != i.guild.default_role:
+                        await self.vc.set_permissions(target, connect=None)
+            await i.followup.send("🔓 Unlocked.", ephemeral=True)
+        except Exception as e:
+            await i.followup.send(f"❌ Failed to unlock: {e}", ephemeral=True)
+
+    async def _delete(self, i: Interaction):
+        if not await self._check(i): return
+        try:
+            await self.vc.delete()
+        except discord.NotFound:
+            pass
+        except Exception as e:
+            return await i.response.send_message(f"❌ Failed to delete: {e}", ephemeral=True)
+        self.cog.active_temp_vcs.pop(self.vc.id, None)
+        _save_active_vcs(self.cog.active_temp_vcs)
+        await i.response.send_message("🗑️ Deleted.", ephemeral=True)
+
+    async def _rename(self, i: Interaction):
+        if not await self._check(i): return
+        await i.response.send_modal(VCNameModal(self.vc))
+
+    async def _kick(self, i: Interaction):
+        if not await self._check(i): return
+        members = [m for m in self.vc.members if m != i.guild.me]
+        if not members:
+            return await i.response.send_message("⚠️ No one to kick.", ephemeral=True)
+        await i.response.send_message("Select a member to kick:", view=KickMemberView(self.vc, members), ephemeral=True)
+
+    async def _restrict(self, i: Interaction):
+        if not await self._check(i): return
+        # Build a fresh RoleRestrictView from live guild roles right now
+        try:
+            view = RoleRestrictView(self.vc, self.creator_id)
+            await i.response.send_message(
+                "Select a role to restrict this channel to:",
+                view=view,
+                ephemeral=True
+            )
+        except Exception as e:
+            await i.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+    async def _bitrate(self, i: Interaction):
+        if not await self._check(i): return
+        try:
+            await self.vc.edit(bitrate=int(i.data["values"][0]))
+            await i.response.send_message("📶 Bitrate updated.", ephemeral=True)
+        except Exception as e:
+            await i.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+    async def _limit(self, i: Interaction):
+        if not await self._check(i): return
+        try:
+            await self.vc.edit(user_limit=int(i.data["values"][0]))
+            await i.response.send_message("👥 User limit updated.", ephemeral=True)
+        except Exception as e:
+            await i.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+
+# =============================================================================
+# COG
+# =============================================================================
+
+class JTCCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot             = bot
+        self.active_temp_vcs = _load_active_vcs()
+        self._startup_done   = False
+
+    # -------------------------------------------------------------------------
+    # STARTUP CLEANUP
+    # -------------------------------------------------------------------------
+    @commands.Cog.listener()
+    async def on_ready(self):
+        if self._startup_done:
+            return
+        self._startup_done = True
+        await self._startup_cleanup()
+
+    async def _startup_cleanup(self):
+        """
+        On every restart:
+        - Delete any VCs that became empty during downtime
+        - Remove entries for channels that no longer exist
+        - Re-register VCControlPanel views so buttons work again
+        """
+        to_remove = []
+        restored  = 0
+
+        for channel_id, creator_id in list(self.active_temp_vcs.items()):
+            channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                try:
+                    channel = await self.bot.fetch_channel(channel_id)
+                except discord.NotFound:
+                    to_remove.append(channel_id)
+                    continue
+                except Exception as e:
+                    print(f"⚠️ JTC: Could not fetch channel {channel_id}: {e}")
                     continue
 
-                # asyncio.Event lets us block here until the clip finishes
-                done = asyncio.Event()
+            if len(channel.members) == 0:
+                try:
+                    await channel.delete()
+                except Exception:
+                    pass
+                to_remove.append(channel_id)
+                continue
 
-                def after_play(error):
-                    # after_play fires from a thread — route back to the event loop safely
-                    self.bot.loop.call_soon_threadsafe(done.set)
+            if creator_id:
+                view = VCControlPanel(channel, creator_id, self)
+                self.bot.add_view(view)
+                restored += 1
 
-                vc.play(source, after=after_play)
-                await done.wait()       # wait for clip to fully finish before next
-                _safe_delete(file_path) # cleanup guaranteed — always runs here
+        for cid in to_remove:
+            self.active_temp_vcs.pop(cid, None)
+        if to_remove:
+            _save_active_vcs(self.active_temp_vcs)
 
-        finally:
-            # Worker finished — clear itself and start the AFK timer
-            self.queue_worker = None
-            self.leave_timer  = asyncio.create_task(self._schedule_leave(guild))
+        print(f"✅ JTC: {restored} panel(s) restored, {len(to_remove)} stale VC(s) cleaned up.")
 
     # -------------------------------------------------------------------------
-    # /speak
+    # VOICE STATE HANDLER
     # -------------------------------------------------------------------------
-    @discord.slash_command(name="speak", description="Make the bot say something in your Voice Channel")
-    async def speak(
-        self,
-        ctx,
-        text:     Option(str, description=f"What do you want the bot to say? (Max {MAX_TEXT_LENGTH} chars)"),
-        language: Option(str, description="Select the language or accent", choices=TTS_LANGUAGES, default="en")
-    ):
-        # --- GATE CHECKS (before defer = instant ephemeral errors, no spinner) ---
-        if not has_tts_role(ctx.author):
-            return await ctx.respond("⛔ Restricted.", ephemeral=True)
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member, before, after):
+        guild = member.guild
 
-        if len(text) > MAX_TEXT_LENGTH:
-            return await ctx.respond(
-                f"❌ Text too long — keep it under {MAX_TEXT_LENGTH} characters.", ephemeral=True
-            )
-
-        # 🚦 VC check BEFORE any API work — fail fast if not in a channel
-        member = ctx.guild.get_member(ctx.author.id)
-        if not getattr(member, "voice", None) or not member.voice.channel:
-            return await ctx.respond("❌ You must be in a Voice Channel to use this.", ephemeral=True)
-
-        target_channel = member.voice.channel
-
-        await ctx.defer(ephemeral=True)
-
-        # Cancel any pending AFK leave timer — we're about to speak again
-        if self.leave_timer:
-            self.leave_timer.cancel()
-
-        # --- TRANSLATION (executor — blocking HTTP call) ---
-        lang_code = "en" if language in ("au", "uk") else language
-        tld       = "com.au" if language == "au" else "co.uk" if language == "uk" else "com"
-
-        def fetch_translation():
-            if lang_code == "en":
-                return text, False
+        # --- CREATE ---
+        if after.channel and after.channel.id == JOIN_TO_CREATE_CHANNEL_ID:
             try:
-                target = "zh-CN" if lang_code == "zh-cn" else lang_code
-                result = GoogleTranslator(source="auto", target=target).translate(text)
-                return result, True
-            except Exception:
-                return text, False
+                cat    = get(guild.categories, id=VC_CATEGORY_ID) or after.channel.category
+                new_vc = await guild.create_voice_channel(
+                    name=_limit_channel_name(_to_sans_bold_italic(f"{member.display_name}'s Room")),
+                    category=cat,
+                    bitrate=VC_DEFAULT_BITRATE
+                )
+                await new_vc.set_permissions(member, connect=True, speak=True)
+                self.active_temp_vcs[new_vc.id] = member.id
+                _save_active_vcs(self.active_temp_vcs)
 
-        spoken_text, is_translated = await self.bot.loop.run_in_executor(None, fetch_translation)
+                try:
+                    await member.move_to(new_vc)
+                except Exception as e:
+                    print(f"⚠️ JTC: move_to failed for {member.display_name} — deleting orphaned VC: {e}")
+                    try:
+                        await new_vc.delete()
+                    except Exception:
+                        pass
+                    self.active_temp_vcs.pop(new_vc.id, None)
+                    _save_active_vcs(self.active_temp_vcs)
+                    return
 
-        # --- TTS GENERATION (executor — gTTS makes a blocking HTTP call) ---
-        file_name = f"tts_{uuid.uuid4().hex[:8]}.mp3"
-        file_path = TEMP_AUDIO_DIR / file_name
+                async def send_control_panel(vc: discord.VoiceChannel, creator_id: int):
+                    await asyncio.sleep(1)
+                    embed = discord.Embed(
+                        title="🎛️ Voice Control",
+                        description=f"Manage **{vc.name}**",
+                        color=THEME_PRIMARY
+                    )
+                    try:
+                        view = VCControlPanel(vc, creator_id, self)
+                        await vc.send(embed=embed, view=view)
+                        self.bot.add_view(view)
+                    except Exception as e:
+                        print(f"⚠️ JTC: Failed to send control panel: {e}")
 
-        def generate_tts():
-            gTTS(text=spoken_text, lang=lang_code, tld=tld, slow=False).save(str(file_path))
+                asyncio.create_task(send_control_panel(new_vc, member.id))
 
-        try:
-            await self.bot.loop.run_in_executor(None, generate_tts)
-            source = await discord.FFmpegOpusAudio.from_probe(str(file_path), options="-loglevel error")
-        except Exception as e:
-            _safe_delete(file_path)  # cleanup even on generation failure
-            return await ctx.followup.send(f"❌ Audio generation failed: {e}", ephemeral=True)
+            except Exception as e:
+                print(f"⚠️ JTC: VC creation failed for {member.display_name}: {e}")
 
-        # --- VOICE CONNECTION ---
-        vc = ctx.guild.voice_client
-        try:
-            if not vc or not vc.is_connected():
-                vc = await target_channel.connect(timeout=20.0)
-                await asyncio.sleep(1.5)  # Railway voice gateway stabilisation
-            elif vc.channel.id != target_channel.id:
-                await vc.move_to(target_channel)
-        except Exception as e:
-            _safe_delete(file_path)
-            return await ctx.followup.send(f"❌ Voice connection failed: {e}", ephemeral=True)
-
-        if not vc.is_connected():
-            _safe_delete(file_path)
-            return await ctx.followup.send("❌ Connection lost before speaking.", ephemeral=True)
-
-        # --- ENQUEUE ---
-        position = self.queue.qsize()   # 0 = plays next, 1 = second in line, etc.
-        await self.queue.put((source, file_path))
-
-        # Start a worker if one isn't already running
-        if self.queue_worker is None or self.queue_worker.done():
-            self.queue_worker = asyncio.create_task(self._queue_worker(ctx.guild))
-
-        # --- CONFIRMATION EMBED ---
-        lang_name    = next((c.name for c in TTS_LANGUAGES if c.value == language), language)
-        display_desc = f"🗣️ **Said:** {spoken_text}"
-        if is_translated:
-            display_desc += f"\n*(Original: {text})*"
-
-        status = "▶️ Speaking now" if position == 0 else f"📋 Queued — position **#{position + 1}**"
-
-        embed = discord.Embed(description=display_desc, color=THEME_PRIMARY)
-        embed.set_footer(text=f"{status}  |  Requested by {ctx.author.display_name}  |  {lang_name}")
-        await ctx.followup.send(embed=embed, ephemeral=True)
-
-
-# -----------------------------------------------------------------------------
-# HELPER
-# -----------------------------------------------------------------------------
-def _safe_delete(path: Path):
-    try:
-        if path.exists():
-            os.remove(str(path))
-    except Exception:
-        pass
+        # --- CLEANUP ---
+        if (before.channel
+                and before.channel.id in self.active_temp_vcs
+                and len(before.channel.members) == 0):
+            try:
+                await before.channel.delete()
+            except discord.NotFound:
+                pass
+            except Exception as e:
+                print(f"⚠️ JTC: Cleanup delete failed for channel {before.channel.id}: {e}")
+            finally:
+                self.active_temp_vcs.pop(before.channel.id, None)
+                _save_active_vcs(self.active_temp_vcs)
 
 
 def setup(bot):
-    bot.add_cog(TTSCog(bot))
+    bot.add_cog(JTCCog(bot))
