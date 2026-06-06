@@ -7,3 +7,4 @@ pynacl
 py-cord[voice] @ git+https://github.com/Pycord-Development/pycord.git
 httpx
 beautifulsoup4
+curl-cffi>=0.7.0
