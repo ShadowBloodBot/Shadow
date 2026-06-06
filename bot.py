@@ -28,6 +28,7 @@ cogs_list = [
     "cogs.tts",
     "cogs.tracker",
     "cogs.steam_tracker",
+    "cogs.realestate",
 ]
 
 for cog in cogs_list:
