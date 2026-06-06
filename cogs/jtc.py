@@ -1,4 +1,3 @@
-# cogs/jtc.py
 import os
 import json
 import asyncio
@@ -78,13 +77,16 @@ class KickMemberView(View):
     def __init__(self, vc, members):
         super().__init__(timeout=30); self.add_item(KickMemberDropdown(vc, members))
 
-class RoleRestrictSelect(Select):
-    def __init__(self, vc, creator):
-        self.vc = vc; self.creator = creator
+class DynamicRoleRestrictSelect(Select):
+    def __init__(self, vc, creator, guild):
+        self.vc = vc
+        self.creator = creator
         options = [SelectOption(label="Everyone (default)", value="everyone")]
-        roles = sorted([r for r in vc.guild.roles if r != vc.guild.default_role and not r.managed], key=lambda r: r.position, reverse=True)[:24]
+        # Dynamically fetch roles at the time of invocation
+        roles = sorted([r for r in guild.roles if r != guild.default_role and not r.managed], key=lambda r: r.position, reverse=True)[:24]
         for r in roles: options.append(SelectOption(label=(r.name or "Role")[:100], value=str(r.id)))
-        super().__init__(placeholder="Restrict VC...", options=options, min_values=1, max_values=1, custom_id="restrict_role_select")
+        super().__init__(placeholder="Select a role to restrict...", options=options, min_values=1, max_values=1, custom_id="dynamic_restrict_role_select")
+
     async def callback(self, interaction: Interaction):
         if interaction.user.id != self.creator.id: return await interaction.response.send_message("🚫 Only creator.", ephemeral=True)
         try:
@@ -108,14 +110,18 @@ class RoleRestrictSelect(Select):
                             if isinstance(target, discord.Role) and target != interaction.guild.default_role and target.id != role.id and not target.permissions.administrator:
                                 await self.vc.set_permissions(target, connect=False)
                     await interaction.response.send_message(f"🔐 Restricted to {role.name}.", ephemeral=True)
-        except: await interaction.response.send_message("❌ Failed.", ephemeral=True)
+        except Exception as e: await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+
+class DynamicRoleRestrictView(View):
+    def __init__(self, vc, creator, guild):
+        super().__init__(timeout=60)
+        self.add_item(DynamicRoleRestrictSelect(vc, creator, guild))
 
 class VCControlPanel(View):
     def __init__(self, vc, creator):
         super().__init__(timeout=None)
         self.vc = vc; self.creator = creator
-        try: self.add_item(RoleRestrictSelect(vc, creator))
-        except: pass
+
     async def _check(self, i):
         if i.user.id == self.creator.id: return True
         if i.data.get("custom_id") == "delete_vc" and any(r.name == ADMIN_ROLE_NAME or r.id == ROLE_ADMIN_ID for r in i.user.roles): return True
@@ -146,6 +152,11 @@ class VCControlPanel(View):
                 if isinstance(target, discord.Role) and target != i.guild.default_role: await self.vc.set_permissions(target, connect=None)
         await i.followup.send("🔓 Unlocked.", ephemeral=True)
         
+    @discord.ui.button(label="🛡️ Restrict", style=ButtonStyle.primary, custom_id="restrict_vc_btn")
+    async def restrict(self, button, i):
+        if not await self._check(i): return
+        await i.response.send_message("Select a role to restrict this VC to:", view=DynamicRoleRestrictView(self.vc, self.creator, i.guild), ephemeral=True)
+
     @discord.ui.button(label="❌ Delete", style=ButtonStyle.red, custom_id="delete_vc")
     async def delete(self, button, i):
         if not await self._check(i): return
@@ -154,6 +165,7 @@ class VCControlPanel(View):
     @discord.ui.button(label="✏️ Rename", style=ButtonStyle.blurple, custom_id="rename_vc")
     async def rename(self, button, i):
         if not await self._check(i): return
+        await i.response.send_message("Please submit the new name.", view=None, ephemeral=True) # Send modal requires no deferring prior, ensuring safe invocation
         await i.response.send_modal(VCNameModal(self.vc))
         
     @discord.ui.button(label="👢 Kick", style=ButtonStyle.gray, custom_id="kick_members")
