@@ -7,23 +7,28 @@ import asyncio
 from pathlib import Path
 
 import discord
-from discord import Option, ButtonStyle, SelectOption, Interaction
+from discord import Option, ButtonStyle, SelectOption, Interaction, ApplicationContext
 from discord.ui import View, Button, Modal, TextInput, Select
 from discord.ext import commands
 
 # --- CONSTANTS ---
 THEME_PRIMARY = 0x2B0B35
-THEME_WIN = 0x43B581 
-THEME_LOSS = 0xF04747 
-THEME_GOLD = 0xFFD700 
+THEME_WIN = 0x43B581
+THEME_LOSS = 0xF04747
+THEME_GOLD = 0xFFD700
 THEME_INFO = 0x3498DB
 THEME_WARNING = 0xE67E22
 
 CASINO_CHANNEL_ID = 1468766727134249091
-GAMBLER_ROLE_ID = 955600320287887400  
+# This is the Member Role ID provided for the Hybrid Security Architecture
+GAMBLER_ROLE_ID = 955600320287887400
 OWNER_ID = 482463400929263627
 SCOIN_PULL_AMOUNT = 5
 SCOIN_COOLDOWN_HOURS = 3
+
+# Architectural Rule: Single server only. Bind commands directly to the guild cache.
+# IMPORTANT: Replace this with your actual Quinfall server ID before deploying.
+TARGET_GUILD_ID = 123456789012345678 
 
 # --- PERSISTENCE ---
 PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve()
@@ -398,16 +403,38 @@ class CasinoCog(commands.Cog):
             except: scoins_db = {}
         else: scoins_db = {}
 
-    @discord.slash_command(name="gamble", description="Open High-Roller VIP Casino Dashboard")
-    async def gamble(self, ctx):
+    # =========================================================================
+    # SECURE COMMAND DEPLOYMENT
+    # =========================================================================
+
+    @discord.slash_command(
+        name="gamble", 
+        description="Open High-Roller VIP Casino Dashboard",
+        guild_ids=[TARGET_GUILD_ID],
+        default_member_permissions=discord.Permissions.none()
+    )
+    @commands.has_role(GAMBLER_ROLE_ID)
+    async def gamble(self, ctx: ApplicationContext):
         if ctx.channel.id != CASINO_CHANNEL_ID: return await safe_reply(ctx, f"❌ Go to <#{CASINO_CHANNEL_ID}> to gamble.", ephemeral=True)
+        # Runtime block check preserved as an absolute failsafe
         if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
         embed = discord.Embed(title="🎰 ShadowSyn VIP Casino", description="Select a game below.", color=THEME_PRIMARY)
         embed.set_footer(text=f"Balance: {get_balance(str(ctx.author.id))} Scoins")
         await safe_reply(ctx, embed=embed, view=CasinoDashboard(), ephemeral=True)
 
-    @discord.slash_command(name="duel", description="Duel user")
-    async def duel(self, ctx, opponent: discord.Member, amount: str):
+    @gamble.error
+    async def gamble_error(self, ctx: ApplicationContext, error: discord.DiscordException):
+        if isinstance(error, commands.MissingRole):
+            await safe_reply(ctx, "🚫 System override denied: Missing Gambler clearance role.", ephemeral=True)
+
+    @discord.slash_command(
+        name="duel", 
+        description="Duel user",
+        guild_ids=[TARGET_GUILD_ID],
+        default_member_permissions=discord.Permissions.none()
+    )
+    @commands.has_role(GAMBLER_ROLE_ID)
+    async def duel(self, ctx: ApplicationContext, opponent: discord.Member, amount: str):
         if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
         if amount == "all": bet = get_balance(str(ctx.author.id))
         else: 
@@ -417,17 +444,43 @@ class CasinoCog(commands.Cog):
         embed = discord.Embed(title="⚔️ DUEL", description=f"{ctx.author.mention} vs {opponent.mention}\nPot: {bet*2}", color=discord.Color.red())
         await safe_reply(ctx, content=opponent.mention, embed=embed, view=DuelAcceptView(ctx.author, opponent, bet))
 
-    @discord.slash_command(name="wallet", description="Check balance")
-    async def wallet(self, ctx, user: Option(discord.User, required=False)):
+    @duel.error
+    async def duel_error(self, ctx: ApplicationContext, error: discord.DiscordException):
+        if isinstance(error, commands.MissingRole):
+            await safe_reply(ctx, "🚫 System override denied: Missing Gambler clearance role.", ephemeral=True)
+
+    @discord.slash_command(
+        name="wallet", 
+        description="Check balance",
+        guild_ids=[TARGET_GUILD_ID],
+        default_member_permissions=discord.Permissions.none()
+    )
+    @commands.has_role(GAMBLER_ROLE_ID)
+    async def wallet(self, ctx: ApplicationContext, user: Option(discord.User, required=False)):
         if not is_gambler(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
         t = user or ctx.author
         await safe_reply(ctx, f"💳 {t.display_name}: {get_balance(str(t.id))} Scoins")
 
-    @discord.slash_command(name="give_scoins", description="Owner Only")
+    @wallet.error
+    async def wallet_error(self, ctx: ApplicationContext, error: discord.DiscordException):
+        if isinstance(error, commands.MissingRole):
+            await safe_reply(ctx, "🚫 System override denied: Missing Gambler clearance role.", ephemeral=True)
+
+    @discord.slash_command(
+        name="give_scoins", 
+        description="Owner Only",
+        guild_ids=[TARGET_GUILD_ID],
+        default_member_permissions=discord.Permissions.none()
+    )
     @owner_only()
-    async def give_scoins(self, ctx, user: discord.Member, amount: int):
+    async def give_scoins(self, ctx: ApplicationContext, user: discord.Member, amount: int):
         update_balance(str(user.id), amount)
         await safe_reply(ctx, f"✅ Done. New balance: {get_balance(str(user.id))}", ephemeral=True)
+
+    @give_scoins.error
+    async def give_scoins_error(self, ctx: ApplicationContext, error: discord.DiscordException):
+        if isinstance(error, commands.CheckFailure):
+            await safe_reply(ctx, "🚫 System override denied: Owner authorization required.", ephemeral=True)
 
 def setup(bot):
     bot.add_cog(CasinoCog(bot))
