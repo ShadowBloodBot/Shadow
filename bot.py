@@ -29,6 +29,7 @@ cogs_list = [
     "cogs.tracker",
     "cogs.steam_tracker",
     "cogs.invest_bot",
+    "cogs.admin_secure.py",
 ]
 
 for cog in cogs_list:
