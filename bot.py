@@ -22,7 +22,6 @@ cogs_list = [
     "cogs.utility",
     "cogs.war",
     "cogs.casino",
-    "cogs.spire",
     "cogs.jtc",
     "cogs.audit_logs",
     "cogs.tts",
