@@ -1,179 +1,376 @@
-# cogs/utility.py
+"""
+InvestBot Cog - Australian Property Investment Community Bot
+Mortgage broker lead generation and qualification system
+Integrates seamlessly with Shadow bot (py-cord)
+"""
+
 import os
 import json
-import random
+import aiohttp
 from pathlib import Path
+from datetime import datetime, timedelta
+from typing import Optional, Dict
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import Option, Interaction
-from discord.ui import Modal, TextInput, View, Button
+from discord.ui import View, Button
 
-# --- CONSTANTS & IDS ---
+# ==========================================
+# CONFIGURATION & CONSTANTS
+# ==========================================
+
 THEME_PRIMARY = 0x2B0B35
-ROLE_ADMIN_ID = 1214794734770323466 
+THEME_SUCCESS = 0x2ecc71
+THEME_WARNING = 0xf39c12
+ROLE_ADMIN_ID = 1214794734770323466
 OWNER_ID = 482463400929263627
 
-# --- PERSISTENCE ---
 PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve()
-try: PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
-except: PERSIST_ROOT = Path(".").resolve()
+try:
+    PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
+except:
+    PERSIST_ROOT = Path(".").resolve()
 
-HASTE_FACTS_STORE = (PERSIST_ROOT / "haste_facts.json")
+INVEST_DATA_STORE = PERSIST_ROOT / "invest_data.json"
+INVEST_CACHE_STORE = PERSIST_ROOT / "invest_cache.json"
 
-DEFAULT_HASTE_FACTS = [
-    "Haste is a man lover", "Haste feeds knights to spearmen", "Haste is the potato peeler",
-    "Haste hates women", "Haste loves fat chicks", "Haste would die for brightwood, bro",
-    "Haste is a fitzroy enjoyer", "Haste used to get feudal in 3mins... used to",
-    "Haste goes Pro scout", "Haste is in a good mood. Jks.", "Haste loves dating paki protestors",
-    "Haste is a lefty greeny", "Haste has no dps", "Haste has beef with a dev of a game with sub 1000 players",
-    "Haste cant afford ranger gear so he blames the dev", "Haste thinks Maya is fat",
-    "Haste was MIA in Shadow Until Jed showed up", "Everyone prefers Haste over Boet",
-    "Everyone likes it when Haste has a break down", "Everyone is scared Haste might get bashed at his restaurant",
-    "Haste earns 70k a year and that gives Blood anxiety", "Haste Likes using a bow",
-    "Haste doesn't have the muscle mass to carry a real life weapon.",
-    "Haste never let go of New world.", "Haste only played Vrising cause he thought the outfits were cute."
-]
+# Default suburb data (fallback)
+DEFAULT_SUBURBS = {
+    "croydon-park": {
+        "median": 720000,
+        "growth_1yr": 3.2,
+        "yield": 3.8,
+        "demand": "strong",
+        "investor_score": "high",
+        "days_on_market": 28
+    },
+    "inner-west": {
+        "median": 850000,
+        "growth_1yr": 2.8,
+        "yield": 3.2,
+        "demand": "strong",
+        "investor_score": "high",
+        "days_on_market": 31
+    },
+    "sutherland-shire": {
+        "median": 1100000,
+        "growth_1yr": 1.5,
+        "yield": 2.9,
+        "demand": "moderate",
+        "investor_score": "medium",
+        "days_on_market": 35
+    }
+}
+
+OUTREACH_TEMPLATES = {
+    "refi": "Hey! Saw you're looking at refinance scenarios. Most investors don't realize they can structure their split loan differently to maximize tax outcomes. Worth a quick chat outside Discord? I do free 15min discovery calls—no pressure. Let me know 👍",
+    "first_investor": "You're asking solid questions about negative gearing. That tells me you're thinking long-term, not quick flip. Exactly the investor I help structure strategies for. Free chat sometime this week? Hit me up if keen.",
+    "portfolio": "Saw you're mapping out next property. That's the investor mindset I work with. Happy to run the numbers on your scenarios—often saves $10k+ in tax + interest. Chat?"
+}
+
+# ==========================================
+# UTILITY FUNCTIONS
+# ==========================================
+
+def _serialize_for_json(obj):
+    """Recursively convert datetime to ISO strings for JSON"""
+    if isinstance(obj, dict):
+        return {k: _serialize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_serialize_for_json(item) for item in obj]
+    elif isinstance(obj, datetime):
+        return obj.isoformat()
+    return obj
 
 def _atomic_write(file_path: Path, data):
+    """Atomic JSON write - matches utility.py pattern"""
     try:
-        content = json.dumps(list(data) if isinstance(data, set) else data, indent=2)
+        clean_data = _serialize_for_json(data)
+        content = json.dumps(clean_data, indent=2)
         temp_path = file_path.with_suffix(".tmp")
         temp_path.write_text(content, encoding='utf-8')
         temp_path.replace(file_path)
     except Exception as e:
-        print(f"⚠️ Persistence Error [{file_path.name}]: {e}")
+        print(f"⚠️ InvestBot Persistence Error [{file_path.name}]: {e}")
 
-# --- HELPERS ---
 def admin_only():
+    """Check if user is admin (matches utility.py)"""
     def predicate(ctx):
-        if not isinstance(ctx.author, discord.Member): return False
+        if not isinstance(ctx.author, discord.Member):
+            return False
         return any(r.id == ROLE_ADMIN_ID for r in ctx.author.roles)
     return commands.check(predicate)
 
-def owner_only():
-    def predicate(ctx): return ctx.author.id == OWNER_ID
-    return commands.check(predicate)
-
 async def safe_reply(ctx_or_inter, *args, **kwargs):
+    """Compatible with both Context and Interaction (matches utility.py)"""
     try:
-        if hasattr(ctx_or_inter, 'respond'): return await ctx_or_inter.respond(*args, **kwargs)
+        if hasattr(ctx_or_inter, 'respond'):
+            return await ctx_or_inter.respond(*args, **kwargs)
         elif hasattr(ctx_or_inter, 'response'):
-            if not ctx_or_inter.response.is_done(): return await ctx_or_inter.response.send_message(*args, **kwargs)
-            else: return await ctx_or_inter.followup.send(*args, **kwargs)
-    except: return None
+            if not ctx_or_inter.response.is_done():
+                return await ctx_or_inter.response.send_message(*args, **kwargs)
+            else:
+                return await ctx_or_inter.followup.send(*args, **kwargs)
+    except Exception as e:
+        print(f"⚠️ Safe reply error: {e}")
+        return None
 
-# --- UI COMPONENTS ---
-class EasyEmbedModal(Modal):
-    def __init__(self, channel, edit_msg=None):
-        super().__init__(title="Edit Embed" if edit_msg else "Create Custom Embed")
-        self.channel = channel; self.edit_msg = edit_msg
-        pre_title = edit_msg.embeds[0].title if edit_msg and edit_msg.embeds else ""
-        pre_desc = edit_msg.embeds[0].description if edit_msg and edit_msg.embeds else ""
-        pre_foot = edit_msg.embeds[0].footer.text if edit_msg and edit_msg.embeds and edit_msg.embeds[0].footer else ""
-        pre_col = str(hex(edit_msg.embeds[0].color.value)).replace("0x", "#") if edit_msg and edit_msg.embeds and edit_msg.embeds[0].color else ""
-        self.add_item(TextInput(label="Title", placeholder="Embed Title...", value=pre_title, required=True))
-        self.add_item(TextInput(label="Description", placeholder="Main content...", value=pre_desc, style=discord.InputTextStyle.paragraph, required=True))
-        self.add_item(TextInput(label="Footer (Optional)", placeholder="Small text at bottom...", value=pre_foot, required=False))
-        self.add_item(TextInput(label="Color (Hex)", placeholder="#2B0B35", value=pre_col, required=False))
-        
-    async def callback(self, interaction: Interaction):
-        title = self.children[0].value; desc = self.children[1].value; footer = self.children[2].value; color_raw = self.children[3].value
-        try: color = int(color_raw.replace("#", ""), 16) if color_raw else THEME_PRIMARY
-        except: color = THEME_PRIMARY
-        embed = discord.Embed(title=title, description=desc, color=color)
-        if footer: embed.set_footer(text=footer)
-        if self.edit_msg:
-            await self.edit_msg.edit(embed=embed); await interaction.response.send_message("✅ Embed Updated!", ephemeral=True)
-        else:
-            await self.channel.send(embed=embed); await interaction.response.send_message("✅ Embed Sent!", ephemeral=True)
+# ==========================================
+# INVEST BOT COG
+# ==========================================
 
-class PersistentRoleView(View):
-    def __init__(self, role: discord.Role):
-        super().__init__(timeout=None)
-        btn = Button(
-            label=f"Toggle {role.name}", 
-            style=discord.ButtonStyle.primary, 
-            custom_id=f"claim_role_{role.id}",
-            emoji="🏷️"
-        )
-        self.add_item(btn)
-
-class UtilityCog(commands.Cog):
+class InvestBotCog(commands.Cog):
+    """Investment property analysis bot for mortgage broker lead generation"""
+    
     def __init__(self, bot):
         self.bot = bot
-        self.active_haste_facts = []
-        self._load_data()
-
-    def _load_data(self):
-        if HASTE_FACTS_STORE.exists():
-            try: self.active_haste_facts = json.loads(HASTE_FACTS_STORE.read_text())
-            except: self.active_haste_facts = list(DEFAULT_HASTE_FACTS)
-        else: self.active_haste_facts = list(DEFAULT_HASTE_FACTS)
-
-    # --- STATELESS PERSISTENT LISTENER ---
-    @commands.Cog.listener()
-    async def on_interaction(self, interaction: discord.Interaction):
-        if interaction.type == discord.InteractionType.component:
-            custom_id = interaction.data.get("custom_id", "")
-            if custom_id.startswith("claim_role_"):
-                try:
-                    role_id = int(custom_id.replace("claim_role_", ""))
-                    role = interaction.guild.get_role(role_id)
-                    
-                    if not role:
-                        return await safe_reply(interaction, "❌ This role no longer exists on the server.", ephemeral=True)
-                    
-                    if role in interaction.user.roles:
-                        await interaction.user.remove_roles(role)
-                        await safe_reply(interaction, f"➖ You have removed the **{role.name}** role.", ephemeral=True)
-                    else:
-                        await interaction.user.add_roles(role)
-                        await safe_reply(interaction, f"✅ You have claimed the **{role.name}** role.", ephemeral=True)
-                
-                except discord.Forbidden:
-                    await safe_reply(interaction, "❌ I lack permissions to assign this role.", ephemeral=True)
-                except Exception as e:
-                    await safe_reply(interaction, f"⚠️ Error: {e}", ephemeral=True)
-
-    @discord.slash_command(name="role_button", description="Deploy a persistent button for users to claim a role")
-    @admin_only()
-    async def role_button(self, ctx, role: Option(discord.Role, description="Select the role to attach to the button")):
+        self.load_data()
+    
+    def load_data(self):
+        """Load suburbs and leads from disk"""
+        if INVEST_DATA_STORE.exists():
+            try:
+                data = json.loads(INVEST_DATA_STORE.read_text())
+                self.suburbs = data.get("suburbs", DEFAULT_SUBURBS.copy())
+                self.qualified_leads = data.get("qualified_leads", {})
+                self.rba_rate = data.get("rba_rate", 4.35)
+            except:
+                self.suburbs = DEFAULT_SUBURBS.copy()
+                self.qualified_leads = {}
+                self.rba_rate = 4.35
+        else:
+            self.suburbs = DEFAULT_SUBURBS.copy()
+            self.qualified_leads = {}
+            self.rba_rate = 4.35
+            self.save_data()
+    
+    def save_data(self):
+        """Save suburbs and leads to disk"""
+        data = {
+            "suburbs": self.suburbs,
+            "qualified_leads": self.qualified_leads,
+            "rba_rate": self.rba_rate
+        }
+        _atomic_write(INVEST_DATA_STORE, data)
+    
+    def flag_lead(self, user_id: int, profile_type: str):
+        """Flag a user as qualified lead"""
+        if str(user_id) not in self.qualified_leads:
+            self.qualified_leads[str(user_id)] = {}
+        self.qualified_leads[str(user_id)]["profile"] = profile_type
+        self.qualified_leads[str(user_id)]["flagged_at"] = datetime.now().isoformat()
+        self.save_data()
+    
+    # ==========================================
+    # SLASH COMMANDS
+    # ==========================================
+    
+    @discord.slash_command(name="suburb", description="Analyze a Sydney suburb for investment")
+    async def suburb(self, ctx, suburb_name: str):
+        """Get suburb investment analysis"""
+        suburb_key = suburb_name.lower().replace(" ", "-")
+        
+        if suburb_key not in self.suburbs:
+            available = ", ".join(self.suburbs.keys())
+            return await safe_reply(ctx, f"❌ No data for '{suburb_name}'. Available: {available}", ephemeral=True)
+        
+        data = self.suburbs[suburb_key]
+        
+        # Auto-flag as lead
+        self.flag_lead(ctx.author.id, "researcher")
+        
+        # Build embed
+        score_emoji = "🔥" if data.get("investor_score") == "high" else "🟡"
+        demand_emoji = "✅" if data.get("demand") == "strong" else "⚠️"
+        
         embed = discord.Embed(
-            title="🏷️ Role Assignment",
-            description=f"Click the button below to claim or remove the {role.mention} role.",
+            title=f"🏠 {suburb_name.title()}, NSW",
+            description="Investment Analysis",
             color=THEME_PRIMARY
         )
-        await safe_reply(ctx, "✅ Deploying role button...", ephemeral=True)
-        await ctx.channel.send(embed=embed, view=PersistentRoleView(role))
-
-    @discord.slash_command(name="send_custom", description="Send a clean embed message")
+        embed.add_field(name="Median Price", value=f"${data['median']:,}", inline=True)
+        embed.add_field(name="1yr Growth", value=f"{data['growth_1yr']}%", inline=True)
+        embed.add_field(name="Rental Yield", value=f"{data['yield']}%", inline=True)
+        embed.add_field(name=f"Investor Score {score_emoji}", value=data["investor_score"].title(), inline=True)
+        embed.add_field(name=f"Demand {demand_emoji}", value=data["demand"].title(), inline=True)
+        embed.add_field(name="Days on Market", value=str(data["days_on_market"]), inline=True)
+        embed.set_footer(text="Educational discussion only—not financial advice")
+        
+        await safe_reply(ctx, embed=embed)
+    
+    @discord.slash_command(name="neggear", description="Calculate negative gearing")
+    async def neggear(self, ctx,
+                      property_price: Option(int, description="Purchase price (AUD)"),
+                      annual_rent: Option(int, description="Annual rental (AUD)"),
+                      mortgage_rate: Option(float, description="Mortgage rate (%)")):
+        """Calculate negative gearing shortfall and tax benefit"""
+        
+        self.flag_lead(ctx.author.id, "refinancer")
+        
+        loan_amount = property_price * 0.8
+        annual_interest = loan_amount * (mortgage_rate / 100)
+        estimated_expenses = annual_rent * 0.25
+        annual_shortfall = (annual_interest + estimated_expenses) - annual_rent
+        tax_benefit = annual_shortfall * 0.39
+        
+        embed = discord.Embed(
+            title="💰 Negative Gearing Calculator",
+            color=THEME_PRIMARY
+        )
+        embed.add_field(name="Loan Amount", value=f"${loan_amount:,.0f}", inline=True)
+        embed.add_field(name="Annual Interest", value=f"${annual_interest:,.0f}", inline=True)
+        embed.add_field(name="Est. Expenses (25%)", value=f"${estimated_expenses:,.0f}", inline=True)
+        embed.add_field(name="Annual Rental", value=f"${annual_rent:,}", inline=True)
+        embed.add_field(name="🔴 Annual Shortfall", value=f"${annual_shortfall:,.0f}", inline=True)
+        embed.add_field(name="💚 Est. Tax Benefit (39%)", value=f"${tax_benefit:,.0f}", inline=True)
+        embed.set_footer(text="This is discussion only—not personal financial advice.")
+        
+        await safe_reply(ctx, embed=embed)
+    
+    @discord.slash_command(name="refi-check", description="Refinance eligibility check")
+    async def refi_check(self, ctx,
+                         current_rate: Option(float, description="Current rate (%)"),
+                         equity_percent: Option(int, description="Home equity (%)"),
+                         annual_income: Option(int, description="Annual income (AUD)")):
+        """Quick refinance eligibility and savings estimate"""
+        
+        self.flag_lead(ctx.author.id, "refinancer")
+        
+        market_rate = self.rba_rate
+        rate_saving = current_rate - market_rate
+        estimated_loan = annual_income * 4
+        annual_saving = estimated_loan * (rate_saving / 100)
+        
+        embed = discord.Embed(
+            title="🔄 Refinance Eligibility Check",
+            color=THEME_SUCCESS if rate_saving > 0 else THEME_WARNING
+        )
+        embed.add_field(name="Current Rate", value=f"{current_rate}%", inline=True)
+        embed.add_field(name="Market Rate (approx)", value=f"{market_rate}%", inline=True)
+        embed.add_field(name="Potential Spread", value=f"{rate_saving:.2f}%", inline=True)
+        embed.add_field(name="Equity Position", value=f"{equity_percent}%", inline=True)
+        embed.add_field(name="Est. Loan Capacity", value=f"${estimated_loan:,}", inline=True)
+        embed.add_field(name="💵 Est. Annual Saving", value=f"${annual_saving:,.0f}" if rate_saving > 0 else "Not viable", inline=True)
+        embed.set_footer(text="Educational discussion only—not financial advice.")
+        
+        await safe_reply(ctx, embed=embed)
+    
+    @discord.slash_command(name="compare", description="Compare two suburbs")
+    async def compare(self, ctx, suburb1: str, suburb2: str):
+        """Side-by-side suburb comparison"""
+        
+        s1_key = suburb1.lower().replace(" ", "-")
+        s2_key = suburb2.lower().replace(" ", "-")
+        
+        if s1_key not in self.suburbs or s2_key not in self.suburbs:
+            return await safe_reply(ctx, "❌ One or both suburbs not found.", ephemeral=True)
+        
+        s1 = self.suburbs[s1_key]
+        s2 = self.suburbs[s2_key]
+        
+        self.flag_lead(ctx.author.id, "portfolio_builder")
+        
+        embed = discord.Embed(
+            title="📊 Suburb Comparison",
+            color=THEME_PRIMARY
+        )
+        
+        comparison = f"""
+**Metric** | **{suburb1.title()}** | **{suburb2.title()}**
+---|---|---
+Median | ${s1['median']:,} | ${s2['median']:,}
+1yr Growth | {s1['growth_1yr']}% | {s2['growth_1yr']}%
+Yield | {s1['yield']}% | {s2['yield']}%
+Investor Score | {s1['investor_score'].title()} | {s2['investor_score'].title()}
+        """
+        
+        embed.description = comparison
+        embed.set_footer(text="Educational discussion only—not financial advice")
+        
+        await safe_reply(ctx, embed=embed)
+    
+    @discord.slash_command(name="markets", description="Daily market digest")
     @admin_only()
-    async def send_custom(self, ctx, channel: Option(discord.TextChannel, required=False)):
-        target = channel or ctx.channel
-        await ctx.send_modal(EasyEmbedModal(target))
-
-    @discord.slash_command(name="edit_custom", description="Edit an existing bot embed")
+    async def markets(self, ctx):
+        """Post daily market digest"""
+        
+        sorted_suburbs = sorted(
+            self.suburbs.items(),
+            key=lambda x: x[1].get('growth_1yr', 0),
+            reverse=True
+        )
+        
+        top_movers = "\n".join([
+            f"• **{k.replace('-', ' ').title()}**: +{v.get('growth_1yr')}%"
+            for k, v in sorted_suburbs[:3]
+        ])
+        
+        embed = discord.Embed(
+            title="📈 Daily Market Digest",
+            color=THEME_SUCCESS
+        )
+        embed.add_field(name="🔥 Top Movers (1yr)", value=top_movers, inline=False)
+        embed.add_field(name="📊 Current RBA Rate", value=f"{self.rba_rate}%", inline=True)
+        embed.add_field(name="💭 Insight", value="Run `/refi-check` to see if you can save.", inline=False)
+        embed.set_footer(text="Educational discussion only | Updated daily")
+        
+        await safe_reply(ctx, embed=embed)
+    
+    # ==========================================
+    # ADMIN COMMANDS
+    # ==========================================
+    
+    @discord.slash_command(name="invest_lead", description="Flag user as qualified lead")
     @admin_only()
-    async def edit_custom(self, ctx, message_id: str, channel: Option(discord.TextChannel, required=False)):
-        target_channel = channel or ctx.channel
+    async def invest_lead(self, ctx, user: discord.User, profile_type: str):
+        """Manually flag user as qualified"""
+        self.flag_lead(user.id, profile_type)
+        await safe_reply(ctx, f"✅ Flagged {user.mention} as **{profile_type}** lead.", ephemeral=True)
+    
+    @discord.slash_command(name="invest_leads", description="List qualified leads")
+    @admin_only()
+    async def invest_leads(self, ctx):
+        """Show all qualified leads"""
+        
+        if not self.qualified_leads:
+            return await safe_reply(ctx, "No leads yet.", ephemeral=True)
+        
+        embed = discord.Embed(
+            title="📋 Qualified Leads",
+            color=THEME_SUCCESS
+        )
+        
+        for user_id, lead_data in list(self.qualified_leads.items())[:10]:
+            profile = lead_data.get("profile", "Unknown")
+            flagged = lead_data.get("flagged_at", "N/A")[:10]
+            embed.add_field(
+                name=f"User ID: {user_id}",
+                value=f"Type: {profile}\nFlagged: {flagged}",
+                inline=False
+            )
+        
+        await safe_reply(ctx, embed=embed, ephemeral=True)
+    
+    @discord.slash_command(name="invest_template", description="Send outreach template")
+    @admin_only()
+    async def invest_template(self, ctx, user: discord.User, template: str):
+        """Send outreach template (refi, first_investor, portfolio)"""
+        
+        if template not in OUTREACH_TEMPLATES:
+            return await safe_reply(ctx, "❌ Invalid template. Use: refi, first_investor, portfolio", ephemeral=True)
+        
         try:
-            msg = await target_channel.fetch_message(int(message_id))
-            if msg.author != self.bot.user: return await ctx.respond("❌ I can only edit my own messages.", ephemeral=True)
-            await ctx.send_modal(EasyEmbedModal(target_channel, edit_msg=msg))
-        except Exception as e: await ctx.respond(f"❌ Error finding message: {e}", ephemeral=True)
+            await user.send(OUTREACH_TEMPLATES[template])
+            await safe_reply(ctx, f"✅ Sent {template} template to {user.mention}", ephemeral=True)
+        except discord.Forbidden:
+            await safe_reply(ctx, f"❌ Cannot DM {user.mention}.", ephemeral=True)
 
-    @discord.slash_command(name="haste", description="Random Haste Fact")
-    async def haste(self, ctx):
-        if not self.active_haste_facts: return await safe_reply(ctx, "No facts yet.")
-        await safe_reply(ctx, f"🍌 **Fact:** {random.choice(self.active_haste_facts)}")
-
-    @discord.slash_command(name="morehaste", description="Add Haste Fact")
-    @admin_only()
-    async def morehaste(self, ctx, fact: str):
-        self.active_haste_facts.append(fact)
-        _atomic_write(HASTE_FACTS_STORE, self.active_haste_facts)
-        await safe_reply(ctx, "✅ Added.")
+# ==========================================
+# SETUP
+# ==========================================
 
 def setup(bot):
-    bot.add_cog(UtilityCog(bot))
+    """Load cog into bot"""
+    bot.add_cog(InvestBotCog(bot))
+    print("✅ InvestBotCog loaded successfully")
