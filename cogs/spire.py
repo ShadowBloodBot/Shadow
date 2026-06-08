@@ -25,8 +25,7 @@ ANSI_YELLOW = "\u001b[33m"
 ANSI_RESET = "\u001b[0m"
 
 # Architectural Rule: Single server only. Bind commands directly to the guild cache.
-# IMPORTANT: Replace this with your actual Quinfall server ID before deploying.
-TARGET_GUILD_ID = 123456789012345678 
+TARGET_GUILD_ID = 908659586536468540 
 # Hybrid Security Architecture Role ID
 SPIRE_ROLE_ID = 955600320287887400
 
