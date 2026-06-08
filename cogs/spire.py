@@ -637,7 +637,8 @@ class CombatView(View):
         # UI Formatting Engine - Logs & Meta
         log_lines = self.run["log"][-8:]
         log_text = "\n".join(log_lines)
-        ansi_log = f"```ansi\n{log_text}\n```"
+        ansi_log = f"```ansi\n{log_text}\n
+```"
         embed.add_field(name="🖥️ System Log", value=ansi_log, inline=False)
         
         d_len = str(len(c["draw_pile"]))
