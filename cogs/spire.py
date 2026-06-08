@@ -24,6 +24,12 @@ ANSI_GREEN = "\u001b[32m"
 ANSI_YELLOW = "\u001b[33m"
 ANSI_RESET = "\u001b[0m"
 
+# Architectural Rule: Single server only. Bind commands directly to the guild cache.
+# IMPORTANT: Replace this with your actual Quinfall server ID before deploying.
+TARGET_GUILD_ID = 123456789012345678 
+# Hybrid Security Architecture Role ID
+SPIRE_ROLE_ID = 955600320287887400
+
 # --- INFRASTRUCTURE & PERSISTENCE ---
 PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve() 
 try:
@@ -994,7 +1000,17 @@ class SpireCog(commands.Cog):
         else:
             spire_db = {}
 
-    @discord.slash_command(name="spire", description="Infiltrate the Megacorp Spire.")
+    # =========================================================================
+    # SECURE COMMAND DEPLOYMENT
+    # =========================================================================
+
+    @discord.slash_command(
+        name="spire", 
+        description="Infiltrate the Megacorp Spire.",
+        guild_ids=[TARGET_GUILD_ID],
+        default_member_permissions=discord.Permissions.none()
+    )
+    @commands.has_role(SPIRE_ROLE_ID)
     async def spire(self, ctx: discord.ApplicationContext):
         try:
             uid = str(ctx.author.id)
@@ -1032,7 +1048,20 @@ class SpireCog(commands.Cog):
             traceback.print_exc()
             await safe_reply(ctx, "Error: " + str(e), ephemeral=True)
 
-    @discord.slash_command(name="spire_abandon", description="Terminate your active run.")
+    @spire.error
+    async def spire_error(self, ctx: discord.ApplicationContext, error: discord.DiscordException):
+        if isinstance(error, commands.MissingRole):
+            await safe_reply(ctx, "🚫 System override denied: Missing Spire clearance role.", ephemeral=True)
+        else:
+            traceback.print_exception(type(error), error, error.__traceback__)
+
+    @discord.slash_command(
+        name="spire_abandon", 
+        description="Terminate your active run.",
+        guild_ids=[TARGET_GUILD_ID],
+        default_member_permissions=discord.Permissions.none()
+    )
+    @commands.has_role(SPIRE_ROLE_ID)
     async def spire_abandon(self, ctx: discord.ApplicationContext):
         uid = str(ctx.author.id)
         if uid in spire_db and spire_db[uid].get("active_run"):
@@ -1040,6 +1069,13 @@ class SpireCog(commands.Cog):
             await safe_reply(ctx, "Run terminated. Save cleared.")
         else:
             await safe_reply(ctx, "No active run found.", ephemeral=True)
+
+    @spire_abandon.error
+    async def spire_abandon_error(self, ctx: discord.ApplicationContext, error: discord.DiscordException):
+        if isinstance(error, commands.MissingRole):
+            await safe_reply(ctx, "🚫 System override denied: Missing Spire clearance role.", ephemeral=True)
+        else:
+            traceback.print_exception(type(error), error, error.__traceback__)
 
 def setup(bot):
     bot.add_cog(SpireCog(bot))
