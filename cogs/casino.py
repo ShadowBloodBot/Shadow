@@ -28,7 +28,7 @@ SCOIN_COOLDOWN_HOURS = 3
 
 # Architectural Rule: Single server only. Bind commands directly to the guild cache.
 # IMPORTANT: Replace this with your actual Quinfall server ID before deploying.
-TARGET_GUILD_ID = 123456789012345678 
+TARGET_GUILD_ID = 908659586536468540 
 
 # --- PERSISTENCE ---
 PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve()
