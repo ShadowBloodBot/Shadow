@@ -29,6 +29,8 @@ cogs_list = [
     "cogs.steam_tracker",
     "cogs.invest_bot",
     "cogs.admin_secure",
+    "cogs.suburbs_database",
+    
 ]
 
 for cog in cogs_list:
