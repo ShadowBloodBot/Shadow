@@ -18,6 +18,7 @@ from cogs.invest_data import (
     DISCLAIMER,
     SYDNEY_DAILY_ROTATION,
     WEEKLY_DIGEST_LINES,
+    strategy_embed_parts,
 )
 from cogs.invest_calculators import calc_negative_gearing, calc_refinance_check, fmt_currency
 from cogs.invest_suburb_stats import get_store
@@ -76,7 +77,7 @@ def _load_state() -> dict:
         "strategy_index": 0,
         "sydney_rotation_index": 0,
         "last_market_date": None,
-        "last_strategy_week": None,
+        "last_strategy_date": None,
         "last_digest_week": None,
         "last_alert_date": None,
         "suburb_baselines": {},
@@ -155,13 +156,14 @@ def _market_embed(prop: dict) -> discord.Embed:
 
 
 def _strategy_embed(item: dict) -> discord.Embed:
+    parts = strategy_embed_parts(item)
     embed = discord.Embed(
-        title=f"📋 Weekly Strategy — {item['title']}",
-        description=item["body"],
+        title=parts["title"],
+        description=parts["description"],
         colour=THEME,
     )
-    embed.add_field(name="Source", value=item["source"], inline=False)
-    embed.add_field(name="Read more", value=item["link"], inline=False)
+    for name, value in parts["fields"]:
+        embed.add_field(name=name, value=value, inline=False)
     embed.set_footer(text=DISCLAIMER)
     return embed
 
@@ -257,7 +259,7 @@ class InvestBotCog(commands.Cog):
         self.profiles = _load_profiles()
         self.store = get_store(PERSIST)
         self.daily_market.start()
-        self.weekly_strategies.start()
+        self.daily_strategies.start()
         self.weekly_digest.start()
         self.market_alerts.start()
         self.suburb_sync.start()
@@ -299,7 +301,7 @@ class InvestBotCog(commands.Cog):
 
     def cog_unload(self):
         self.daily_market.cancel()
-        self.weekly_strategies.cancel()
+        self.daily_strategies.cancel()
         self.weekly_digest.cancel()
         self.market_alerts.cancel()
         self.suburb_sync.cancel()
@@ -378,7 +380,7 @@ class InvestBotCog(commands.Cog):
         logger.info(f"market daily posted to {ch.id}")
         return True
 
-    async def post_strategy_weekly(self) -> bool:
+    async def post_strategy_daily(self) -> bool:
         ch = await self._channel("strategies_channel_id")
         if not ch:
             return False
@@ -386,9 +388,9 @@ class InvestBotCog(commands.Cog):
         item = STRATEGIES[idx]
         await ch.send(embed=_strategy_embed(item))
         self.state["strategy_index"] = idx + 1
-        self.state["last_strategy_week"] = datetime.now(TZ).strftime("%G-W%V")
+        self.state["last_strategy_date"] = datetime.now(TZ).strftime("%Y-%m-%d")
         _save_state(self.state)
-        logger.info(f"strategy posted to {ch.id}")
+        logger.info(f"daily strategy posted to {ch.id}")
         return True
 
     async def post_weekly_digest(self) -> bool:
@@ -484,17 +486,14 @@ class InvestBotCog(commands.Cog):
         await self.bot.wait_until_ready()
 
     @tasks.loop(time=time(hour=10, minute=0, tzinfo=TZ))
-    async def weekly_strategies(self):
-        now = datetime.now(TZ)
-        if now.weekday() != 0:
+    async def daily_strategies(self):
+        today = datetime.now(TZ).strftime("%Y-%m-%d")
+        if self.state.get("last_strategy_date") == today:
             return
-        week = now.strftime("%G-W%V")
-        if self.state.get("last_strategy_week") == week:
-            return
-        await self.post_strategy_weekly()
+        await self.post_strategy_daily()
 
-    @weekly_strategies.before_loop
-    async def _wait_weekly(self):
+    @daily_strategies.before_loop
+    async def _wait_daily_strategies(self):
         await self.bot.wait_until_ready()
 
     @tasks.loop(time=time(hour=8, minute=30, tzinfo=TZ))
@@ -717,7 +716,7 @@ class InvestBotCog(commands.Cog):
         if feed == "market":
             ok = await self.post_market_daily()
         elif feed == "strategies":
-            ok = await self.post_strategy_weekly()
+            ok = await self.post_strategy_daily()
         elif feed == "digest":
             ok = await self.post_weekly_digest()
         else:
