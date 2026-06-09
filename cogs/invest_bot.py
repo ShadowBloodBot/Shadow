@@ -1,8 +1,3 @@
-"""
-InvestBot Cog v2 - Dynamic Multi-Source Property Data Scraper
-Features: Auto-complete suburbs, Domain/RealEstate/Google fallback, live scraping
-"""
-
 import os
 import json
 import aiohttp
@@ -13,8 +8,8 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict
 
 import discord
-from discord.ext import commands, tasks
-from discord import Option, Interaction
+from discord.ext import commands
+from discord import Option
 
 # --- LOGGING ---
 logging.basicConfig(level=logging.INFO)
@@ -40,7 +35,6 @@ INVEST_DATA_STORE = PERSIST_ROOT / "invest_data.json"
 INVEST_CACHE_STORE = PERSIST_ROOT / "invest_cache.json"
 
 # Complete Australian suburbs database
-# Sydney, Melbourne, Adelaide, Perth - 1500+ suburbs
 AUSTRALIAN_SUBURBS = {
     "Sydney": [
         "Croydon Park", "Inner West", "Sutherland Shire", "Parramatta", "Strathfield",
@@ -78,15 +72,6 @@ AUSTRALIAN_SUBURBS = {
         "Albion", "Alphington", "Altona", "Altona Meadows", "Angelina",
         "Anglesea", "Anglesea Heights", "Aniseed", "Annex", "Annex East",
         "Annex North", "Annex South", "Annex West", "Annex Westerly", "Annex Westland",
-        "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands",
-        "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands",
-        "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands",
-        "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands",
-        "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands",
-        "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands",
-        "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands",
-        "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands",
-        "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands",
         "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands",
         "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands",
         "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands", "Annex Westlands",
@@ -177,30 +162,6 @@ AUSTRALIAN_SUBURBS = {
         "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
         "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
         "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
-        "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig",
         "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig", "Aberkenfig"
     ],
     "Perth": [
@@ -221,6 +182,8 @@ AUSTRALIAN_SUBURBS = {
         "Abbicornelle", "Abbicornellely", "Abbicornellem", "Abbicornellen", "Abbicorneller",
         "Abbicornelleria", "Abbicornelleries", "Abbicornellering", "Abbicornellers", "Abbicornellery",
         "Abbicornelles", "Abbicornellesia", "Abbicornellesque", "Abbicornellest", "Abbicornelleta",
+        "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
+        "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
         "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
         "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
         "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
@@ -313,6 +276,16 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
         return None
 
 # ==========================================
+# AUTOCOMPLETE HELPER (Global Context)
+# ==========================================
+
+async def get_suburb_autocomplete(ctx: discord.AutocompleteContext):
+    """Auto-complete suburb names - all Australian suburbs"""
+    current_lower = ctx.value.lower() if ctx.value else ""
+    matches = [s for s in ALL_AUSTRALIAN_SUBURBS if current_lower in s.lower()][:15]
+    return matches if matches else ALL_AUSTRALIAN_SUBURBS[:15]
+
+# ==========================================
 # MULTI-SOURCE SCRAPER
 # ==========================================
 
@@ -355,7 +328,6 @@ class PropertyScraper:
         """
         suburb_key = suburb.lower().replace(" ", "-")
         
-        # Check cache first
         if suburb_key in self.cache and self._is_cache_fresh(suburb_key):
             cached_data = self.cache[suburb_key].get("data")
             if cached_data:
@@ -365,39 +337,30 @@ class PropertyScraper:
         
         logger.info(f"Scraping {suburb}...")
         
-        # Try Domain
         data = await self._scrape_domain(suburb)
         if data:
             self._cache_result(suburb_key, data, "domain")
             return data
         
         logger.info(f"Domain failed, trying RealEstate.com.au...")
-        
-        # Try RealEstate.com.au
         data = await self._scrape_realestate(suburb)
         if data:
             self._cache_result(suburb_key, data, "realestate")
             return data
         
         logger.info(f"RealEstate failed, trying Realestate.com.au...")
-        
-        # Try Realestate.com.au
         data = await self._scrape_realestate_old(suburb)
         if data:
             self._cache_result(suburb_key, data, "realestate-old")
             return data
         
         logger.info(f"All site scrapers failed, trying Google Search...")
-        
-        # Try Google Search
         data = await self._scrape_google(suburb)
         if data:
             self._cache_result(suburb_key, data, "google")
             return data
         
         logger.warning(f"All scrapers failed for {suburb}, will use manual fallback")
-        
-        # Return None (will use manual fallback in cog)
         return None
     
     def _cache_result(self, suburb_key: str, data: Dict, source: str):
@@ -410,7 +373,6 @@ class PropertyScraper:
         self._save_cache()
     
     async def _scrape_domain(self, suburb: str) -> Optional[Dict]:
-        """Scrape Domain.com.au with better parsing"""
         try:
             suburb_slug = suburb.lower().replace(" ", "-").replace("_", "-")
             url = f"https://www.domain.com.au/suburb-profile/{suburb_slug}"
@@ -423,14 +385,13 @@ class PropertyScraper:
                 'DNT': '1'
             }
             
-            response = await self.client.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10))
-            if response.status_code != 200:
-                logger.warning(f"Domain.com.au returned {response.status_code} for {suburb}")
-                return None
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=10) as response:
+                    if response.status != 200:
+                        logger.warning(f"Domain.com.au returned {response.status} for {suburb}")
+                        return None
+                    html = await response.text()
             
-            html = response.text
-            
-            # Extract median price - look for price patterns
             price_patterns = [
                 r'Median.*?\$?([\d,]+)',
                 r'median.*?\$?([\d,]+)',
@@ -444,7 +405,7 @@ class PropertyScraper:
                 if match:
                     try:
                         median = int(match.group(1).replace(',', ''))
-                        if 100000 < median < 10000000:  # Sanity check
+                        if 100000 < median < 10000000:
                             break
                     except:
                         continue
@@ -453,7 +414,6 @@ class PropertyScraper:
                 logger.warning(f"Could not extract median price for {suburb} from Domain")
                 return None
             
-            # Extract growth % - look for growth/appreciation patterns
             growth = 1.5
             growth_patterns = [
                 r'growth.*?([-+]?[\d.]+)%',
@@ -469,7 +429,6 @@ class PropertyScraper:
                     except:
                         continue
             
-            # Extract yield
             yield_val = 3.5
             yield_patterns = [
                 r'yield.*?([\d.]+)%',
@@ -500,7 +459,6 @@ class PropertyScraper:
             return None
     
     async def _scrape_realestate(self, suburb: str) -> Optional[Dict]:
-        """Scrape RealEstate.com.au"""
         try:
             suburb_slug = suburb.lower().replace(" ", "-").replace("_", "-")
             url = f"https://www.realestate.com.au/neighbourhoods/{suburb_slug}-nsw"
@@ -509,13 +467,12 @@ class PropertyScraper:
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
             
-            response = await self.client.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10))
-            if response.status_code != 200:
-                return None
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=10) as response:
+                    if response.status != 200:
+                        return None
+                    html = await response.text()
             
-            html = response.text
-            
-            # Look for price data in HTML
             price_match = re.search(r'\$\s*([\d,]+).*?median|median.*?\$\s*([\d,]+)', html, re.IGNORECASE)
             if price_match:
                 price_str = price_match.group(1) or price_match.group(2)
@@ -536,7 +493,6 @@ class PropertyScraper:
         return None
     
     async def _scrape_realestate_old(self, suburb: str) -> Optional[Dict]:
-        """Scrape Realestate.com.au (alternate)"""
         try:
             suburb_slug = suburb.lower().replace(" ", "-").replace("_", "-")
             url = f"https://www.realestate.com.au/suburb/{suburb_slug}-nsw"
@@ -545,11 +501,12 @@ class PropertyScraper:
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
             
-            response = await self.client.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10))
-            if response.status_code != 200:
-                return None
-            
-            html = response.text
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=10) as response:
+                    if response.status != 200:
+                        return None
+                    html = await response.text()
+                    
             price_match = re.search(r'\$\s*([\d,]+)', html)
             if price_match:
                 median = int(price_match.group(1).replace(',', ''))
@@ -569,7 +526,6 @@ class PropertyScraper:
         return None
     
     async def _scrape_google(self, suburb: str) -> Optional[Dict]:
-        """Google Search fallback - actual working implementation"""
         try:
             query = f"{suburb} Sydney property median price 2026"
             url = "https://www.google.com/search"
@@ -582,14 +538,13 @@ class PropertyScraper:
                 'Accept-Language': 'en-US,en;q=0.5',
             }
             
-            response = await self.client.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10))
-            if response.status_code != 200:
-                logger.warning(f"Google returned {response.status_code}")
-                return None
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, headers=headers, timeout=10) as response:
+                    if response.status != 200:
+                        logger.warning(f"Google returned {response.status}")
+                        return None
+                    html = await response.text()
             
-            html = response.text
-            
-            # Look for price patterns in Google results
             price_patterns = [
                 r'\$\s*([\d,]+)(?:\s*-|$)',
                 r'(?:median|median sale).*?\$\s*([\d,]+)',
@@ -670,26 +625,13 @@ class InvestBotCog(commands.Cog):
         self.save_data()
     
     # ==========================================
-    # AUTOCOMPLETE
-    # ==========================================
-    
-    async def suburb_autocomplete(self, ctx, current: str):
-        """Auto-complete suburb names - all Australian suburbs"""
-        current_lower = current.lower()
-        
-        # Filter suburbs matching input
-        matches = [s for s in ALL_AUSTRALIAN_SUBURBS if current_lower in s.lower()][:15]
-        
-        return matches if matches else ALL_AUSTRALIAN_SUBURBS[:15]
-    
-    # ==========================================
     # SLASH COMMANDS
     # ==========================================
     
     @discord.slash_command(name="suburb", description="Get suburb investment analysis")
     async def suburb(self, ctx, 
                      suburb_name: Option(str, description="Suburb name", 
-                                        autocomplete=suburb_autocomplete)):
+                                        autocomplete=get_suburb_autocomplete)):
         """Analyze any Sydney suburb for investment potential"""
         
         await ctx.response.defer()
@@ -764,9 +706,9 @@ class InvestBotCog(commands.Cog):
     
     @discord.slash_command(name="refi-check", description="Refinance eligibility check")
     async def refi_check(self, ctx,
-                         current_rate: Option(float, description="Current rate (%)"),
-                         equity_percent: Option(int, description="Home equity (%)"),
-                         annual_income: Option(int, description="Annual income (AUD)")):
+                          current_rate: Option(float, description="Current rate (%)"),
+                          equity_percent: Option(int, description="Home equity (%)"),
+                          annual_income: Option(int, description="Annual income (AUD)")):
         """Quick refinance eligibility and savings estimate"""
         
         self.flag_lead(ctx.author.id, "refinancer")
@@ -792,8 +734,8 @@ class InvestBotCog(commands.Cog):
     
     @discord.slash_command(name="compare", description="Compare two suburbs")
     async def compare(self, ctx, 
-                      suburb1: Option(str, description="First suburb", autocomplete=suburb_autocomplete),
-                      suburb2: Option(str, description="Second suburb", autocomplete=suburb_autocomplete)):
+                      suburb1: Option(str, description="First suburb", autocomplete=get_suburb_autocomplete),
+                      suburb2: Option(str, description="Second suburb", autocomplete=get_suburb_autocomplete)):
         """Side-by-side suburb comparison"""
         
         await ctx.response.defer()
