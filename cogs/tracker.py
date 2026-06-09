@@ -5,6 +5,7 @@ import asyncio
 import re
 import time
 import urllib.parse
+import logging
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -12,6 +13,14 @@ import discord
 import httpx
 from discord import Option
 from discord.ext import commands, tasks
+
+# --- LOGGING CONFIGURATION ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Suppress verbose httpx/httpcore request logging (even for successful requests)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # --- CONSTANTS ---
 THEME_PRIMARY        = 0x2B0B35
@@ -48,7 +57,7 @@ def _atomic_write(file_path: Path, data):
         tmp_path.write_text(content, encoding="utf-8")
         tmp_path.replace(file_path)
     except Exception as e:
-        print(f"⚠️ Persistence Error: {e}")
+        logger.error(f"Persistence Error: {e}")
 
 def extract_player_id(url: str):
     if not url or not isinstance(url, str):
@@ -76,6 +85,7 @@ class TrackerCog(commands.Cog):
             "Referer":    "https://fta.gg/"
         })
         self.feed_monitor.start()
+        logger.info("✅ TrackerCog initialized")
 
     def cog_unload(self):
         self.feed_monitor.cancel()
@@ -93,7 +103,7 @@ class TrackerCog(commands.Cog):
                     if k in loaded:
                         self.db[k] = loaded[k]
             except Exception as e:
-                print(f"⚠️ Failed to load tracker data — starting fresh: {e}")
+                logger.error(f"Failed to load tracker data — starting fresh: {e}")
 
         # processed_kills: list on disk → set in memory for O(1) dedup lookups
         self.db["processed_kills"] = set(self.db["processed_kills"])
@@ -149,7 +159,7 @@ class TrackerCog(commands.Cog):
                 if cuid:
                     return cuid
         except Exception as e:
-            print(f"⚠️ CUID Resolve Error for {guid}: {e}")
+            logger.error(f"CUID Resolve Error for {guid}: {e}")
         return None
 
     # -----------------------------------------------------------------------
@@ -238,7 +248,7 @@ class TrackerCog(commands.Cog):
 
             except Exception as e:
                 self.consecutive_failures += 1
-                print(f"📡 Background Loop Fault [{self.consecutive_failures}]: {e}")
+                logger.error(f"API Poll Failed [{self.consecutive_failures}]: {e}")
 
                 # Fire a single Discord alert when the failure threshold is crossed
                 if self.consecutive_failures == ALERT_AFTER_FAILURES:
@@ -334,11 +344,11 @@ class TrackerCog(commands.Cog):
                 await asyncio.sleep(1.2)
             except discord.Forbidden:
                 # Fatal: bot lost permissions — no point continuing the broadcast
-                print("📡 Broadcast halted: missing channel permissions.")
+                logger.error("Broadcast halted: missing channel permissions.")
                 break
             except Exception as e:
                 # Transient error — log it, skip this kill, keep going
-                print(f"📡 Broadcast: failed to send embed, skipping kill: {e}")
+                logger.error(f"Broadcast failed for kill: {e}")
                 continue
 
     # -----------------------------------------------------------------------
@@ -415,6 +425,7 @@ class TrackerCog(commands.Cog):
             await ctx.respond(embed=embed)
 
         except Exception as e:
+            logger.error(f"Stats fetch error: {e}")
             await ctx.respond(f"💥 **Data Extraction Error:**\n```\n{e}\n```")
 
     @discord.slash_command(name="track_player", description="Add a player to the live API watch list")
@@ -529,6 +540,7 @@ class TrackerCog(commands.Cog):
             )
 
         except Exception as e:
+            logger.error(f"Diagnostics error: {e}")
             await ctx.respond(f"💥 **Fatal Network Error:**\n```\n{e}\n```")
 
 
