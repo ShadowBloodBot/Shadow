@@ -130,51 +130,44 @@ class TTSCog(commands.Cog):
         if self.leave_timer:
             self.leave_timer.cancel()
 
-        # --- TRANSLATION (executor — blocking HTTP call) ---
         lang_code = "en" if language in ("au", "uk") else language
         tld       = "com.au" if language == "au" else "co.uk" if language == "uk" else "com"
+        file_path = TEMP_AUDIO_DIR / f"tts_{uuid.uuid4().hex[:8]}.mp3"
 
-        def fetch_translation():
-            if lang_code == "en":
-                return text, False
-            try:
-                target = "zh-CN" if lang_code == "zh-cn" else lang_code
-                result = GoogleTranslator(source="auto", target=target).translate(text)
-                return result, True
-            except Exception:
-                return text, False
-
-        spoken_text, is_translated = await self.bot.loop.run_in_executor(None, fetch_translation)
-
-        # --- TTS GENERATION (executor — gTTS makes a blocking HTTP call) ---
-        file_name = f"tts_{uuid.uuid4().hex[:8]}.mp3"
-        file_path = TEMP_AUDIO_DIR / file_name
-
-        def generate_tts():
+        # Translate + gTTS in one executor hop; overlap with voice connect below.
+        def prepare_audio():
+            spoken_text, is_translated = text, False
+            if lang_code != "en":
+                try:
+                    target = "zh-CN" if lang_code == "zh-cn" else lang_code
+                    spoken_text = GoogleTranslator(source="auto", target=target).translate(text)
+                    is_translated = True
+                except Exception:
+                    pass
             gTTS(text=spoken_text, lang=lang_code, tld=tld, slow=False).save(str(file_path))
+            return spoken_text, is_translated
 
-        try:
-            await self.bot.loop.run_in_executor(None, generate_tts)
-            source = await discord.FFmpegOpusAudio.from_probe(str(file_path), options="-loglevel error")
-        except Exception as e:
-            _safe_delete(file_path)  # cleanup even on generation failure
-            return await ctx.followup.send(f"❌ Audio generation failed: {e}", ephemeral=True)
-
-        # --- VOICE CONNECTION ---
-        vc = ctx.guild.voice_client
-        try:
+        async def ensure_voice():
+            vc = ctx.guild.voice_client
             if not vc or not vc.is_connected():
                 vc = await target_channel.connect(timeout=20.0)
                 await asyncio.sleep(1.5)  # Railway voice gateway stabilisation
             elif vc.channel.id != target_channel.id:
                 await vc.move_to(target_channel)
+            return vc
+
+        try:
+            (spoken_text, is_translated), vc = await asyncio.gather(
+                self.bot.loop.run_in_executor(None, prepare_audio),
+                ensure_voice(),
+            )
+            if not vc.is_connected():
+                _safe_delete(file_path)
+                return await ctx.followup.send("❌ Connection lost before speaking.", ephemeral=True)
+            source = discord.FFmpegOpusAudio(str(file_path), options="-loglevel error")
         except Exception as e:
             _safe_delete(file_path)
-            return await ctx.followup.send(f"❌ Voice connection failed: {e}", ephemeral=True)
-
-        if not vc.is_connected():
-            _safe_delete(file_path)
-            return await ctx.followup.send("❌ Connection lost before speaking.", ephemeral=True)
+            return await ctx.followup.send(f"❌ Audio/voice setup failed: {e}", ephemeral=True)
 
         # --- ENQUEUE ---
         position = self.queue.qsize()   # 0 = plays next, 1 = second in line, etc.
