@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .env
 .env.*
+data/suburbs.db
+data/suburbs.json
+data/suburbs_sync_meta.json
+

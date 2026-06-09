@@ -24,5 +24,7 @@ RUN python -m pip install --upgrade pip setuptools wheel \
 # ---- Copy the rest of your code
 COPY . .
 
-# ---- Start the bot
-CMD ["python", "-u", "bot.py"]
+RUN chmod +x docker-entrypoint.sh
+
+# ---- Sync suburbs on start, then run bot
+ENTRYPOINT ["./docker-entrypoint.sh"]

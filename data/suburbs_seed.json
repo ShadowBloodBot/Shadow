@@ -1,0 +1,13 @@
+{
+  "nsw": [
+    "Parramatta", "Croydon Park", "Merrylands", "Blacktown", "Penrith",
+    "Liverpool", "Campbelltown", "Newcastle", "Wollongong", "Bondi",
+    "Ryde", "Auburn", "Bankstown", "Hurstville", "Mascot", "Surry Hills"
+  ],
+  "vic": ["Footscray", "Geelong"],
+  "qld": ["Logan Central", "Mooloolaba"],
+  "sa": ["Salisbury"],
+  "wa": ["Maylands"],
+  "act": ["Braddon", "Belconnen"],
+  "tas": ["North Hobart"]
+}

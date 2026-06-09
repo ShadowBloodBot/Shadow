@@ -1,9 +1,11 @@
 """Curated AU property picks and mortgage strategy content for invest_bot."""
 
 DISCLAIMER = (
-    "General information only — not personal financial advice. "
-    "Speak with a licensed Australian mortgage broker before acting."
+    "Educational discussion only — not personal financial advice. "
+    "Talk to a licensed Australian mortgage broker for your situation."
 )
+
+DISCLAIMER_SHORT = "Educational discussion only — not personal financial advice."
 
 # type: rental = yield-focused, growth = capital-growth-focused
 PROPERTIES = [
@@ -166,4 +168,17 @@ STRATEGIES = [
         "source": "Lender product disclosure statements",
         "link": "https://moneysmart.gov.au/home-loans/choosing-a-home-loan",
     },
+]
+
+# Top Sydney suburbs for curated daily rotation (Week 1–4 engagement loop)
+SYDNEY_DAILY_ROTATION = [
+    "Parramatta", "Croydon Park", "Merrylands", "Blacktown", "Liverpool",
+    "Auburn", "Bankstown", "Penrith", "Ryde", "Hurstville",
+]
+
+WEEKLY_DIGEST_LINES = [
+    "RBA cash rate — check latest decision at rba.gov.au/statistics/cash-rate/",
+    "Domain weekly market wrap — indicative clearance and listing trends nationally.",
+    "Investor focus: compare gross yield vs 12m growth in corridors you are researching.",
+    "Broker discussion point: stress-test at +3% above your quoted rate before committing.",
 ]

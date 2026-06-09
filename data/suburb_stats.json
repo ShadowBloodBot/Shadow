@@ -1,0 +1,252 @@
+{
+  "parramatta": {
+    "name": "Parramatta",
+    "state": "NSW",
+    "median_price": 850000,
+    "growth_12m_pct": 4.2,
+    "rental_yield_pct": 4.1,
+    "rental_demand_score": 78,
+    "median_rent_weekly": 650,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "croydon park": {
+    "name": "Croydon Park",
+    "state": "NSW",
+    "median_price": 1680000,
+    "growth_12m_pct": -2.1,
+    "rental_yield_pct": 2.8,
+    "rental_demand_score": 65,
+    "median_rent_weekly": 920,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "merrylands": {
+    "name": "Merrylands",
+    "state": "NSW",
+    "median_price": 980000,
+    "growth_12m_pct": 3.8,
+    "rental_yield_pct": 4.0,
+    "rental_demand_score": 74,
+    "median_rent_weekly": 750,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "blacktown": {
+    "name": "Blacktown",
+    "state": "NSW",
+    "median_price": 820000,
+    "growth_12m_pct": 5.1,
+    "rental_yield_pct": 4.3,
+    "rental_demand_score": 71,
+    "median_rent_weekly": 680,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "penrith": {
+    "name": "Penrith",
+    "state": "NSW",
+    "median_price": 780000,
+    "growth_12m_pct": 4.5,
+    "rental_yield_pct": 4.2,
+    "rental_demand_score": 69,
+    "median_rent_weekly": 630,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "liverpool": {
+    "name": "Liverpool",
+    "state": "NSW",
+    "median_price": 720000,
+    "growth_12m_pct": 6.2,
+    "rental_yield_pct": 4.5,
+    "rental_demand_score": 76,
+    "median_rent_weekly": 620,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "campbelltown": {
+    "name": "Campbelltown",
+    "state": "NSW",
+    "median_price": 680000,
+    "growth_12m_pct": 5.8,
+    "rental_yield_pct": 4.6,
+    "rental_demand_score": 72,
+    "median_rent_weekly": 600,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "newcastle": {
+    "name": "Newcastle",
+    "state": "NSW",
+    "median_price": 920000,
+    "growth_12m_pct": 6.1,
+    "rental_yield_pct": 3.9,
+    "rental_demand_score": 70,
+    "median_rent_weekly": 690,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "wollongong": {
+    "name": "Wollongong",
+    "state": "NSW",
+    "median_price": 890000,
+    "growth_12m_pct": 5.4,
+    "rental_yield_pct": 3.7,
+    "rental_demand_score": 68,
+    "median_rent_weekly": 630,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "footscray": {
+    "name": "Footscray",
+    "state": "VIC",
+    "median_price": 580000,
+    "growth_12m_pct": 5.9,
+    "rental_yield_pct": 4.4,
+    "rental_demand_score": 77,
+    "median_rent_weekly": 490,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "geelong": {
+    "name": "Geelong",
+    "state": "VIC",
+    "median_price": 620000,
+    "growth_12m_pct": 4.8,
+    "rental_yield_pct": 4.6,
+    "rental_demand_score": 73,
+    "median_rent_weekly": 550,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "logan central": {
+    "name": "Logan Central",
+    "state": "QLD",
+    "median_price": 650000,
+    "growth_12m_pct": 7.1,
+    "rental_yield_pct": 5.0,
+    "rental_demand_score": 75,
+    "median_rent_weekly": 620,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "mooloolaba": {
+    "name": "Mooloolaba",
+    "state": "QLD",
+    "median_price": 890000,
+    "growth_12m_pct": 7.2,
+    "rental_yield_pct": 3.5,
+    "rental_demand_score": 66,
+    "median_rent_weekly": 595,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "salisbury": {
+    "name": "Salisbury",
+    "state": "SA",
+    "median_price": 580000,
+    "growth_12m_pct": 4.1,
+    "rental_yield_pct": 4.7,
+    "rental_demand_score": 67,
+    "median_rent_weekly": 520,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "maylands": {
+    "name": "Maylands",
+    "state": "WA",
+    "median_price": 550000,
+    "growth_12m_pct": 6.8,
+    "rental_yield_pct": 4.8,
+    "rental_demand_score": 74,
+    "median_rent_weekly": 510,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "braddon": {
+    "name": "Braddon",
+    "state": "ACT",
+    "median_price": 520000,
+    "growth_12m_pct": 3.9,
+    "rental_yield_pct": 5.5,
+    "rental_demand_score": 80,
+    "median_rent_weekly": 550,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "belconnen": {
+    "name": "Belconnen",
+    "state": "ACT",
+    "median_price": 490000,
+    "growth_12m_pct": 5.0,
+    "rental_yield_pct": 5.2,
+    "rental_demand_score": 71,
+    "median_rent_weekly": 490,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "north hobart": {
+    "name": "North Hobart",
+    "state": "TAS",
+    "median_price": 780000,
+    "growth_12m_pct": 5.4,
+    "rental_yield_pct": 4.0,
+    "rental_demand_score": 64,
+    "median_rent_weekly": 600,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "bondi": {
+    "name": "Bondi",
+    "state": "NSW",
+    "median_price": 2450000,
+    "growth_12m_pct": 2.3,
+    "rental_yield_pct": 2.4,
+    "rental_demand_score": 82,
+    "median_rent_weekly": 1100,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "ryde": {
+    "name": "Ryde",
+    "state": "NSW",
+    "median_price": 1580000,
+    "growth_12m_pct": 3.1,
+    "rental_yield_pct": 2.9,
+    "rental_demand_score": 70,
+    "median_rent_weekly": 880,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "auburn": {
+    "name": "Auburn",
+    "state": "NSW",
+    "median_price": 780000,
+    "growth_12m_pct": 4.6,
+    "rental_yield_pct": 4.2,
+    "rental_demand_score": 79,
+    "median_rent_weekly": 630,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "bankstown": {
+    "name": "Bankstown",
+    "state": "NSW",
+    "median_price": 920000,
+    "growth_12m_pct": 4.0,
+    "rental_yield_pct": 3.8,
+    "rental_demand_score": 73,
+    "median_rent_weekly": 680,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "hurstville": {
+    "name": "Hurstville",
+    "state": "NSW",
+    "median_price": 1180000,
+    "growth_12m_pct": 3.5,
+    "rental_yield_pct": 3.2,
+    "rental_demand_score": 76,
+    "median_rent_weekly": 720,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "mascot": {
+    "name": "Mascot",
+    "state": "NSW",
+    "median_price": 1350000,
+    "growth_12m_pct": 2.8,
+    "rental_yield_pct": 3.4,
+    "rental_demand_score": 81,
+    "median_rent_weekly": 900,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  },
+  "surry hills": {
+    "name": "Surry Hills",
+    "state": "NSW",
+    "median_price": 1850000,
+    "growth_12m_pct": 1.9,
+    "rental_yield_pct": 2.6,
+    "rental_demand_score": 84,
+    "median_rent_weekly": 920,
+    "source": "Indicative — Domain suburb profile + ABS SA2 trends (discussion model)"
+  }
+}
