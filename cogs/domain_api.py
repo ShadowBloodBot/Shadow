@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -75,16 +76,23 @@ class DomainAPI:
             raise RuntimeError("Domain API not configured")
         if self._token and time.time() < self._token_exp - 60:
             return {"Authorization": f"Bearer {self._token}"}
+
+        # https://developer.domain.com.au/docs/v2/authentication/oauth/client-credentials-grant
+        basic = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.post(
                 AUTH_URL,
+                headers={
+                    "Authorization": f"Basic {basic}",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
                 data={
                     "grant_type": "client_credentials",
-                    "client_id": self.client_id,
-                    "client_secret": self.client_secret,
                     "scope": "api_suburbperformance_read",
                 },
             )
+        if resp.status_code >= 400:
+            logger.error(f"Domain OAuth failed: {resp.status_code} {resp.text[:300]}")
         resp.raise_for_status()
         payload = resp.json()
         self._token = payload["access_token"]
@@ -145,8 +153,12 @@ class DomainAPI:
             headers = await self._auth_headers()
             async with httpx.AsyncClient(timeout=25) as client:
                 resp = await client.get(url, headers=headers, params=params)
+                if resp.status_code == 404:
+                    logger.info(f"Domain API: no house stats for {suburb} {state} {postcode}")
+                    url_no_pc = f"{API_BASE}/{state.upper()}/{suburb}"
+                    resp = await client.get(url_no_pc, headers=headers, params=params)
             if resp.status_code == 404:
-                logger.info(f"Domain API: no house stats for {suburb} {state} {postcode}")
+                logger.info(f"Domain API: no house stats for {suburb} {state}")
                 return None
             if resp.status_code == 429:
                 logger.warning("Domain API rate limit hit")
