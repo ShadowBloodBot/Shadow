@@ -1,233 +1,140 @@
-"""
-AUSTRALIAN SUBURBS DATABASE
-Sydney, Melbourne, Adelaide, Perth - 1500+ suburbs
-"""
+import os
+import json
+import logging
+from pathlib import Path
 
-AUSTRALIAN_SUBURBS = {
+# ==========================================
+# TELEMETRY & LOGGING
+# ==========================================
+logger = logging.getLogger("ShadowSyn.SuburbsDB")
+
+# ==========================================
+# CONFIGURATION & CONSTANTS
+# ==========================================
+PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve()
+SUBURBS_DB_PATH = PERSIST_ROOT / "suburbs.json"
+
+# Clean, verified seed data. Zero LLM hallucinations.
+SEED_SUBURBS = {
     "Sydney": [
-        "Abbotsford", "Achilles Point", "Adamstown", "Addington", "Affington", "Airds", "Alfords Point",
-        "Allambie Heights", "Allawah", "Allwood", "Alton Park", "Ambarvale", "Amelia Park", "Annandale",
-        "Annfield", "Annfield Plain", "Ansley", "Antons", "Anzac", "Appin", "Apple Tree Bay", "Applecross",
-        "Apsley", "Arndell Park", "Arncliffe", "Artarmon", "Ash Island", "Ashbury", "Ashcroft", "Asheroft",
-        "Ashfield", "Ashford", "Ashmore", "Ashton", "Aspinall", "Asquith", "Athlone", "Athol", "Atherstone",
-        "Atholwood", "Atkinson", "Atomic", "Attadale", "Attalea", "Attentive", "Atticus", "Attucks",
-        "Auburn", "Auburnvale", "Auchterlonie", "Audley", "Auganish", "Augustvale", "Aunger", "Aurelia",
-        "Auroral", "Aurore", "Austinville", "Austraders", "Austral", "Australia", "Australind", "Austral Pass",
-        "Austricle", "Austrylian", "Auteuil", "Autolycus", "Autumn", "Avalon", "Avalon Beach", "Aveley",
-        "Avenell", "Avenue", "Avion", "Avocado Flat", "Avoca", "Avondale", "Avondale Heights", "Avondale Park",
-        "Avonmore", "Avonside", "Avonvale", "Avoyer", "Awaba", "Awadabad", "Aware", "Awarra", "Awareness",
-        "Awatoto", "Aweburn", "Aweigh", "Awellan", "Awendaw", "Awend", "Awenteg", "Awenty", "Awerib",
-        "Aweridge", "Awesbury", "Awesham", "Awestead", "Aweston", "Awetan", "Aweton", "Awetucket", "Aweugh",
-        "Aweust", "Aweurara", "Aweust", "Aweville", "Aweward", "Awewell", "Awewood", "Awesworth", "Aweswick",
-        "Baan Baan", "Babcock", "Babylon", "Bacchus Marsh", "Backbyrnecreek", "Bade", "Badgerys Creek",
-        "Badham", "Badgery", "Badham Park", "Badjidi", "Badlands", "Badley", "Badminton", "Badulla", "Baedeker",
-        "Bagdad", "Bagham", "Baglan", "Bagler", "Bagnold", "Bagot", "Bagpipe Creek", "Bagshot", "Baguley",
-        "Baham", "Bahamut", "Bahar", "Bahbah", "Bahibon", "Bahinna", "Bahjib", "Bahmanis", "Bahmena",
-        "Bahnman", "Bahonian", "Bahook", "Bahou", "Bahraba", "Bahrak", "Bahram", "Bahramis", "Bahrampur",
-        "Bahran", "Bahria", "Bahrin", "Bahris", "Bahrini", "Bahris", "Bahristan", "Bahriya", "Bahrmaki",
-        "Bahroba", "Bahroni", "Bahruba", "Bahrubia", "Bahsul", "Bahtgah", "Bahti", "Bahtian", "Bahujan",
-        "Bahujani", "Bahul", "Bahumar", "Bahuna", "Bahyar", "Bahyari", "Bahyun", "Baiae", "Baialuba",
-        "Baiancich", "Baiano", "Baiani", "Baiar", "Baiara", "Baiarinha", "Baiarinos", "Baiario", "Baiarira",
-        "Baias", "Baiat", "Baiata", "Baiataric", "Baiately", "Baibai", "Baibak", "Baibakou", "Baibala",
-        "Baibanu", "Baibanur", "Baibara", "Baibarai", "Baibaraku", "Baibaran", "Baibargi", "Baibarjum",
-        "Baibarkai", "Baibarkol", "Baibarley", "Baibarmai", "Baibarnak", "Baibarola", "Baibarova", "Baibarovin",
-        "Baibarrai", "Baibarso", "Baibarta", "Baibartai", "Baibartal", "Baibarti", "Baibartin", "Baibartin",
-        "Baibarto", "Baibartu", "Baibarulla", "Baibas", "Baibass", "Baibat", "Baibatai", "Baibatam", "Baibatan",
-        "Baibatara", "Baibatari", "Baibataro", "Baibatary", "Baibatat", "Baibatau", "Baibatava", "Baibatle",
-        "Baibato", "Baibatri", "Baibatten", "Baibattenai", "Baibattin", "Baibattra", "Baibaul", "Baibaus",
-        "Baibaut", "Baibava", "Baibavara", "Baibavari", "Baibavas", "Baibave", "Baibavidin", "Baibavo",
-        "Baibavur", "Baibaya", "Baibayaka", "Baibayin", "Baibayit", "Baibazirah", "Baibel", "Baibella",
-        "Baibelle", "Baibelli", "Baibellis", "Baibelo", "Baibels", "Baibelski", "Baibena", "Baibenai",
-        "Baibenbai", "Baibenci", "Baibenda", "Baibenella", "Baibener", "Baibenga", "Baibengai", "Baibengala",
-        "Baibengara", "Baibengari", "Baibengo", "Baibengu", "Baibenkai", "Baibenker", "Baibenkur", "Baibenlai",
-        "Baibenni", "Baibenna", "Baibenoi", "Baibenora", "Baibensa", "Baibensai", "Baibensan", "Baibenter",
-        "Baibentura", "Baibenza", "Baibenzai", "Baibenzal", "Baibenzara", "Baibenzarias", "Baibenzo",
-        "Baibenzoi", "Baibenzun", "Baibeol", "Baibera", "Baiberac", "Baiberada", "Baiberadai", "Baiberai",
-        "Baiberaia", "Baiberaian", "Baiberajah", "Baiberaka", "Baiberaki", "Baiberaku", "Baiberala",
-        "Baiberali", "Baiberalo", "Baiberalue", "Baiberama", "Baiberamac", "Baiberamada", "Baiberamah",
-        "Baiberamai", "Baiberaman", "Baiberamara", "Baiberamar", "Baiberamari", "Baiberamaria", "Baiberamau",
-        "Baiberamba", "Baiberambai", "Baiberamban", "Baiberambu", "Baiberambul", "Baiberambus", "Baiberambut",
-        "Baiberamby", "Baiberambya", "Baiberambyah", "Baiberamel", "Baiberamen", "Baiberamer", "Baiberami",
-        "Baiberamis", "Baiberamit", "Baiberamiya", "Baiberamo", "Baiberamod", "Baiberamoi", "Baiberamola",
-        "Baiberamoli", "Baiberamolla", "Baiberamolo", "Baiberamon", "Baiberamona", "Baiberamone",
-        "Baiberamoni", "Baiberamonio", "Baiberamono", "Baiberamor", "Baiberamora", "Baiberamori",
-        "Baiberamoria", "Baiberamorio", "Baiberamorna", "Baiberamoro", "Baiberamorra", "Baiberamorraia",
-        "Baiberamorro", "Baiberamorse", "Baiberamort", "Baiberamorta", "Baiberamorte", "Baiberamorto",
-        "Baiberamoru", "Baiberamory", "Baiberamosa", "Baiberamose", "Baiberamosi", "Baiberamoso",
-        "Baiberamoss", "Baiberamost", "Baiberamota", "Baiberamote", "Baiberamoti", "Baiberamoto",
-        "Baiberamotta", "Baiberamotte", "Baiberamotto", "Baiberamottu", "Baiberamoulis", "Baiberamount",
-        "Baiberamour", "Baiberamoura", "Baiberamourah", "Baiberamouran", "Baiberamouras", "Baiberamoure",
-        "Baiberamourga", "Baiberamouric", "Baiberamourid", "Baiberamoure", "Baiberamouriga", "Baiberamorik",
-        "Baiberamourin", "Baiberamourina", "Baiberamourion", "Baiberamoura", "Baiberamour", "Baiberamours",
-        "Baiberamourt", "Baiberamourta", "Baiberamourte", "Baiberamourti", "Baiberamourto", "Baiberamourty",
-        "Baiberamous", "Baiberamous", "Baiberamouse", "Baiberamousie", "Baiberamousina", "Baiberamousio",
-        "Baiberamous", "Baiberamoussi", "Baiberamoussia", "Baiberamout", "Baiberamouta", "Baiberamoute",
-        "Baiberamouti", "Baiberamouto", "Baiberamoutou", "Baiberamoutu", "Baiberamouty", "Baiberamouva",
-        "Baiberamouvain", "Baiberamouval", "Baiberamouvan", "Baiberamouvas", "Baiberamouve", "Baiberamouvea",
-        "Baiberamouveau", "Baiberamouveaux", "Baiberamouvel", "Baiberamouven", "Baiberamouver",
-        "Baiberamouvera", "Baiberamouvere", "Baiberamouverel", "Baiberamouverie", "Baiberamouves",
-        "Baiberamouvet", "Baiberamouvi", "Baiberamouvian", "Baiberamouvier", "Baiberamouvil", "Baiberamouvilla",
-        "Baiberamouvilla", "Baiberamouville", "Baiberamouvin", "Baiberamouvinaire", "Baiberamouvinale",
-        "Baiberamouvinales", "Baiberamouvinante", "Baiberamouvinaria", "Baiberamouvinarie", "Baiberamouvinas",
-        "Baiberamouvinata", "Baiberamouvinato", "Baiberamouvinats", "Baiberamouvinats", "Baiberamouvindi",
-        "Baiberamouvindie", "Baiberamouvine", "Baiberamouvineia", "Baiberamouvinella", "Baiberamouvinelle",
-        "Baiberamouvinensis", "Baiberamouvini", "Baiberamouviniana", "Baiberamouviniani", "Baiberamouviniani",
-        "Baiberamouviniano", "Baiberamouvinic", "Baiberamouvinica", "Baiberamouvinice", "Baiberamouviniche",
-        "Baiberamouvinichia", "Baiberamouvinichiae", "Baiberamouvinichiana", "Baiberamouvinichiano",
-        "Baiberamouvinichias", "Baiberamouvinichie", "Baiberamouvinichies", "Baiberamouvinichii",
-        "Baiberamouvinichina", "Baiberamouvinichinae", "Baiberamouvinichinal", "Baiberamouvinichini",
-        "Baiberamouvinichino", "Baiberamouvinichios", "Baiberamouvinichis", "Baiberamouvinichises",
-        "Baiberamouvinichisima", "Baiberamouvinichisme", "Baiberamouvinichismo", "Baiberamouvinichista",
-        "Baiberamouvinichiste", "Baiberamouvinichisti", "Baiberamouvinichisulla", "Baiberamouvinichita",
-        "Baiberamouvinichitae", "Baiberamouvinichitai", "Baiberamouvinichital", "Baiberamouvinichitana",
-        "Baiberamouvinichitane", "Baiberamouvinichitania", "Baiberamouvinichitaniae", "Baiberamouvinichitanis",
-        "Baiberamouvinichitanisis", "Baiberamouvinichitano", "Baiberamouvinichitanos", "Baiberamouvinichitansas",
-        "Baiberamouvinichitas", "Baiberamouvinichitates", "Baiberamouvinichite", "Baiberamouvinichites",
-        "Baiberamouvinichiti", "Baiberamouvinichitia", "Baiberamouvinichitiae", "Baiberamouvinichitian",
-        "Baiberamouvinichitiana", "Baiberamouvinichitianae", "Baiberamouvinichitiani", "Baiberamouvinichitiano",
-        "Baiberamouvinichitians", "Baiberamouvinichitias", "Baiberamouvinichitidium", "Baiberamouvinichitidium",
-        "Baiberamouvinichitis", "Baiberamouvinichitis", "Baiberamouvinichito", "Baiberamouvinichitos",
-        "Baiberamouvinichits", "Baiberamouvinichitum", "Baiberamouvinichitus", "Baiberamouvinichitus",
-        "Baiberamouvinichiya", "Baiberamouvinichizacao", "Baiberamouvinichize", "Baiberamouvinichized",
-        "Baiberamouvinichizer", "Baiberamouvinichizes", "Baiberamouvinichizing", "Baiberamouvinichizingly",
-        "Baiberamouvinick", "Baiberamouvinicke", "Baiberamouvinicker", "Baiberamouvinickerman", "Baiberamouvinickers",
-        "Baiberamouvinicketed", "Baiberamouvinicketer", "Baiberamouvinicketer", "Baiberamouvinicketed",
-        "Baiberamouvinicketer", "Baiberamouvinckes", "Baiberamouvinckies", "Baiberamouvinckies",
-        "Baiberamouvinicola", "Baiberamouvinicense", "Baiberamouvinisienne", "Baiberamouvining", "Baiberamouvino",
-        "Baiberamouvinois", "Baiberamouvinoise", "Baiberamouvinoiserie", "Baiberamouvinoiseries",
-        "Baiberamouvinoisette", "Baiberamouvinoisette", "Baiberamouvinou", "Baiberamouvinouse",
-        "Baiberamouvinously", "Baiberamouvinouslya", "Baiberamouvinouslye", "Baiberamouvinouslyee",
-        "Baiberamouvinouslyei", "Baiberamouvinouslyeo", "Baiberamouvinouslyeu", "Baiberamouvinouslyey",
-        "Baiberamouvinouslyia", "Baiberamouvinouslyie", "Baiberamouvinouslyii", "Baiberamouvinouslyio",
-        "Baiberamouvinouslyiu", "Baiberamouvinouslyiy", "Baiberamouvinouslyoa", "Baiberamouvinouslyoe",
-        "Baiberamouvinouslyoi", "Baiberamouvinouslyoo", "Baiberamouvinouslyou", "Baiberamouvinouslyoy",
-        "Baiberamouvinouslyua", "Baiberamouvinouslyue", "Baiberamouvinouslyui", "Baiberamouvinouslyuo",
-        "Baiberamouvinouslyuu", "Baiberamouvinouslyuy", "Baiberamouvinous", "Baiberamouvinousness",
-        "Baiberamouvinousnesses", "Baiberamouvinousner", "Baiberamouvinousnesses", "Baiberamouvinousnesses",
-        "Baiberamouvinousnesses", "Baiberamouvinousnesses", "Baiberamouvinousnesses", "Baiberamouvinousnesses",
-        "Baiberamouvinousnesses", "Baiberamouvinousnesses", "Baiberamouvinousnesses", "Baiberamouvinousnesses",
-        "Baiberamouvinousnesses", "Baiberamouvinousnesses", "Baiberamouvinousnesses"
+        "Abbotsford", "Alexandria", "Annandale", "Artarmon", "Ashfield", "Auburn", "Avalon Beach", 
+        "Balmain", "Bankstown", "Baulkham Hills", "Blacktown", "Bondi", "Bondi Beach", "Burwood",
+        "Cabramatta", "Camden", "Campbelltown", "Campsie", "Castle Hill", "Chatswood", "Cherrybrook",
+        "Concord", "Coogee", "Cronulla", "Crows Nest", "Croydon", "Darlinghurst", "Dee Why",
+        "Double Bay", "Drummoyne", "Dulwich Hill", "Eastwood", "Edgecliff", "Epping", "Fairfield",
+        "Glebe", "Gordon", "Guildford", "Hornsby", "Hurstville", "Kellyville", "Kensington",
+        "Kingsford", "Kogarah", "Lane Cove", "Leichhardt", "Lidcombe", "Liverpool", "Manly",
+        "Maroubra", "Marrickville", "Mascot", "Merrylands", "Mosman", "Newtown", "North Sydney",
+        "Paddington", "Parramatta", "Penrith", "Petersham", "Punchbowl", "Pymble", "Randwick",
+        "Redfern", "Rockdale", "Rose Bay", "Ryde", "Seven Hills", "Stanmore", "Strathfield",
+        "Surry Hills", "Sutherland", "Sydenham", "Vaucluse", "Waterloo", "Waverley", "Westmead"
     ],
     "Melbourne": [
-        "Abbotsford", "Aberfeldie", "Abinger", "Abingdon", "Abrah", "Abram", "Abrams", "Abreheimers",
-        "Absalom", "Abson", "Abstead", "Abuklea", "Abundance", "Abyss", "Acacia Ridge", "Acairns",
-        "Acakura", "Acalawag", "Acamanta", "Acamaries", "Acambaro", "Acambuca", "Acambucu", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento", "Acampamento",
-        "Acampamento"
+        "Abbotsford", "Albert Park", "Alphington", "Armadale", "Ascot Vale", "Balaclava", "Balwyn",
+        "Box Hill", "Brighton", "Brunswick", "Bundoora", "Burwood", "Camberwell", "Carlton",
+        "Carnegie", "Caulfield", "Chadstone", "Cheltenham", "Clayton", "Coburg", "Collingwood",
+        "Craigieburn", "Cranbourne", "Dandenong", "Doncaster", "Elsternwick", "Eltham", "Elwood",
+        "Essendon", "Fitzroy", "Flemington", "Footscray", "Frankston", "Glen Iris", "Glen Waverley",
+        "Hawthorn", "Ivanhoe", "Kew", "Malvern", "Melbourne", "Mentone", "Moonee Ponds", "Moorabbin",
+        "Newport", "Northcote", "Oakleigh", "Ormond", "Pakenham", "Prahran", "Preston", "Reservoir",
+        "Richmond", "Ringwood", "Rowville", "South Yarra", "St Kilda", "Sunshine", "Tarneit",
+        "Thornbury", "Toorak", "Werribee", "Williamstown", "Yarraville"
     ],
-    "Adelaide": [
-        "Aberfeldie", "Abercorn", "Aberfoyle", "Abersham", "Abertawe", "Aberuate", "Aberucill", "Aberullain",
-        "Abingdon", "Abinger", "Abjam", "Able", "Ableston", "Ably", "Ablyone", "Abney", "Abneyburn",
-        "Abobsomely", "Abodil", "Abolisher", "Abolition", "Abollard", "Abollas", "Abolles", "Abollest",
-        "Abollestion", "Abollestones", "Abollestory", "Abolleston", "Abollet", "Abolleton", "Abolley",
-        "Abollicombe", "Abollier", "Abolligans", "Abollingham", "Abollion", "Abollious", "Abolliper",
-        "Abollisth", "Abolliston", "Abolliter", "Abollithian", "Abollition", "Abollitioneer", "Abollitioner",
-        "Abollitioness", "Abollitionism", "Abollitionist", "Abollitionize", "Abollitionized", "Abollitionizer",
-        "Abollitionizes", "Abollitionizing", "Abollitive", "Abollitor", "Abollity", "Abolliver", "Abollivers",
-        "Abollock", "Abollode", "Abolloeder", "Abolloes", "Abollogue", "Abolloid", "Abolloidal", "Abolloidea",
-        "Abolloideae", "Abolloideae", "Abolloideal", "Abolloidean", "Abolloideans", "Abolloidee", "Abolloidees",
-        "Abolloidei", "Abolloidei", "Abolloideia", "Abolloideias", "Abolloideim", "Abolloidein", "Abolloidel",
-        "Abolloidelia", "Abolloideline", "Abolloidell", "Abolloidella", "Abolloidellae", "Abolloidellal",
-        "Abolloidellana", "Abolloidellane", "Abolloidellania", "Abolloidellans", "Abolloidellaria",
-        "Abolloidellaries", "Abolloidellary", "Abolloidellata", "Abolloidellate", "Abolloidellated",
-        "Abolloidellates", "Abolloidellati", "Abolloidellatin", "Abolloidellation", "Abolloidellative",
-        "Abolloidellator", "Abolloidellatory", "Abolloidelle", "Abolloidellely", "Abolloidellem",
-        "Abolloidellen", "Abolloideller", "Abolloidelleria", "Abolloidelleries", "Abolloidellering",
-        "Abolloidellers", "Abolloidellery", "Abolloidelles", "Abolloidellesia", "Abolloidellesque",
-        "Abolloidellest", "Abolloidelleta", "Abolloidelleta", "Abolloidelleta", "Abolloidelleta",
-        "Abolloidelleta", "Abolloidelleta", "Abolloidelleta", "Abolloidelleta", "Abolloidelleta",
-        "Abolloidelleta", "Abolloidelleta", "Abolloidelleta", "Abolloidelleta", "Abolloidelleta",
-        "Abolloidelleta", "Abolloidelleta", "Abolloidelleta", "Abolloidelleta", "Abolloidelleta",
-        "Abolloidelleta", "Abolloidelleta", "Abolloidelleta", "Abolloidelleta", "Abolloidelleta",
-        "Abolloidelleta", "Abolloidelleta", "Abolloidelleta", "Abolloidelleta", "Abolloidelleta"
+    "Brisbane": [
+        "Albion", "Alderley", "Annerley", "Ascot", "Ashgrove", "Auchenflower", "Balmoral",
+        "Bardon", "Bowen Hills", "Bulimba", "Camp Hill", "Cannon Hill", "Carindale", "Chermside",
+        "Clayfield", "Coorparoo", "Corinda", "Dutton Park", "East Brisbane", "Eight Mile Plains",
+        "Enoggera", "Everton Park", "Fairfield", "Fortitude Valley", "Graceville", "Hamilton",
+        "Hawthorne", "Highgate Hill", "Holland Park", "Indooroopilly", "Kangaroo Point", "Kedron",
+        "Kelvin Grove", "Kenmore", "Lutwyche", "Macgregor", "Milton", "Mitchelton", "Moorooka",
+        "Morningside", "Mount Gravatt", "New Farm", "Newmarket", "Newstead", "Norman Park",
+        "Nundah", "Paddington", "Red Hill", "Sherwood", "South Brisbane", "Spring Hill",
+        "St Lucia", "Stafford", "Sunnybank", "Taringa", "Tarragindi", "Tennyson", "Toowong",
+        "Upper Mount Gravatt", "West End", "Windsor", "Woolloongabba", "Wooloowin", "Yeerongpilly"
     ],
     "Perth": [
-        "Abbeyland", "Abbeyfield", "Abbeygate", "Abbeylands", "Abbeywood", "Abbeyworth", "Abbeys",
-        "Abbeyville", "Abbeyward", "Abbeywalk", "Abbeywarts", "Abbeyworth", "Abbeywray", "Abbeywright",
-        "Abbeywick", "Abbeywicke", "Abbeywidows", "Abbeywise", "Abbeyworth", "Abbeywort", "Abbeyworts",
-        "Abbeywound", "Abbeywright", "Abbeywynd", "Abbeywynde", "Abbeywynds", "Abbey", "Abbeys",
-        "Abbicorn", "Abbicorna", "Abbicornae", "Abbicornal", "Abbicornate", "Abbicornated", "Abbicornates",
-        "Abbicornati", "Abbicornatin", "Abbicornation", "Abbicornative", "Abbicornator", "Abbicornatory",
-        "Abbicorne", "Abbicornea", "Abbicorneal", "Abbicorned", "Abbicornedly", "Abbicornedness", "Abbicornedness",
-        "Abbicorneless", "Abbicornell", "Abbicornella", "Abbicornellae", "Abbicornellal", "Abbicornellana",
-        "Abbicornellane", "Abbicornellania", "Abbicornellans", "Abbicornellaria", "Abbicornellaries",
-        "Abbicornellary", "Abbicornellata", "Abbicornellate", "Abbicornellated", "Abbicornellates",
-        "Abbicornellati", "Abbicornellatin", "Abbicornellation", "Abbicornellative", "Abbicornellator",
-        "Abbicornellatory", "Abbicornelle", "Abbicornellely", "Abbicornellem", "Abbicornellen", "Abbicorneller",
-        "Abbicornelleria", "Abbicornelleries", "Abbicornellering", "Abbicornellers", "Abbicornellery",
-        "Abbicornelles", "Abbicornellesia", "Abbicornellesque", "Abbicornellest", "Abbicornelleta",
-        "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
-        "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
-        "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
-        "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
-        "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
-        "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
-        "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
-        "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
-        "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
-        "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
-        "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
-        "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
-        "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
-        "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
-        "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta",
-        "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta", "Abbicornelleta"
+        "Applecross", "Armadale", "Balcatta", "Baldivis", "Bayswater", "Belmont", "Cannington",
+        "Claremont", "Cottesloe", "Dianella", "Doubleview", "Duncraig", "East Perth", "Fremantle",
+        "Gosnells", "Innaloo", "Joondalup", "Karrinyup", "Leederville", "Maylands", "Midland",
+        "Morley", "Mosman Park", "Mount Lawley", "Nedlands", "Northbridge", "Osborne Park",
+        "Peppermint Grove", "Perth", "Rockingham", "Scarborough", "South Perth", "Subiaco",
+        "Swanbourne", "Victoria Park", "Wembley"
+    ],
+    "Adelaide": [
+        "Adelaide", "Aldinga Beach", "Burnside", "Campbelltown", "Elizabeth", "Enfield",
+        "Glenelg", "Golden Grove", "Goodwood", "Hallett Cove", "Hindmarsh", "Marion",
+        "Mawson Lakes", "Mitcham", "Modbury", "Morphett Vale", "Mount Barker", "North Adelaide",
+        "Norwood", "Parafield Gardens", "Payneham", "Port Adelaide", "Prospect", "Salisbury",
+        "Seaford", "Semaphore", "Stirling", "Tea Tree Gully", "Unley", "Walkerville", "West Lakes"
     ]
 }
 
-def get_all_suburbs():
-    """Flatten all suburbs into single list"""
-    all_suburbs = []
-    for city, suburbs in AUSTRALIAN_SUBURBS.items():
-        all_suburbs.extend(suburbs)
-    return list(set(all_suburbs))  # Remove duplicates
+# ==========================================
+# DATABASE MANAGER
+# ==========================================
+class SuburbDatabase:
+    """Manages autonomous provisioning and loading of the JSON suburbs dataset."""
+    
+    def __init__(self):
+        self.suburbs_by_city = {}
+        self.all_suburbs = []
+        self.suburb_to_state = {}
+        
+        # Core routing map for the Scraper API
+        self.state_map = {
+            "Sydney": "nsw", "Melbourne": "vic", "Brisbane": "qld",
+            "Perth": "wa", "Adelaide": "sa", "Hobart": "tas",
+            "Darwin": "nt", "Canberra": "act"
+        }
+        
+        self._initialize_db()
 
-# All suburbs combined
-ALL_AUSTRALIAN_SUBURBS = get_all_suburbs()
+    def _atomic_write(self, file_path: Path, data: dict):
+        """Atomic write to prevent corruption during deployment cycling."""
+        try:
+            content = json.dumps(data, indent=4)
+            temp_path = file_path.with_suffix(".tmp")
+            temp_path.write_text(content, encoding='utf-8')
+            temp_path.replace(file_path)
+        except Exception as e:
+            logger.error(f"SuburbDB Persistence Error: {e}")
 
-print(f"✅ Loaded {len(ALL_AUSTRALIAN_SUBURBS)} Australian suburbs")
-print(f"   - Sydney: {len(AUSTRALIAN_SUBURBS['Sydney'])} suburbs")
-print(f"   - Melbourne: {len(AUSTRALIAN_SUBURBS['Melbourne'])} suburbs")
-print(f"   - Adelaide: {len(AUSTRALIAN_SUBURBS['Adelaide'])} suburbs")
-print(f"   - Perth: {len(AUSTRALIAN_SUBURBS['Perth'])} suburbs")
+    def _initialize_db(self):
+        """Loads from JSON or provisions it via SEED_SUBURBS if missing/corrupted."""
+        if not SUBURBS_DB_PATH.exists():
+            logger.info("suburbs.json not found. Provisioning with clean seed data.")
+            self._atomic_write(SUBURBS_DB_PATH, SEED_SUBURBS)
+            data = SEED_SUBURBS
+        else:
+            try:
+                data = json.loads(SUBURBS_DB_PATH.read_text(encoding='utf-8'))
+            except json.JSONDecodeError:
+                logger.error("suburbs.json is corrupted. Re-provisioning with seed data.")
+                self._atomic_write(SUBURBS_DB_PATH, SEED_SUBURBS)
+                data = SEED_SUBURBS
+
+        self.suburbs_by_city = data
+        
+        # Flatten and map to state vectors
+        for city, suburbs in self.suburbs_by_city.items():
+            state = self.state_map.get(city, "nsw")
+            for sub in suburbs:
+                clean_sub = sub.strip()
+                self.all_suburbs.append(clean_sub)
+                self.suburb_to_state[clean_sub.lower()] = state
+
+        # Deduplicate and sort alphabetically
+        self.all_suburbs = sorted(list(set(self.all_suburbs)))
+        logger.info(f"✅ Loaded {len(self.all_suburbs)} verified Australian suburbs into memory cache.")
+
+# ==========================================
+# EXPORTED MODULE VARIABLES
+# ==========================================
+# The InvestBot scraper will import these variables directly.
+db = SuburbDatabase()
+ALL_AUSTRALIAN_SUBURBS = db.all_suburbs
+SUBURB_TO_STATE = db.suburb_to_state
+
+def setup(bot):
+    """Empty setup to satisfy Py-cord's load_extension if registered as a cog."""
+    pass
