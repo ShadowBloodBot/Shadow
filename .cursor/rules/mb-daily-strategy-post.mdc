@@ -53,3 +53,21 @@ Optional: `source`, `link` — reference only, not promotional CTAs.
 ```
 
 Keep `mechanic` + `retail_trap` under ~900 chars each so Discord embed fields stay under 1024. Total embed must stay within Discord limits.
+
+## Weekly batch (Cursor Automation)
+
+Each Sunday, the **Mb Weekly Strategies** automation replaces the entire `STRATEGIES` list with **exactly 7** new entries for the coming Mon–Sun week.
+
+| Index | Day |
+|-------|-----|
+| 0 | Monday |
+| 1 | Tuesday |
+| 2 | Wednesday |
+| 3 | Thursday |
+| 4 | Friday |
+| 5 | Saturday |
+| 6 | Sunday |
+
+Also update `STRATEGIES_WEEK = "YYYY-Www"` (ISO week for the week starting next Monday) and append all 7 titles to `data/strategy_history.json`. **Never reuse a title** from `history.titles`.
+
+After editing, run: `python -m py_compile cogs/invest_data.py`

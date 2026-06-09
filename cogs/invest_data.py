@@ -47,7 +47,11 @@ PROPERTIES = [
      "hook": "Government-adjacent employment base supports resale liquidity."},
 ]
 
-# Mb daily strategy posts — generate new entries per .cursor/rules/mb-daily-strategy-post.mdc
+# Mb daily strategy posts — 7 entries per ISO week (Mon=index 0 … Sun=index 6).
+# Replaced weekly by Cursor Automation — see .cursor/rules/mb-daily-strategy-post.mdc
+STRATEGIES_WEEK = "2026-W24"
+STRATEGIES_COUNT = 7
+
 STRATEGIES = [
     {
         "title": "Negative Gearing vs NDI Destruction",
@@ -246,34 +250,25 @@ STRATEGIES = [
             "IO is a servicing deferral, not a repayment elimination. The assessor always counts the cliff."
         ),
     },
-    {
-        "title": "SMSF LRBA — Dual Regulator Friction",
-        "hook": (
-            "SMSF trustees pursuing LRBAs without separating superannuation law constraints from "
-            "commercial lending policy are building structures that fail at audit or at refinance."
-        ),
-        "mechanic": (
-            "LRBA loan must be limited recourse — lender rights confined to single acquirable asset. "
-            "SIS Act restricts related-party acquisitions, improvements on geared assets, and "
-            " liquidity rules. Personal guarantee outside SMSF may be required by lender but creates "
-            "recourse leakage if not structured correctly. Refinance of LRBA is a shrinking lender "
-            "panel — origination policy ≠ exit policy."
-        ),
-        "retail_trap": (
-            "Property spruiker + accountant set up SMSF LRBA; bare trust deed generic; related-party "
-            "rent above market; LRBA refinance assumed at same LVR in 5 years. ATO SMSF audit flag. "
-            "No commercial lender exit."
-        ),
-        "execution": [
-            "**Separate SMSF auditor sign-off from credit policy review** — both must pass before settlement.",
-            "**Document arm's length rent and expense** — LRBA compliance survives audit; assessor treats "
-            "SMSF income separately from personal servicing anyway.",
-        ],
-        "drop": (
-            "An LRBA that survives settlement but fails refinance is illiquid super, not a property investment."
-        ),
-    },
 ]
+
+
+def strategy_index_for_weekday(weekday: int | None = None) -> int:
+    """Map Australia/Sydney weekday to STRATEGIES index (Mon=0 … Sun=6)."""
+    if weekday is None:
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        weekday = datetime.now(ZoneInfo("Australia/Sydney")).weekday()
+    return weekday % STRATEGIES_COUNT
+
+
+def strategy_for_today() -> dict:
+    if len(STRATEGIES) != STRATEGIES_COUNT:
+        raise ValueError(
+            f"STRATEGIES must contain exactly {STRATEGIES_COUNT} entries for weekday mapping; "
+            f"got {len(STRATEGIES)} (week {STRATEGIES_WEEK})"
+        )
+    return STRATEGIES[strategy_index_for_weekday()]
 
 
 def _clip(text: str, limit: int = 1024) -> str:

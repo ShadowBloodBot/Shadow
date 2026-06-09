@@ -15,10 +15,12 @@ from discord.ext import commands, tasks
 from cogs.invest_data import (
     PROPERTIES,
     STRATEGIES,
+    STRATEGIES_WEEK,
     DISCLAIMER,
     SYDNEY_DAILY_ROTATION,
     WEEKLY_DIGEST_LINES,
     strategy_embed_parts,
+    strategy_for_today,
 )
 from cogs.invest_calculators import calc_negative_gearing, calc_refinance_check, fmt_currency
 from cogs.invest_suburb_stats import get_store
@@ -384,13 +386,20 @@ class InvestBotCog(commands.Cog):
         ch = await self._channel("strategies_channel_id")
         if not ch:
             return False
-        idx = self.state.get("strategy_index", 0) % len(STRATEGIES)
-        item = STRATEGIES[idx]
-        await ch.send(embed=_strategy_embed(item))
-        self.state["strategy_index"] = idx + 1
+        try:
+            item = strategy_for_today()
+        except ValueError as e:
+            logger.error(f"daily strategy config error: {e}")
+            return False
+        embed = _strategy_embed(item)
+        embed.set_footer(
+            text=f"{DISCLAIMER} | Week {STRATEGIES_WEEK} · {datetime.now(TZ).strftime('%A')}"
+        )
+        await ch.send(embed=embed)
         self.state["last_strategy_date"] = datetime.now(TZ).strftime("%Y-%m-%d")
+        self.state["strategies_week"] = STRATEGIES_WEEK
         _save_state(self.state)
-        logger.info(f"daily strategy posted to {ch.id}")
+        logger.info(f"daily strategy posted to {ch.id} (week {STRATEGIES_WEEK})")
         return True
 
     async def post_weekly_digest(self) -> bool:
