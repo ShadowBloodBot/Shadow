@@ -1,6 +1,6 @@
 python-dotenv>=1.0.1
 aiohttp>=3.9.5
-gTTS>=2.5.1
+edge-tts>=6.1.12
 deep-translator
 yt-dlp
 pynacl

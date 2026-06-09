@@ -9,7 +9,7 @@ from pathlib import Path
 import discord
 from discord.ext import commands
 from discord import Option, OptionChoice
-from gtts import gTTS
+import edge_tts
 from deep_translator import GoogleTranslator
 
 # --- CONSTANTS ---
@@ -33,6 +33,33 @@ TTS_LANGUAGES = [
     OptionChoice(name="Korean",                value="ko"),
     OptionChoice(name="Russian",               value="ru"),
 ]
+
+# English choices = accent only. All others = translate text, then speak in that language.
+ENGLISH_ACCENTS = frozenset({"en", "au", "uk"})
+
+TRANSLATE_TARGETS = {
+    "es": "es",
+    "fr": "fr",
+    "de": "de",
+    "it": "it",
+    "ja": "ja",
+    "ko": "ko",
+    "ru": "ru",
+}
+
+# Edge TTS neural voices — one per /speak language choice
+EDGE_VOICES = {
+    "en": "en-US-JennyNeural",
+    "au": "en-AU-NatashaNeural",
+    "uk": "en-GB-SoniaNeural",
+    "es": "es-ES-ElviraNeural",
+    "fr": "fr-FR-DeniseNeural",
+    "de": "de-DE-KatjaNeural",
+    "it": "it-IT-ElsaNeural",
+    "ja": "ja-JP-NanamiNeural",
+    "ko": "ko-KR-SunHiNeural",
+    "ru": "ru-RU-SvetlanaNeural",
+}
 
 def has_tts_role(user):
     if not isinstance(user, discord.Member): return False
@@ -106,7 +133,7 @@ class TTSCog(commands.Cog):
         self,
         ctx,
         text:     Option(str, description=f"What do you want the bot to say? (Max {MAX_TEXT_LENGTH} chars)"),
-        language: Option(str, description="Select the language or accent", choices=TTS_LANGUAGES, default="en")
+        language: Option(str, description="English accent, or language (auto-translates your text)", choices=TTS_LANGUAGES, default="en")
     ):
         # --- GATE CHECKS (before defer = instant ephemeral errors, no spinner) ---
         if not has_tts_role(ctx.author):
@@ -130,21 +157,28 @@ class TTSCog(commands.Cog):
         if self.leave_timer:
             self.leave_timer.cancel()
 
-        lang_code = "en" if language in ("au", "uk") else language
-        tld       = "com.au" if language == "au" else "co.uk" if language == "uk" else "com"
+        lang_name = next((c.name for c in TTS_LANGUAGES if c.value == language), language)
         file_path = TEMP_AUDIO_DIR / f"tts_{uuid.uuid4().hex[:8]}.mp3"
 
-        # Translate + gTTS in one executor hop; overlap with voice connect below.
-        def prepare_audio():
-            spoken_text, is_translated = text, False
-            if lang_code != "en":
+        async def prepare_audio():
+            if language in ENGLISH_ACCENTS:
+                spoken_text, is_translated = text, False
+            else:
+                target = TRANSLATE_TARGETS[language]
+
+                def translate():
+                    translated = GoogleTranslator(source="auto", target=target).translate(text)
+                    if not translated or not translated.strip():
+                        raise RuntimeError("Translation returned empty result")
+                    return translated.strip()
+
                 try:
-                    target = "zh-CN" if lang_code == "zh-cn" else lang_code
-                    spoken_text = GoogleTranslator(source="auto", target=target).translate(text)
-                    is_translated = True
-                except Exception:
-                    pass
-            gTTS(text=spoken_text, lang=lang_code, tld=tld, slow=False).save(str(file_path))
+                    spoken_text = await self.bot.loop.run_in_executor(None, translate)
+                except Exception as exc:
+                    raise RuntimeError(f"Could not translate to {lang_name}") from exc
+                is_translated = spoken_text != text
+
+            await edge_tts.Communicate(spoken_text, EDGE_VOICES[language]).save(str(file_path))
             return spoken_text, is_translated
 
         async def ensure_voice():
@@ -158,7 +192,7 @@ class TTSCog(commands.Cog):
 
         try:
             (spoken_text, is_translated), vc = await asyncio.gather(
-                self.bot.loop.run_in_executor(None, prepare_audio),
+                prepare_audio(),
                 ensure_voice(),
             )
             if not vc.is_connected():
@@ -178,10 +212,9 @@ class TTSCog(commands.Cog):
             self.queue_worker = asyncio.create_task(self._queue_worker(ctx.guild))
 
         # --- CONFIRMATION EMBED ---
-        lang_name    = next((c.name for c in TTS_LANGUAGES if c.value == language), language)
         display_desc = f"🗣️ **Said:** {spoken_text}"
         if is_translated:
-            display_desc += f"\n*(Original: {text})*"
+            display_desc += f"\n*(Translated from: {text})*"
 
         status = "▶️ Speaking now" if position == 0 else f"📋 Queued — position **#{position + 1}**"
 
