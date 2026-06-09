@@ -1,179 +1,247 @@
-# cogs/utility.py
-import os
-import json
-import random
-from pathlib import Path
-
+import asyncio
+import logging
 import discord
 from discord.ext import commands
-from discord import Option, Interaction
-from discord.ui import Modal, TextInput, View, Button
+from discord.ui import View, Button
+from datetime import datetime, timezone
+
+# --- LOGGING ---
+logger = logging.getLogger("ShadowSyn.AuditLogs")
 
 # --- CONSTANTS & IDS ---
 THEME_PRIMARY = 0x2B0B35
-ROLE_ADMIN_ID = 1214794734770323466 
-OWNER_ID = 482463400929263627
+THEME_LOSS = 0xF04747 
+THEME_WIN = 0x43B581
+THEME_INFO = 0x3498DB
 
-# --- PERSISTENCE ---
-PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve()
-try: PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
-except: PERSIST_ROOT = Path(".").resolve()
-
-HASTE_FACTS_STORE = (PERSIST_ROOT / "haste_facts.json")
-
-DEFAULT_HASTE_FACTS = [
-    "Haste is a man lover", "Haste feeds knights to spearmen", "Haste is the potato peeler",
-    "Haste hates women", "Haste loves fat chicks", "Haste would die for brightwood, bro",
-    "Haste is a fitzroy enjoyer", "Haste used to get feudal in 3mins... used to",
-    "Haste goes Pro scout", "Haste is in a good mood. Jks.", "Haste loves dating paki protestors",
-    "Haste is a lefty greeny", "Haste has no dps", "Haste has beef with a dev of a game with sub 1000 players",
-    "Haste cant afford ranger gear so he blames the dev", "Haste thinks Maya is fat",
-    "Haste was MIA in Shadow Until Jed showed up", "Everyone prefers Haste over Boet",
-    "Everyone likes it when Haste has a break down", "Everyone is scared Haste might get bashed at his restaurant",
-    "Haste earns 70k a year and that gives Blood anxiety", "Haste Likes using a bow",
-    "Haste doesn't have the muscle mass to carry a real life weapon.",
-    "Haste never let go of New world.", "Haste only played Vrising cause he thought the outfits were cute."
-]
-
-def _atomic_write(file_path: Path, data):
-    try:
-        content = json.dumps(list(data) if isinstance(data, set) else data, indent=2)
-        temp_path = file_path.with_suffix(".tmp")
-        temp_path.write_text(content, encoding='utf-8')
-        temp_path.replace(file_path)
-    except Exception as e:
-        print(f"⚠️ Persistence Error [{file_path.name}]: {e}")
+ARRIVALS_THREAD_ID = 959629903186259978
+DEPARTURES_THREAD_ID = 960088192177029140
+ROLE_MINION_ID = 955600021502431233
+VOICE_AUDIT_CHANNEL_ID = 961726632249425930
 
 # --- HELPERS ---
-def admin_only():
-    def predicate(ctx):
-        if not isinstance(ctx.author, discord.Member): return False
-        return any(r.id == ROLE_ADMIN_ID for r in ctx.author.roles)
-    return commands.check(predicate)
+def format_age(dt):
+    if not dt: return "Unknown"
+    delta = datetime.now(timezone.utc) - dt
+    if delta.days > 365: return f"{delta.days // 365} years ago"
+    return f"{delta.days} days ago"
 
-def owner_only():
-    def predicate(ctx): return ctx.author.id == OWNER_ID
-    return commands.check(predicate)
-
-async def safe_reply(ctx_or_inter, *args, **kwargs):
-    try:
-        if hasattr(ctx_or_inter, 'respond'): return await ctx_or_inter.respond(*args, **kwargs)
-        elif hasattr(ctx_or_inter, 'response'):
-            if not ctx_or_inter.response.is_done(): return await ctx_or_inter.response.send_message(*args, **kwargs)
-            else: return await ctx_or_inter.followup.send(*args, **kwargs)
-    except: return None
-
-# --- UI COMPONENTS ---
-class EasyEmbedModal(Modal):
-    def __init__(self, channel, edit_msg=None):
-        super().__init__(title="Edit Embed" if edit_msg else "Create Custom Embed")
-        self.channel = channel; self.edit_msg = edit_msg
-        pre_title = edit_msg.embeds[0].title if edit_msg and edit_msg.embeds else ""
-        pre_desc = edit_msg.embeds[0].description if edit_msg and edit_msg.embeds else ""
-        pre_foot = edit_msg.embeds[0].footer.text if edit_msg and edit_msg.embeds and edit_msg.embeds[0].footer else ""
-        pre_col = str(hex(edit_msg.embeds[0].color.value)).replace("0x", "#") if edit_msg and edit_msg.embeds and edit_msg.embeds[0].color else ""
-        self.add_item(TextInput(label="Title", placeholder="Embed Title...", value=pre_title, required=True))
-        self.add_item(TextInput(label="Description", placeholder="Main content...", value=pre_desc, style=discord.InputTextStyle.paragraph, required=True))
-        self.add_item(TextInput(label="Footer (Optional)", placeholder="Small text at bottom...", value=pre_foot, required=False))
-        self.add_item(TextInput(label="Color (Hex)", placeholder="#2B0B35", value=pre_col, required=False))
-        
-    async def callback(self, interaction: Interaction):
-        title = self.children[0].value; desc = self.children[1].value; footer = self.children[2].value; color_raw = self.children[3].value
-        try: color = int(color_raw.replace("#", ""), 16) if color_raw else THEME_PRIMARY
-        except: color = THEME_PRIMARY
-        embed = discord.Embed(title=title, description=desc, color=color)
-        if footer: embed.set_footer(text=footer)
-        if self.edit_msg:
-            await self.edit_msg.edit(embed=embed); await interaction.response.send_message("✅ Embed Updated!", ephemeral=True)
-        else:
-            await self.channel.send(embed=embed); await interaction.response.send_message("✅ Embed Sent!", ephemeral=True)
-
-class PersistentRoleView(View):
-    def __init__(self, role: discord.Role):
+# --- PERSISTENT VIEWS ---
+class MinionView(View):
+    """
+    Architectural Fix: Persistent View binding.
+    Must inherit timeout=None and contain a static custom_id for the memory heap.
+    """
+    def __init__(self, target_member_id: int):
         super().__init__(timeout=None)
-        btn = Button(
-            label=f"Toggle {role.name}", 
-            style=discord.ButtonStyle.primary, 
-            custom_id=f"claim_role_{role.id}",
-            emoji="🏷️"
+        
+        # Grant button with static custom_id for Discord Gateway state recovery
+        b = Button(
+            label="Grant Minion", 
+            style=discord.ButtonStyle.success, 
+            emoji="✅",
+            custom_id=f"grant_minion_{target_member_id}"
         )
-        self.add_item(btn)
+        b.callback = self.grant
+        self.add_item(b)
+        
+        # App deep link to profile (avoids web browser refresh loop)
+        profile_btn = Button(
+            label="View Profile (App)", 
+            url=f"discord://-/users/{target_member_id}", 
+            style=discord.ButtonStyle.link,
+            emoji="🔍"
+        )
+        self.add_item(profile_btn)
+        
+    async def grant(self, interaction: discord.Interaction):
+        # Explicit deference to prevent 3-second API timeout during heavy load
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            # Extract target ID from the button's custom_id string
+            target_id = int(interaction.custom_id.split('_')[-1])
+            m = interaction.guild.get_member(target_id)
+            r = interaction.guild.get_role(ROLE_MINION_ID)
+            
+            if not m:
+                return await interaction.followup.send("❌ Error: Member has already left the server.", ephemeral=True)
+            if not r:
+                return await interaction.followup.send("❌ Error: Minion role ID is invalid or deleted.", ephemeral=True)
+                
+            if r in m.roles:
+                return await interaction.followup.send(f"⚠️ **{m.display_name}** already has the Minion role.", ephemeral=True)
 
-class UtilityCog(commands.Cog):
+            await m.add_roles(r)
+            
+            # Disable the button visually after a successful grant
+            for child in self.children:
+                if isinstance(child, Button) and child.custom_id and child.custom_id.startswith("grant_minion"):
+                    child.disabled = True
+                    child.label = "Minion Granted"
+                    child.style = discord.ButtonStyle.secondary
+            await interaction.message.edit(view=self)
+            
+            await interaction.followup.send(f"✅ Minion role granted to **{m.display_name}**.", ephemeral=True)
+            logger.info(f"Minion role granted to {m.name} by {interaction.user.name}")
+            
+        except discord.Forbidden:
+            await interaction.followup.send("❌ **Permission Denied:** My Bot Role is lower than the Minion role in Server Settings -> Roles. Move me up!", ephemeral=True)
+            logger.warning("403 Forbidden: Cannot assign Minion role. Hierarchy conflict.")
+        except Exception as e:
+            await interaction.followup.send(f"⚠️ Error: {e}", ephemeral=True)
+            logger.error(f"Failed to grant minion role: {e}")
+
+class DepartureView(View):
+    def __init__(self, target_member_id: int):
+        super().__init__(timeout=None)
+        # Link buttons do not require custom_ids as they don't send API callbacks
+        profile_btn = Button(
+            label="View Profile (App)", 
+            url=f"discord://-/users/{target_member_id}", 
+            style=discord.ButtonStyle.link,
+            emoji="🔍"
+        )
+        self.add_item(profile_btn)
+
+# --- COG LOGIC ---
+class AuditLogsCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.active_haste_facts = []
-        self._load_data()
 
-    def _load_data(self):
-        if HASTE_FACTS_STORE.exists():
-            try: self.active_haste_facts = json.loads(HASTE_FACTS_STORE.read_text())
-            except: self.active_haste_facts = list(DEFAULT_HASTE_FACTS)
-        else: self.active_haste_facts = list(DEFAULT_HASTE_FACTS)
-
-    # --- STATELESS PERSISTENT LISTENER ---
-    @commands.Cog.listener()
-    async def on_interaction(self, interaction: discord.Interaction):
-        if interaction.type == discord.InteractionType.component:
-            custom_id = interaction.data.get("custom_id", "")
-            if custom_id.startswith("claim_role_"):
-                try:
-                    role_id = int(custom_id.replace("claim_role_", ""))
-                    role = interaction.guild.get_role(role_id)
-                    
-                    if not role:
-                        return await safe_reply(interaction, "❌ This role no longer exists on the server.", ephemeral=True)
-                    
-                    if role in interaction.user.roles:
-                        await interaction.user.remove_roles(role)
-                        await safe_reply(interaction, f"➖ You have removed the **{role.name}** role.", ephemeral=True)
-                    else:
-                        await interaction.user.add_roles(role)
-                        await safe_reply(interaction, f"✅ You have claimed the **{role.name}** role.", ephemeral=True)
-                
-                except discord.Forbidden:
-                    await safe_reply(interaction, "❌ I lack permissions to assign this role.", ephemeral=True)
-                except Exception as e:
-                    await safe_reply(interaction, f"⚠️ Error: {e}", ephemeral=True)
-
-    @discord.slash_command(name="role_button", description="Deploy a persistent button for users to claim a role")
-    @admin_only()
-    async def role_button(self, ctx, role: Option(discord.Role, description="Select the role to attach to the button")):
-        embed = discord.Embed(
-            title="🏷️ Role Assignment",
-            description=f"Click the button below to claim or remove the {role.mention} role.",
-            color=THEME_PRIMARY
-        )
-        await safe_reply(ctx, "✅ Deploying role button...", ephemeral=True)
-        await ctx.channel.send(embed=embed, view=PersistentRoleView(role))
-
-    @discord.slash_command(name="send_custom", description="Send a clean embed message")
-    @admin_only()
-    async def send_custom(self, ctx, channel: Option(discord.TextChannel, required=False)):
-        target = channel or ctx.channel
-        await ctx.send_modal(EasyEmbedModal(target))
-
-    @discord.slash_command(name="edit_custom", description="Edit an existing bot embed")
-    @admin_only()
-    async def edit_custom(self, ctx, message_id: str, channel: Option(discord.TextChannel, required=False)):
-        target_channel = channel or ctx.channel
+    async def _get_mod(self, guild, action_type, target):
+        await asyncio.sleep(1.5)
         try:
-            msg = await target_channel.fetch_message(int(message_id))
-            if msg.author != self.bot.user: return await ctx.respond("❌ I can only edit my own messages.", ephemeral=True)
-            await ctx.send_modal(EasyEmbedModal(target_channel, edit_msg=msg))
-        except Exception as e: await ctx.respond(f"❌ Error finding message: {e}", ephemeral=True)
+            now = datetime.now(timezone.utc)
+            async for entry in guild.audit_logs(limit=3, action=action_type):
+                if (now - entry.created_at).total_seconds() < 6:
+                    if action_type in [discord.AuditLogAction.member_move, discord.AuditLogAction.member_disconnect]:
+                        return entry.user
+                    elif entry.target and entry.target.id == target.id:
+                        return entry.user
+        except: pass
+        return None
 
-    @discord.slash_command(name="haste", description="Random Haste Fact")
-    async def haste(self, ctx):
-        if not self.active_haste_facts: return await safe_reply(ctx, "No facts yet.")
-        await safe_reply(ctx, f"🍌 **Fact:** {random.choice(self.active_haste_facts)}")
+    @commands.Cog.listener()
+    async def on_member_join(self, member):
+        try:
+            ch = self.bot.get_channel(ARRIVALS_THREAD_ID) or await self.bot.fetch_channel(ARRIVALS_THREAD_ID)
+            if not ch: return
+            
+            created_ts = int(member.created_at.timestamp())
+            avatar_url = member.display_avatar.url if member.display_avatar else member.default_avatar.url
+            
+            em = discord.Embed(
+                title="🛬 New Arrival",
+                description=f"Welcome to **{member.guild.name}**, {member.mention}!",
+                color=THEME_PRIMARY
+            )
+            em.set_thumbnail(url=avatar_url)
+            em.add_field(name="👤 Username", value=f"`{member.name}`", inline=True)
+            em.add_field(name="🆔 User ID", value=f"`{member.id}`", inline=True)
+            em.add_field(name="📅 Account Created", value=f"<t:{created_ts}:R>", inline=False)
+            
+            # Generate the view and register it to memory simultaneously
+            view = MinionView(member.id)
+            await ch.send(embed=em, view=view)
+            self.bot.add_view(view)
+            
+        except Exception as e:
+            logger.error(f"Exception in on_member_join routing: {e}")
 
-    @discord.slash_command(name="morehaste", description="Add Haste Fact")
-    @admin_only()
-    async def morehaste(self, ctx, fact: str):
-        self.active_haste_facts.append(fact)
-        _atomic_write(HASTE_FACTS_STORE, self.active_haste_facts)
-        await safe_reply(ctx, "✅ Added.")
+    @commands.Cog.listener()
+    async def on_member_remove(self, member):
+        try:
+            channel = member.guild.get_channel(DEPARTURES_THREAD_ID) or await member.guild.fetch_channel(DEPARTURES_THREAD_ID)
+            if not channel: return
+            
+            title = "👋 Member Left"
+            description = f"{member.mention} has left **{member.guild.name}**."
+            color = THEME_LOSS 
+            now = datetime.now(timezone.utc)
+            
+            try:
+                async for entry in member.guild.audit_logs(limit=1, action=discord.AuditLogAction.kick):
+                    if entry.target.id == member.id and (now - entry.created_at).total_seconds() < 10:
+                        title = "🥾 Member Kicked"
+                        description = f"{member.mention} was kicked from the server.\n**By:** {entry.user.mention} (`{entry.user.name}`)"
+                        break
+            except: pass
+
+            created_ts = int(member.created_at.timestamp())
+            joined_ts = int(member.joined_at.timestamp()) if member.joined_at else None
+            avatar_url = member.display_avatar.url if member.display_avatar else member.default_avatar.url
+
+            embed = discord.Embed(title=title, description=description, color=color, timestamp=now)
+            embed.set_thumbnail(url=avatar_url)
+            embed.add_field(name="👤 Username", value=f"`{member.name}`", inline=True)
+            embed.add_field(name="🆔 User ID", value=f"`{member.id}`", inline=True)
+            embed.add_field(name="📅 Account Created", value=f"<t:{created_ts}:R>", inline=False)
+            if joined_ts:
+                embed.add_field(name="📥 Joined Server", value=f"<t:{joined_ts}:R>", inline=True)
+                
+            embed.set_footer(text=f"User ID: {member.id}")
+            
+            await channel.send(embed=embed, view=DepartureView(member.id))
+        except Exception as e:
+            logger.error(f"Exception in on_member_remove routing: {e}")
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member, before, after):
+        channel = self.bot.get_channel(VOICE_AUDIT_CHANNEL_ID)
+        if not channel:
+            try: channel = await self.bot.fetch_channel(VOICE_AUDIT_CHANNEL_ID)
+            except: return
+
+        actions = []
+        color = THEME_PRIMARY
+
+        if before.channel != after.channel:
+            if before.channel is None:
+                actions.append(f"📥 Joined **{after.channel.name}**")
+                color = THEME_WIN
+            elif after.channel is None:
+                mod = await self._get_mod(member.guild, discord.AuditLogAction.member_disconnect, member)
+                mod_text = f"\n*(Disconnected by {mod.mention})*" if mod else ""
+                actions.append(f"📤 Left **{before.channel.name}**{mod_text}")
+                color = THEME_LOSS
+            else:
+                mod = await self._get_mod(member.guild, discord.AuditLogAction.member_move, member)
+                mod_text = f"\n*(Moved by {mod.mention})*" if mod else ""
+                actions.append(f"🔄 Moved: **{before.channel.name}** ➡️ **{after.channel.name}**{mod_text}")
+                color = THEME_INFO
+
+        if before.mute != after.mute:
+            mod = await self._get_mod(member.guild, discord.AuditLogAction.member_update, member)
+            mod_text = f" *(by {mod.mention})*" if mod else ""
+            if after.mute:
+                actions.append(f"🔇 Server Muted{mod_text}"); color = THEME_LOSS
+            else:
+                actions.append(f"🔊 Server Unmuted{mod_text}"); color = THEME_WIN
+        
+        if before.deaf != after.deaf:
+            mod = await self._get_mod(member.guild, discord.AuditLogAction.member_update, member)
+            mod_text = f" *(by {mod.mention})*" if mod else ""
+            if after.deaf:
+                actions.append(f"🔕 Server Deafened{mod_text}"); color = THEME_LOSS
+            else:
+                actions.append(f"🔔 Server Undeafened{mod_text}"); color = THEME_WIN
+
+        if before.self_mute != after.self_mute:
+            if after.self_mute: actions.append("🎙️ Muted Mic (Self)")
+            else: actions.append("🎙️ Unmuted Mic (Self)")
+                
+        if before.self_deaf != after.self_deaf:
+            if after.self_deaf: actions.append("🎧 Deafened (Self)")
+            else: actions.append("🎧 Undeafened (Self)")
+
+        if actions:
+            embed = discord.Embed(description="\n".join(actions), color=color, timestamp=datetime.now(timezone.utc))
+            embed.set_author(name=f"{member.display_name} Voice Update", icon_url=member.display_avatar.url if member.display_avatar else None)
+            embed.set_footer(text=f"User ID: {member.id}")
+            try: await channel.send(embed=embed)
+            except: pass
 
 def setup(bot):
-    bot.add_cog(UtilityCog(bot))
+    bot.add_cog(AuditLogsCog(bot))
+    logger.info("AuditLogsCog loaded (Persistent Views Patched)")
