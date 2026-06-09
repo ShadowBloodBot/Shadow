@@ -170,7 +170,7 @@ def _suburb_embed(name: str, stats: dict, store) -> discord.Embed:
     score = store.hotspot_score(stats) if stats.get("median_price") else None
     label = store.hotspot_label(score) if score is not None else None
     growth = stats.get("growth_12m_pct")
-    growth_str = f"{growth:+.1f}%" if growth is not None else "— (see Domain link)"
+    growth_str = f"{growth:+.1f}%" if growth is not None else "—"
     profile_type = stats.get("profile_type", "curated")
     embed = discord.Embed(
         title=f"🏘️ {stats.get('name', name)} — Market Intel",
@@ -178,22 +178,24 @@ def _suburb_embed(name: str, stats: dict, store) -> discord.Embed:
         colour=THEME,
     )
     if stats.get("median_price"):
-        embed.add_field(name="Median price (indicative)", value=fmt_currency(stats["median_price"]), inline=True)
+        embed.add_field(name="Median house price", value=fmt_currency(stats["median_price"]), inline=True)
+    if stats.get("median_rent_weekly"):
+        embed.add_field(name="Median rent", value=f"${stats['median_rent_weekly']}/wk", inline=True)
+    if stats.get("rental_yield_pct") is not None:
+        embed.add_field(name="Gross rental yield", value=f"{stats['rental_yield_pct']}%", inline=True)
+    embed.add_field(name="12m growth (indicative)", value=growth_str, inline=True)
     if stats.get("population"):
         embed.add_field(name="Population (ABS locality)", value=f"{stats['population']:,}", inline=True)
     if stats.get("median_income"):
         embed.add_field(name="Median income (ABS)", value=f"${stats['median_income']:,}/yr", inline=True)
-    embed.add_field(name="12m growth (indicative)", value=growth_str, inline=True)
-    if stats.get("rental_yield_pct") is not None:
-        embed.add_field(name="Gross rental yield", value=f"{stats['rental_yield_pct']}%", inline=True)
-    if stats.get("median_rent_weekly"):
-        embed.add_field(name="Median rent", value=f"${stats['median_rent_weekly']}/wk", inline=True)
     if stats.get("density_per_sqkm"):
         embed.add_field(name="Density", value=f"{stats['density_per_sqkm']}/sq km", inline=True)
     if stats.get("lga"):
         embed.add_field(name="LGA", value=str(stats["lga"])[:128], inline=True)
     if score is not None:
         embed.add_field(name="Investor hotspot score", value=f"{score}/100 — {label}", inline=False)
+    if stats.get("price_note"):
+        embed.add_field(name="Price data", value=stats["price_note"], inline=False)
     state = stats.get("state", SUBURB_TO_STATE.get(name.lower(), "NSW")).upper()
     slug = name.lower().replace(" ", "-")
     embed.add_field(
@@ -278,7 +280,7 @@ class InvestBotCog(commands.Cog):
         record = suburbs_db.get_record(suburb_name)
         if not record:
             return None
-        profile = await build_suburb_profile(record, try_domain=True)
+        profile = await build_suburb_profile(record, persist=PERSIST)
         self.store.cache_stats(profile, PERSIST)
         return profile
 
