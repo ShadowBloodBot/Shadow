@@ -179,8 +179,12 @@ def _suburb_embed(name: str, stats: dict, store) -> discord.Embed:
     )
     if stats.get("median_price"):
         embed.add_field(name="Median house price", value=fmt_currency(stats["median_price"]), inline=True)
+    else:
+        embed.add_field(name="Median house price", value="—", inline=True)
     if stats.get("median_rent_weekly"):
         embed.add_field(name="Median rent", value=f"${stats['median_rent_weekly']}/wk", inline=True)
+    else:
+        embed.add_field(name="Median rent", value="—", inline=True)
     if stats.get("rental_yield_pct") is not None:
         embed.add_field(name="Gross rental yield", value=f"{stats['rental_yield_pct']}%", inline=True)
     embed.add_field(name="12m growth (indicative)", value=growth_str, inline=True)
@@ -273,15 +277,24 @@ class InvestBotCog(commands.Cog):
         else:
             logger.error("Suburb sync failed on startup — autocomplete will be limited")
 
-    async def _resolve_suburb_stats(self, suburb_name: str) -> dict | None:
-        stats = self.store.lookup(suburb_name)
-        if stats:
+    async def _resolve_suburb_stats(self, suburb_name: str, *, force_refresh: bool = False) -> dict | None:
+        stats = None if force_refresh else self.store.lookup(suburb_name)
+        has_prices = stats and stats.get("median_price") and stats.get("median_rent_weekly")
+        if stats and has_prices:
             return stats
+
         record = suburbs_db.get_record(suburb_name)
         if not record:
-            return None
+            return stats
+
         profile = await build_suburb_profile(record, persist=PERSIST)
-        self.store.cache_stats(profile, PERSIST)
+        if stats:
+            for key, val in stats.items():
+                if val is not None and profile.get(key) is None:
+                    profile[key] = val
+
+        if profile.get("median_price") or profile.get("median_rent_weekly"):
+            self.store.cache_stats(profile, PERSIST)
         return profile
 
     def cog_unload(self):
