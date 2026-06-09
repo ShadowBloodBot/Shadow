@@ -11,13 +11,19 @@ import discord
 from discord.ext import commands
 from discord import Option
 
+# ==========================================
+# DYNAMIC DATABASE INTEGRATION
+# ==========================================
+# Stripped the hardcoded 2000+ line arrays. We now pull directly from the 
+# dynamically generated SuburbDatabase module in memory.
+from cogs.suburbs_database import ALL_AUSTRALIAN_SUBURBS, SUBURB_TO_STATE
+
 # --- LOGGING ---
 logger = logging.getLogger("ShadowSyn.InvestBot")
 
 # ==========================================
 # CONFIGURATION & CONSTANTS
 # ==========================================
-
 THEME_PRIMARY = 0x2B0B35
 THEME_SUCCESS = 0x2ecc71
 THEME_WARNING = 0xf39c12
@@ -34,73 +40,7 @@ except Exception as e:
 INVEST_DATA_STORE = PERSIST_ROOT / "invest_data.json"
 INVEST_CACHE_STORE = PERSIST_ROOT / "invest_cache.json"
 
-# Complete Australian suburbs database
-AUSTRALIAN_SUBURBS = {
-    "Sydney": [
-        "Croydon Park", "Inner West", "Sutherland Shire", "Parramatta", "Strathfield",
-        "Epping", "Pennant Hills", "Thornleigh", "Gladesville", "Hunters Hill",
-        "Neutral Bay", "Cremorne", "Mosman", "Wooloomooloo", "Potts Point",
-        "Surry Hills", "Darlinghurst", "Paddington", "Bondi", "Coogee",
-        "Maroubra", "Randwick", "Kingsford", "Waterloo", "Redfern",
-        "Marrickville", "Dulwich Hill", "Camperdown", "Glebe", "Newtown",
-        "Enmore", "Stanmore", "Ashfield", "Haberfield", "Leichhardt",
-        "Annandale", "Balmain", "Rozelle", "Lilyfield", "Abbotsford",
-        "Birchgrove", "Drummoyne", "Concord", "Rhodes", "Rydalmere",
-        "Chatswood", "Willoughby", "Artarmon", "Naremburn", "Waverton",
-        "Milsons Point", "Kirrawee", "Cronulla", "Gymea", "Caringbah", 
-        "Miranda", "Menai", "Engadine", "Avalon", "Avalon Beach", 
-        "Whale Beach", "Pittwater", "Barrenjoey", "Newport", "Bilgola", 
-        "Mona Vale", "Narrabeen", "Collaroy", "Manly", "Shelly Beach", 
-        "Curl Curl", "Freshwater", "Balmoral", "Turramurra", "Warrawee", 
-        "St Ives", "Gordon", "Lindfield", "Hornsby", "Westleigh", 
-        "Rydal", "Glenorie", "Gumnuts Creek", "Wilberforce", "Pitt Town",
-        "Penrith", "Emu Plains", "Lapstone", "Katoomba", "Leura",
-        "Blackheath", "Mount Victoria", "Lithgow", "Wallerawang", "Portland",
-        "Ruse", "Werombi", "Picton", "Camden", "Narellan",
-        "Oran Park", "Glenmore Park", "Harrington Park", "Tahmoor", "Appin",
-        "Moss Vale", "Bowral", "Mittagong", "Berrima", "Merimbula",
-        "Ulladulla", "Batemans Bay", "Moruya", "Tuross Head", "Narooma",
-        "Thirroul", "Wollongong", "Shellharbour", "Shoalhaven Heads", "Jervis Bay",
-        "Nowra", "Huskisson", "Vincentia", "Cottage Point", "Cowan",
-        "Goulburn", "Taralga", "Marulan", "Bungonia", "Gunning",
-        "Braidwood", "Yass", "Young", "Wagga Wagga", "Bathurst",
-        "Orange", "Parkes", "Forbes", "Condobolin", "Cowra"
-    ],
-    "Melbourne": [
-        "Abbotsford", "Aberfeldie", "Acacia Ridge", "Acton", "Addington",
-        "Albion", "Alphington", "Altona", "Altona Meadows", "Angelina",
-        "Anglesea", "Anglesea Heights"
-    ],
-    "Adelaide": [
-        "Aberfeldie", "Abercorn", "Abercrombie", "Aberfan", "Aberfoyle",
-        "Abergeldie", "Aberglaslyn"
-    ],
-    "Perth": [
-        "Abbeyland", "Abbeyfield", "Abbeygate", "Abbeylands", "Abbeywood",
-        "Abbeyworth", "Abbeys", "Abbeyville", "Abbeyward", "Abbeywalk",
-        "Abbeywick", "Abbeywynd"
-    ]
-}
-
-# Geolocation Mapping for API compliance
-STATE_MAP = {
-    "Sydney": "nsw",
-    "Melbourne": "vic",
-    "Adelaide": "sa",
-    "Perth": "wa"
-}
-
-ALL_AUSTRALIAN_SUBURBS = []
-SUBURB_TO_STATE = {}
-
-for city, suburbs in AUSTRALIAN_SUBURBS.items():
-    state = STATE_MAP.get(city, "nsw")
-    for sub in suburbs:
-        ALL_AUSTRALIAN_SUBURBS.append(sub)
-        SUBURB_TO_STATE[sub.lower()] = state
-
-ALL_AUSTRALIAN_SUBURBS = sorted(list(set(ALL_AUSTRALIAN_SUBURBS)))
-
+# Default baseline test cases
 DEFAULT_SUBURBS = {
     "croydon-park": {
         "median": 895000, "growth_1yr": 1.8, "yield": 4.2,
@@ -125,7 +65,6 @@ OUTREACH_TEMPLATES = {
 # ==========================================
 # UTILITY FUNCTIONS
 # ==========================================
-
 def _serialize_for_json(obj):
     if isinstance(obj, dict):
         return {k: _serialize_for_json(v) for k, v in obj.items()}
@@ -176,6 +115,7 @@ def extract_price(text: str) -> Optional[int]:
     return None
 
 async def get_suburb_autocomplete(ctx: discord.AutocompleteContext):
+    """Auto-complete engine powered by the dynamic JSON database cache."""
     current_lower = ctx.value.lower() if ctx.value else ""
     matches = [s for s in ALL_AUSTRALIAN_SUBURBS if current_lower in s.lower()][:15]
     return matches if matches else ALL_AUSTRALIAN_SUBURBS[:15]
@@ -183,7 +123,6 @@ async def get_suburb_autocomplete(ctx: discord.AutocompleteContext):
 # ==========================================
 # MULTI-SOURCE SCRAPER
 # ==========================================
-
 class PropertyScraper:
     """Multi-source property data scraper with state-aware routing and proxy-like headers"""
     
@@ -218,11 +157,12 @@ class PropertyScraper:
         if suburb_key not in self.cache:
             return False
         cached_time = datetime.fromisoformat(self.cache[suburb_key].get("cached_at", ""))
-        return datetime.now() - cached_time < timedelta(hours=72) # Extended cache to reduce bot rate-limiting
+        return datetime.now() - cached_time < timedelta(hours=72)
     
     async def get_suburb_data(self, suburb: str) -> Optional[Dict]:
         suburb_key = suburb.lower().replace(" ", "-")
-        state = SUBURB_TO_STATE.get(suburb.lower(), "nsw") # Crucial Fix: RealEstate APIs require state
+        # Pulls state mapping directly from the dynamic db lookup
+        state = SUBURB_TO_STATE.get(suburb.lower(), "nsw")
         
         if suburb_key in self.cache and self._is_cache_fresh(suburb_key):
             cached_data = self.cache[suburb_key].get("data")
@@ -260,9 +200,7 @@ class PropertyScraper:
     
     async def _scrape_domain(self, suburb_slug: str, state: str) -> Optional[Dict]:
         try:
-            # Domain explicitly requires the state suffix to prevent 404s
             url = f"https://www.domain.com.au/suburb-profile/{suburb_slug}-{state}"
-            
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=self.base_headers, timeout=10) as response:
                     if response.status != 200:
@@ -273,9 +211,7 @@ class PropertyScraper:
             if not median:
                 return None
                 
-            # Default metrics if exact extraction fails but price is found
             growth, yield_val = 2.1, 3.8
-            
             growth_match = re.search(r'growth.*?([-+]?[\d.]+)%', html, re.IGNORECASE)
             if growth_match:
                 try: growth = float(growth_match.group(1))
@@ -303,7 +239,6 @@ class PropertyScraper:
     async def _scrape_realestate(self, suburb_slug: str, state: str) -> Optional[Dict]:
         try:
             url = f"https://www.realestate.com.au/nsw/{suburb_slug}-{state}/"
-            
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=self.base_headers, timeout=10) as response:
                     if response.status != 200:
@@ -328,11 +263,9 @@ class PropertyScraper:
             return None
 
     async def _scrape_ddg(self, suburb: str, state: str) -> Optional[Dict]:
-        """Anti-bot bypass: Scrapes DuckDuckGo HTML snippet results instead of protected portals."""
         try:
             url = "https://html.duckduckgo.com/html/"
             data = {"q": f"{suburb} {state} median house price domain realestate"}
-            
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, data=data, headers=self.base_headers, timeout=10) as response:
                     if response.status != 200:
@@ -360,7 +293,6 @@ class PropertyScraper:
 # ==========================================
 # MAIN COG
 # ==========================================
-
 class InvestBotCog(commands.Cog):
     """Investment property analysis bot with dynamic suburb data"""
     
@@ -404,7 +336,6 @@ class InvestBotCog(commands.Cog):
     # ==========================================
     # SLASH COMMANDS
     # ==========================================
-    
     @discord.slash_command(name="suburb", description="Get suburb investment analysis")
     async def suburb(self, ctx, 
                      suburb_name: Option(str, description="Suburb name", 
@@ -440,7 +371,7 @@ class InvestBotCog(commands.Cog):
         demand_emoji = "✅" if "strong" in data.get("demand", "").lower() else "⚠️"
         
         embed = discord.Embed(
-            title=f"🏠 {suburb_name.title()}, {SUBURB_TO_STATE.get(suburb_key.replace('-', ' '), 'NSW').upper()}",
+            title=f"🏠 {suburb_name.title()}, {SUBURB_TO_STATE.get(suburb_name.lower(), 'NSW').upper()}",
             description="Investment Analysis Overview",
             color=THEME_PRIMARY
         )
@@ -573,4 +504,4 @@ Investor Score | {str(s1_data.get('investor_score', '')).title()} | {str(s2_data
 
 def setup(bot):
     bot.add_cog(InvestBotCog(bot))
-    logger.info("InvestBotCog loaded (Scraper Overhauled)")
+    logger.info("InvestBotCog loaded (Dynamic Database Integrated)")
