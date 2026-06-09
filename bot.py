@@ -72,7 +72,6 @@ cogs_list = [
     "cogs.invest_bot",
     "cogs.admin_secure",
     "cogs.suburbs_database",
-    "cogs.spire"
 ]
 
 for cog in cogs_list:
