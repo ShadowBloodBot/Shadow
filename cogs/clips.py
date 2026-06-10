@@ -525,6 +525,59 @@ class ClipsCog(commands.Cog):
             return False
 
     # --------------------------------------------------------------------------
+    # GALLERY PERMISSION LOCK
+    # --------------------------------------------------------------------------
+    async def _lock_gallery_permissions(self, channel: discord.TextChannel):
+        """
+        Gallery channel is bot-post only. Deny top-level send for @everyone and
+        every role/member with a channel overwrite. Banter stays in clip threads.
+        """
+        if not isinstance(channel, discord.TextChannel):
+            return False, "Not a text channel."
+
+        guild = channel.guild
+        if guild is None:
+            return False, "Channel has no guild context."
+
+        me = guild.me
+        if me is None or not me.guild_permissions.manage_channels:
+            return False, "Bot lacks **Manage Channels** to update permissions."
+
+        reason = "ShadowSyn clips: gallery is ingest-only (use Submit Clip)"
+        skip_ids: set[int] = {me.id}
+        if me.top_role:
+            skip_ids.add(me.top_role.id)
+
+        targets: list[discord.Role | discord.Member] = [guild.default_role]
+        for target in channel.overwrites:
+            tid = target.id
+            if tid in skip_ids:
+                continue
+            if target not in targets:
+                targets.append(target)
+
+        updated = 0
+        try:
+            for target in targets:
+                if getattr(target, "id", None) in skip_ids:
+                    continue
+                ow = channel.overwrites_for(target)
+                ow.send_messages = False
+                ow.create_public_threads = False
+                ow.create_private_threads = False
+                ow.send_messages_in_threads = True
+                await channel.set_permissions(target, overwrite=ow, reason=reason)
+                updated += 1
+            logger.info(f"Gallery permissions locked for {updated} target(s) in {channel.id}.")
+            return True, f"Messaging locked for **{updated}** permission target(s)."
+        except discord.Forbidden:
+            logger.error("Forbidden while locking clips gallery permissions.")
+            return False, "Forbidden — check bot **Manage Channels** and role hierarchy."
+        except Exception as e:
+            logger.error(f"Gallery permission lock failed: {e}")
+            return False, str(e)
+
+    # --------------------------------------------------------------------------
     # ADMIN DEPLOYMENT
     # --------------------------------------------------------------------------
     @discord.slash_command(
@@ -543,6 +596,22 @@ class ClipsCog(commands.Cog):
                 channel = await self.bot.fetch_channel(CLIPS_CHANNEL_ID)
             except Exception as e:
                 return await safe_reply(ctx, f"❌ Clips channel unavailable: {e}", ephemeral=True)
+
+        if not isinstance(channel, discord.TextChannel):
+            return await safe_reply(ctx, "❌ Clips channel must be a text channel.", ephemeral=True)
+
+        try:
+            channel = await ctx.guild.fetch_channel(CLIPS_CHANNEL_ID)
+        except Exception as e:
+            logger.warning(f"Could not refresh clips channel before permission lock: {e}")
+
+        perm_ok, perm_status = await self._lock_gallery_permissions(channel)
+        if not perm_ok:
+            return await safe_reply(
+                ctx,
+                f"❌ Could not lock gallery permissions: {perm_status}",
+                ephemeral=True,
+            )
 
         # --- Ingest panel ---
         panel_embed = discord.Embed(
@@ -608,7 +677,10 @@ class ClipsCog(commands.Cog):
 
         await safe_reply(
             ctx,
-            f"✅ Clips system deployed in {channel.mention}.\n• Panel pinned (ID `{self.data['panel_message_id']}`)\n• {hof_status}",
+            f"✅ Clips system deployed in {channel.mention}.\n"
+            f"• {perm_status}\n"
+            f"• Panel pinned (ID `{self.data['panel_message_id']}`)\n"
+            f"• {hof_status}",
             ephemeral=True,
         )
 
