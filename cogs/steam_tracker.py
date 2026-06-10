@@ -204,23 +204,37 @@ class SteamReleasesTracker(discord.Cog):
             
         embed.set_footer(text=f"App ID: {app_id} | ShadowSyn Network")
 
-        targets_to_remove = []
+        # Exclusive routing: catch-all targets always receive the payload, while
+        # competing filtered targets are scored so only the single best match wins.
+        catch_all_targets = []
+        scored_targets = []  # (score_tuple, target_id_str)
+
         for target_id_str, metadata_filter in self.targets.items():
+            if not metadata_filter:
+                catch_all_targets.append(target_id_str)
+                continue
+
+            required_tags = self._parse_filter(metadata_filter)
+            if not required_tags:
+                catch_all_targets.append(target_id_str)
+                continue
+
+            if not self._filter_matches(required_tags, combined_metadata):
+                continue
+
+            scored_targets.append((self._score_match(item, required_tags), target_id_str))
+
+        recipients = list(catch_all_targets)
+        if scored_targets:
+            # Highest score wins; ties fall through to the tuple's secondary ordering.
+            scored_targets.sort(key=lambda entry: entry[0], reverse=True)
+            winner_id_str = scored_targets[0][1]
+            if winner_id_str not in recipients:
+                recipients.append(winner_id_str)
+
+        targets_to_remove = []
+        for target_id_str in recipients:
             target_id = int(target_id_str)
-            
-            # Logic Gate: Validate combined taxonomy metadata before routing payload
-            if metadata_filter:
-                # Split the user's input by commas to allow multi-tag targeting
-                required_tags = [tag.strip().lower() for tag in metadata_filter.split(",")]
-                
-                # Verify that ALL required tags exist in the game's metadata
-                match_found = all(
-                    any(req_tag in meta for meta in combined_metadata)
-                    for req_tag in required_tags
-                )
-                
-                if not match_found:
-                    continue
 
             try:
                 channel = self.bot.get_channel(target_id)
@@ -242,6 +256,35 @@ class SteamReleasesTracker(discord.Cog):
                 if t in self.targets:
                     del self.targets[t]
             self._save_state()
+
+    def _parse_filter(self, metadata_filter: str) -> list:
+        # Split the user's input by commas to allow multi-tag targeting
+        return [tag.strip().lower() for tag in metadata_filter.split(",") if tag.strip()]
+
+    def _filter_matches(self, required_tags: list, combined_metadata: list) -> bool:
+        # Verify that ALL required tags exist in the game's combined metadata
+        return all(
+            any(req_tag in meta for meta in combined_metadata)
+            for req_tag in required_tags
+        )
+
+    def _score_match(self, item: dict, required_tags: list) -> tuple:
+        # Ranking key for exclusive routing (higher tuple wins):
+        #  1. Lead alignment: game's first genre matches the filter's lead tag
+        #  2. Category hits: feature-tag matches (PvP/Co-op) outrank genre-only hits
+        #  3. Specificity: a filter with more required tags is more targeted
+        genres = [g.lower() for g in item.get("genres", []) if g]
+        categories = [c.lower() for c in item.get("categories", []) if c]
+
+        lead_tag = required_tags[0] if required_tags else ""
+        lead_genre_aligned = 1 if (genres and lead_tag and lead_tag in genres[0]) else 0
+
+        category_hits = sum(
+            1 for req_tag in required_tags
+            if any(req_tag in cat for cat in categories)
+        )
+
+        return (lead_genre_aligned, category_hits, len(required_tags))
 
     def _format_platforms(self, item: dict) -> str:
         platforms = []
