@@ -33,7 +33,7 @@ ROLE_ADMIN_ID = 1214794734770323466
 TARGET_GUILD_ID = 908659586536468540
 
 CLIPS_CHANNEL_ID = 955609588470808657
-HOF_VOTE_THRESHOLD = 5
+HOF_VOTE_THRESHOLD = 10
 
 # Optional dedicated read-only Hall of Fame channel. Falls back to hof_thread_id.
 try:
@@ -547,9 +547,7 @@ class ClipsCog(commands.Cog):
     # EMBED BUILDER
     # --------------------------------------------------------------------------
     def _build_clip_embed(self, title, category, url, thumbnail, author, gold=False, source: str = "link"):
-        emoji = CATEGORY_EMOJI.get(category, "🎬")
         embed = discord.Embed(
-            title=f"{emoji} [{category}] {title}"[:256],
             url=url if url else None,
             color=THEME_GOLD if gold else THEME_PRIMARY,
         )
@@ -560,7 +558,8 @@ class ClipsCog(commands.Cog):
                 name=author.display_name,
                 icon_url=author.display_avatar.url if author.display_avatar else None,
             )
-        embed.set_footer(text="🏛️ Hall of Fame" if gold else "ShadowSyn Clips")
+        if gold:
+            embed.set_footer(text="🏛️ Hall of Fame")
         return embed
 
     async def _finalize_clip_post(
@@ -836,7 +835,7 @@ class ClipsCog(commands.Cog):
         try:
             clone = source_embed.copy()
             clone.color = discord.Color(THEME_GOLD)
-            clone.set_footer(text="🏛️ Inducted into the Hall of Fame")
+            clone.set_footer(text="🏛️ Hall of Fame")
             await dest.send(embed=clone)
             return True
         except Exception as e:
@@ -866,8 +865,8 @@ class ClipsCog(commands.Cog):
                 old_msg = await channel.fetch_message(int(old_id))
                 try:
                     await old_msg.unpin()
-                except Exception as e:
-                    logger.warning(f"Could not unpin old ingest panel: {e}")
+                except Exception:
+                    pass
                 await old_msg.delete()
             except discord.NotFound:
                 pass
@@ -878,10 +877,6 @@ class ClipsCog(commands.Cog):
         try:
             panel_msg = await channel.send(embed=self._build_ingest_panel_embed(), view=view)
             self.bot.add_view(view)
-            try:
-                await panel_msg.pin()
-            except Exception as e:
-                logger.warning(f"Could not pin ingest panel: {e}")
             self.data["panel_message_id"] = panel_msg.id
             self._save()
             logger.info(f"Ingest panel refreshed at bottom ({panel_msg.id}).")
@@ -1013,7 +1008,7 @@ class ClipsCog(commands.Cog):
             ctx,
             f"✅ Clips system deployed in {channel.mention}.\n"
             f"• {perm_status}\n"
-            f"• Panel pinned (ID `{self.data['panel_message_id']}`)\n"
+            f"• Panel live (ID `{self.data['panel_message_id']}`)\n"
             f"• {hof_status}",
             ephemeral=True,
         )

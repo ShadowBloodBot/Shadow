@@ -2,7 +2,7 @@
 Full clips production deploy:
 1. Trigger Railway redeploy (latest main)
 2. Lock gallery permissions
-3. Post/pin Shadow bot ingest panel + Hall of Fame thread
+3. Post Shadow bot ingest panel + Hall of Fame thread (no pin)
 
 Uses DISCORD_TOKEN from Railway (Shadow bot), never printed or committed.
 """
@@ -168,6 +168,22 @@ async def lock_permissions(session: aiohttp.ClientSession, token: str):
     print(f"Gallery permissions locked ({len(patched)} targets)")
 
 
+async def remove_old_panels(session: aiohttp.ClientSession, token: str):
+    """Unpin and delete prior ingest panels so the new one sits at the bottom."""
+    status, pins = await discord_api(session, token, "GET", f"/channels/{CLIPS_CHANNEL_ID}/pins")
+    if status != 200 or not isinstance(pins, list):
+        return
+    for item in pins:
+        embeds = item.get("embeds") or []
+        title = embeds[0].get("title") if embeds else ""
+        if title != "🎬 Clips":
+            continue
+        mid = item["id"]
+        await discord_api(session, token, "DELETE", f"/channels/{CLIPS_CHANNEL_ID}/pins/{mid}")
+        await discord_api(session, token, "DELETE", f"/channels/{CLIPS_CHANNEL_ID}/messages/{mid}")
+        print(f"Removed old panel {mid}")
+
+
 async def deploy_panel(session: aiohttp.ClientSession, token: str) -> tuple[str, str | None]:
     panel_embed = {
         "title": "🎬 Clips",
@@ -196,42 +212,26 @@ async def deploy_panel(session: aiohttp.ClientSession, token: str) -> tuple[str,
     if str(me.get("id")) != SHADOW_BOT_ID:
         print("WARNING: expected Shadow production bot")
 
-    panel_id = None
     repo = {}
     if PERSIST_LOCAL.exists():
         try:
             repo = json.loads(PERSIST_LOCAL.read_text(encoding="utf-8"))
-            panel_id = repo.get("panel_message_id")
         except Exception:
             pass
 
-    if panel_id:
-        status, _ = await discord_api(
-            session,
-            token,
-            "PATCH",
-            f"/channels/{CLIPS_CHANNEL_ID}/messages/{panel_id}",
-            {"embeds": [panel_embed], "components": components},
-        )
-        if status == 200:
-            print(f"Panel updated: {panel_id}")
-        else:
-            panel_id = None
+    await remove_old_panels(session, token)
 
-    if not panel_id:
-        status, panel = await discord_api(
-            session,
-            token,
-            "POST",
-            f"/channels/{CLIPS_CHANNEL_ID}/messages",
-            {"embeds": [panel_embed], "components": components},
-        )
-        if status not in (200, 201):
-            raise RuntimeError(f"Panel post failed: {status} {panel}")
-        panel_id = panel["id"]
-        print(f"Panel posted: {panel_id}")
-
-    await discord_api(session, token, "PUT", f"/channels/{CLIPS_CHANNEL_ID}/pins/{panel_id}")
+    status, panel = await discord_api(
+        session,
+        token,
+        "POST",
+        f"/channels/{CLIPS_CHANNEL_ID}/messages",
+        {"embeds": [panel_embed], "components": components},
+    )
+    if status not in (200, 201):
+        raise RuntimeError(f"Panel post failed: {status} {panel}")
+    panel_id = panel["id"]
+    print(f"Panel posted: {panel_id}")
 
     hof_thread_id = repo.get("hof_thread_id")
     if hof_thread_id:
@@ -259,7 +259,8 @@ async def deploy_panel(session: aiohttp.ClientSession, token: str) -> tuple[str,
 
 
 async def main():
-    skip_railway = "--skip-railway" in sys.argv
+    discord_only = "--skip-railway" in sys.argv or "--discord-only" in sys.argv
+    skip_railway = discord_only
     railway = railway_token()
     env_id, service_id = resolve_railway_ids(railway)
 
