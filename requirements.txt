@@ -6,4 +6,3 @@ yt-dlp
 pynacl
 py-cord[voice] @ git+https://github.com/Pycord-Development/pycord.git
 httpx
-beautifulsoup4

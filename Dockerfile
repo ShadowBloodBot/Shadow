@@ -26,5 +26,5 @@ COPY . .
 
 RUN chmod +x docker-entrypoint.sh
 
-# ---- Sync suburbs on start, then run bot
+# ---- Run bot
 ENTRYPOINT ["./docker-entrypoint.sh"]
