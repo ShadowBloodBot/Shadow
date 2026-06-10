@@ -1,8 +1,5 @@
 # cogs/hub.py
-import os
-import json
 import logging
-from pathlib import Path
 
 import discord
 from discord import ButtonStyle
@@ -50,28 +47,6 @@ HUB_DESCRIPTION = (
 
 def _channel_url(channel_id: int) -> str:
     return f"https://discord.com/channels/{TARGET_GUILD_ID}/{channel_id}"
-
-
-# ==============================================================================
-# PERSISTENCE
-# ==============================================================================
-PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve()
-try:
-    PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
-except Exception:
-    PERSIST_ROOT = Path(".").resolve()
-
-HUB_STORE = PERSIST_ROOT / "hub.json"
-
-
-def _atomic_write(file_path: Path, data):
-    try:
-        content = json.dumps(data, indent=2)
-        temp_path = file_path.with_suffix(".tmp")
-        temp_path.write_text(content, encoding="utf-8")
-        temp_path.replace(file_path)
-    except Exception as e:
-        logger.error(f"⚠️ Persistence Error [{file_path.name}]: {e}")
 
 
 # ==============================================================================
@@ -137,26 +112,6 @@ class HubPanelView(View):
 class HubCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self.data = {"panel_message_id": None}
-        self._load_data()
-
-    # --------------------------------------------------------------------------
-    # PERSISTENCE
-    # --------------------------------------------------------------------------
-    def _load_data(self):
-        if HUB_STORE.exists():
-            try:
-                loaded = json.loads(HUB_STORE.read_text(encoding="utf-8"))
-                self.data["panel_message_id"] = loaded.get("panel_message_id")
-                logger.info("Hub state loaded.")
-            except Exception as e:
-                logger.error(f"Corruption in {HUB_STORE.name}, starting fresh. Error: {e}")
-                self.data = {"panel_message_id": None}
-        else:
-            logger.info("No existing hub state found. Initializing empty state.")
-
-    def _save(self):
-        _atomic_write(HUB_STORE, self.data)
 
     # --------------------------------------------------------------------------
     # CHANNEL RESOLUTION
@@ -277,58 +232,6 @@ class HubCog(commands.Cog):
             logger.error(f"Failed to post hub welcome ping for {member.id}: {e}")
 
     # --------------------------------------------------------------------------
-    # ADMIN DEPLOY
-    # --------------------------------------------------------------------------
-    @discord.slash_command(
-        name="hub_deploy",
-        description="Deploy or refresh the Shadow Hub panel in the lobby.",
-        guild_ids=[TARGET_GUILD_ID],
-        default_member_permissions=discord.Permissions(administrator=True),
-    )
-    @commands.has_role(ROLE_ADMIN_ID)
-    async def hub_deploy(self, ctx: discord.ApplicationContext):
-        await safe_reply(ctx, "🛠️ Deploying Shadow Hub...", ephemeral=True)
-
-        lobby = await self._resolve_channel(LOBBY_CHANNEL_ID)
-        if lobby is None:
-            return await safe_reply(ctx, "❌ Lobby channel unavailable.", ephemeral=True)
-
-        old_id = self.data.get("panel_message_id")
-        if old_id:
-            try:
-                old_msg = await lobby.fetch_message(int(old_id))
-                await old_msg.delete()
-            except discord.NotFound:
-                pass
-            except Exception as e:
-                logger.warning(f"Could not delete stale hub panel {old_id}: {e}")
-
-        view = HubPanelView()
-        try:
-            panel_msg = await lobby.send(embed=_build_hub_embed(), view=view)
-            self.bot.add_view(view)
-            self.data["panel_message_id"] = panel_msg.id
-            self._save()
-        except Exception as e:
-            logger.error(f"Failed to deploy hub panel: {e}")
-            return await safe_reply(ctx, f"❌ Failed to deploy hub panel: {e}", ephemeral=True)
-
-        await safe_reply(
-            ctx,
-            f"✅ Shadow Hub live in {lobby.mention}.\n"
-            f"• Panel ID `{panel_msg.id}`",
-            ephemeral=True,
-        )
-
-    @hub_deploy.error
-    async def hub_deploy_error(self, ctx: discord.ApplicationContext, error: discord.DiscordException):
-        if isinstance(error, (commands.MissingRole, commands.CheckFailure)):
-            await safe_reply(ctx, "🚫 Admin clearance required.", ephemeral=True)
-        else:
-            logger.error(f"hub_deploy error: {error}")
-            await safe_reply(ctx, f"⚠️ Error: {error}", ephemeral=True)
-
-    # --------------------------------------------------------------------------
     # HELP
     # --------------------------------------------------------------------------
     @discord.slash_command(
@@ -371,7 +274,7 @@ class HubCog(commands.Cog):
             embed.add_field(
                 name="🛠️ Admin",
                 value=(
-                    "`/hub_deploy` · `/clips_deploy` · `/role_button` · "
+                    "`/clips_deploy` · `/role_button` · "
                     "`/send_custom` · `/edit_custom` · `/morehaste` · `/steam`"
                 ),
                 inline=False,
