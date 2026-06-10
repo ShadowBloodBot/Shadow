@@ -172,16 +172,11 @@ async def deploy_panel(session: aiohttp.ClientSession, token: str) -> tuple[str,
     panel_embed = {
         "title": "🎬 Clips",
         "description": (
-            "Drop your best clips here.\n\n"
-            "Hit **Submit Clip**, pick a category, then paste a "
-            "**Medal.tv** or **YouTube** link — or **upload from PC** "
-            "(Shadow will DM you for the file). Each post gets its own "
-            "thread for chat.\n\n"
-            "React with 🔥 on clips you rate. Once a clip passes the vote "
-            "threshold it gets moved to the **Hall of Fame**."
+            "**Submit Clip** → pick a category → Medal / YouTube link or PC upload.\n"
+            "Chat in each clip's thread. 🔥 votes can move clips to the **Hall of Fame**."
         ),
         "color": THEME_PRIMARY,
-        "footer": {"text": "ShadowSyn Clips • React with 🔥 to vote"},
+        "footer": {"text": "ShadowSyn Clips"},
     }
     components = [{
         "type": 1,

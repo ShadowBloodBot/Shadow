@@ -195,8 +195,12 @@ class ClipCategorySelect(Select):
 
     async def callback(self, interaction: Interaction):
         category = self.values[0]
+        if interaction.user.id not in self.cog._flow_sessions:
+            self.cog._flow_begin(interaction.user.id, interaction)
+        else:
+            self.cog._flow_track(interaction.user.id, interaction)
+        self.cog._flow_set_category(interaction.user.id, category)
         await interaction.response.send_message(
-            f"**{category}** — how are you submitting?",
             view=ClipSourceView(self.cog, category),
             ephemeral=True,
         )
@@ -215,6 +219,7 @@ class ClipLinkButton(Button):
         self.category = category
 
     async def callback(self, interaction: Interaction):
+        self.cog._flow_track(interaction.user.id, interaction)
         await interaction.response.send_modal(ClipUrlModal(self.cog, self.category))
 
 
@@ -225,29 +230,24 @@ class ClipUploadButton(Button):
         self.category = category
 
     async def callback(self, interaction: Interaction):
-        self.cog._pending_uploads[interaction.user.id] = self.category
+        self.cog._flow_track(interaction.user.id, interaction)
         guild = interaction.guild or await self.cog._resolve_guild()
         max_bytes = self.cog._upload_limit_bytes(guild)
         try:
             dm = await interaction.user.create_dm()
-            await dm.send(
-                f"**Clip upload — {self.category}**\n\n"
-                "Reply here with your video file (`mp4`, `webm`, `mov`).\n"
-                f"Max size: **{_format_mb(max_bytes)}MB** (this server's Discord limit). "
-                "One file per message."
+            prompt = await dm.send(
+                f"Send your **{self.category}** clip here (`mp4` / `webm` / `mov`, max **{_format_mb(max_bytes)}MB**)."
             )
-            await interaction.response.send_message(
-                "📬 Check your **DMs** — send the video file to Shadow there.",
-                ephemeral=True,
-            )
+            self.cog._flow_set_dm_prompt(interaction.user.id, prompt.id)
+            await interaction.response.send_message("\u200b", ephemeral=True)
         except discord.Forbidden:
-            self.cog._pending_uploads.pop(interaction.user.id, None)
+            self.cog._flow_clear(interaction.user.id)
             await interaction.response.send_message(
-                "❌ I can't DM you. Enable **Server DMs** (Privacy → allow DMs from server members) and try again.",
+                "❌ Enable server DMs (Privacy settings) to upload files.",
                 ephemeral=True,
             )
         except Exception as e:
-            self.cog._pending_uploads.pop(interaction.user.id, None)
+            self.cog._flow_clear(interaction.user.id)
             logger.error(f"Failed to open upload DM for {interaction.user.id}: {e}")
             await interaction.response.send_message("❌ Could not open upload DM. Try again.", ephemeral=True)
 
@@ -262,12 +262,12 @@ class ClipSourceView(View):
 class ClipUrlModal(Modal):
     """Ephemeral step: Medal.tv or YouTube URL."""
     def __init__(self, cog, category: str):
-        super().__init__(title="Submit a Clip Link")
+        super().__init__(title="Clip Link")
         self.cog = cog
         self.category = category
         self.add_item(TextInput(
-            label="Medal.tv or YouTube URL",
-            placeholder="https://medal.tv/... or https://youtube.com/watch?v=...",
+            label="Medal or YouTube URL",
+            placeholder="https://medal.tv/... or https://youtu.be/...",
             style=discord.InputTextStyle.short,
             required=True,
             max_length=400,
@@ -278,9 +278,10 @@ class ClipUrlModal(Modal):
         if not _is_valid_clip_url(url):
             return await safe_reply(
                 interaction,
-                "❌ Paste a valid **Medal.tv** or **YouTube** clip link.",
+                "❌ Invalid Medal or YouTube link.",
                 ephemeral=True,
             )
+        self.cog._flow_track(interaction.user.id, interaction)
         await interaction.response.defer(ephemeral=True)
         await self.cog.publish_clip(interaction, url, self.category)
 
@@ -289,10 +290,10 @@ class ClipVoteView(View):
     """Persistent 🔥 vote view. Logic handled statelessly in on_interaction."""
     def __init__(self, message_id: int, count: int = 0):
         super().__init__(timeout=None)
-        label = f"🔥 {count}" if count else "🔥 Vote"
         self.add_item(Button(
-            label=label,
-            style=ButtonStyle.primary,
+            label=str(count) if count else "\u200b",
+            emoji="🔥",
+            style=ButtonStyle.secondary,
             custom_id=f"clip_fire_{message_id}",
         ))
 
@@ -305,7 +306,7 @@ class ClipsCog(commands.Cog):
         self.bot = bot
         self.session = None
         self.data = {"panel_message_id": None, "hof_thread_id": None, "clips": {}}
-        self._pending_uploads: dict[int, str] = {}
+        self._flow_sessions: dict[int, dict] = {}
         self._load_data()
 
     def cog_unload(self):
@@ -353,6 +354,58 @@ class ClipsCog(commands.Cog):
                 logger.warning(f"Could not fetch guild for upload limit: {e}")
         return guild
 
+    def _flow_begin(self, user_id: int, interaction: discord.Interaction):
+        self._flow_sessions[user_id] = {
+            "category": None,
+            "interactions": [interaction],
+            "dm_prompt_id": None,
+        }
+
+    def _flow_track(self, user_id: int, interaction: discord.Interaction):
+        sess = self._flow_sessions.get(user_id)
+        if sess is not None:
+            sess["interactions"].append(interaction)
+
+    def _flow_set_category(self, user_id: int, category: str):
+        sess = self._flow_sessions.get(user_id)
+        if sess is not None:
+            sess["category"] = category
+
+    def _flow_set_dm_prompt(self, user_id: int, message_id: int):
+        sess = self._flow_sessions.get(user_id)
+        if sess is not None:
+            sess["dm_prompt_id"] = message_id
+
+    def _flow_clear(self, user_id: int):
+        self._flow_sessions.pop(user_id, None)
+
+    async def _flow_cleanup(
+        self,
+        user_id: int,
+        *,
+        dm_channel: discord.DMChannel | None = None,
+        user_message: discord.Message | None = None,
+    ):
+        sess = self._flow_sessions.pop(user_id, None)
+        if not sess:
+            return
+        for inter in sess.get("interactions", []):
+            try:
+                await inter.delete_original_response()
+            except Exception:
+                pass
+        if dm_channel and sess.get("dm_prompt_id"):
+            try:
+                prompt = await dm_channel.fetch_message(sess["dm_prompt_id"])
+                await prompt.delete()
+            except Exception:
+                pass
+        if user_message:
+            try:
+                await user_message.delete()
+            except Exception:
+                pass
+
     # --------------------------------------------------------------------------
     # PERSISTENT VIEW RESTORATION
     # --------------------------------------------------------------------------
@@ -382,8 +435,8 @@ class ClipsCog(commands.Cog):
 
         if custom_id == "clips_submit_panel":
             try:
+                self._flow_begin(interaction.user.id, interaction)
                 await interaction.response.send_message(
-                    "🎬 **Submit a Clip** — pick a category, then paste a **Medal** or **YouTube** link or **upload from PC**.",
                     view=ClipCategoryView(self),
                     ephemeral=True,
                 )
@@ -507,10 +560,7 @@ class ClipsCog(commands.Cog):
                 name=author.display_name,
                 icon_url=author.display_avatar.url if author.display_avatar else None,
             )
-        footer = "🏛️ Hall of Fame" if gold else "ShadowSyn Clips • React with 🔥 to vote"
-        if source == "upload":
-            footer = f"{footer} • Uploaded clip"
-        embed.set_footer(text=footer)
+        embed.set_footer(text="🏛️ Hall of Fame" if gold else "ShadowSyn Clips")
         return embed
 
     async def _finalize_clip_post(
@@ -527,6 +577,7 @@ class ClipsCog(commands.Cog):
         file: discord.File | None = None,
         reply_interaction: discord.Interaction | None = None,
         reply_dm: discord.DMChannel | None = None,
+        cleanup_user_message: discord.Message | None = None,
     ):
         try:
             if file:
@@ -569,11 +620,16 @@ class ClipsCog(commands.Cog):
         }
         self._save()
 
-        ok = f"✅ Clip posted to {channel.mention}!"
-        if reply_interaction:
-            await safe_reply(reply_interaction, ok, ephemeral=True)
-        elif reply_dm:
-            await reply_dm.send(ok)
+        try:
+            await self._refresh_ingest_panel(channel)
+        except Exception as e:
+            logger.warning(f"Ingest panel refresh after clip post failed: {e}")
+
+        await self._flow_cleanup(
+            author.id,
+            dm_channel=reply_dm,
+            user_message=cleanup_user_message,
+        )
         return msg
 
     # --------------------------------------------------------------------------
@@ -609,6 +665,8 @@ class ClipsCog(commands.Cog):
         attachment: discord.Attachment,
         category: str,
         dm_channel: discord.DMChannel,
+        *,
+        user_message: discord.Message | None = None,
     ):
         channel = self.bot.get_channel(CLIPS_CHANNEL_ID)
         if channel is None:
@@ -657,22 +715,22 @@ class ClipsCog(commands.Cog):
             source="upload",
             file=clip_file,
             reply_dm=dm_channel,
+            cleanup_user_message=user_message,
         )
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not isinstance(message.channel, discord.DMChannel):
             return
-        category = self._pending_uploads.pop(message.author.id, None)
-        if not category:
+        sess = self._flow_sessions.get(message.author.id)
+        if not sess or not sess.get("category"):
             return
+        category = sess["category"]
         if not message.attachments:
-            await message.channel.send("📎 Attach a video file to this DM.")
-            self._pending_uploads[message.author.id] = category
+            await message.channel.send("📎 Attach a video file.", delete_after=8)
             return
         if len(message.attachments) > 1:
-            await message.channel.send("❌ Send **one** video file per upload.")
-            self._pending_uploads[message.author.id] = category
+            await message.channel.send("❌ One file only.", delete_after=8)
             return
         try:
             await self.publish_clip_file(
@@ -680,10 +738,11 @@ class ClipsCog(commands.Cog):
                 message.attachments[0],
                 category,
                 message.channel,
+                user_message=message,
             )
         except Exception as e:
             logger.error(f"DM clip upload failed for {message.author.id}: {e}")
-            await message.channel.send("❌ Upload failed. Try again or use a link instead.")
+            await message.channel.send("❌ Upload failed.", delete_after=8)
 
     # --------------------------------------------------------------------------
     # VOTE HANDLING
@@ -732,18 +791,24 @@ class ClipsCog(commands.Cog):
             if posted:
                 clip["hof_posted"] = True
                 self._save()
-                await safe_reply(
-                    interaction,
-                    "🏆 This clip passed the vote threshold and was inducted into the Hall of Fame!",
-                    ephemeral=True,
-                )
+                try:
+                    await interaction.followup.send(
+                        "🏆 Inducted into the Hall of Fame!",
+                        ephemeral=True,
+                        delete_after=4,
+                    )
+                except Exception:
+                    pass
                 return
 
-        await safe_reply(
-            interaction,
-            f"🔥 Vote {'added' if voted else 'removed'} — **{count}** total.",
-            ephemeral=True,
-        )
+        try:
+            await interaction.followup.send(
+                f"🔥 **{count}**",
+                ephemeral=True,
+                delete_after=2,
+            )
+        except Exception:
+            pass
 
     # --------------------------------------------------------------------------
     # HALL OF FAME
@@ -777,6 +842,51 @@ class ClipsCog(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to post clip to Hall of Fame: {e}")
             return False
+
+    # --------------------------------------------------------------------------
+    # INGEST PANEL
+    # --------------------------------------------------------------------------
+    def _build_ingest_panel_embed(self) -> discord.Embed:
+        panel_embed = discord.Embed(
+            title="🎬 Clips",
+            description=(
+                "**Submit Clip** → pick a category → Medal / YouTube link or PC upload.\n"
+                "Chat in each clip's thread. 🔥 votes can move clips to the **Hall of Fame**."
+            ),
+            color=THEME_PRIMARY,
+        )
+        panel_embed.set_footer(text="ShadowSyn Clips")
+        return panel_embed
+
+    async def _refresh_ingest_panel(self, channel: discord.TextChannel):
+        """Delete the old Submit Clip panel and repost it as the latest message."""
+        old_id = self.data.get("panel_message_id")
+        if old_id:
+            try:
+                old_msg = await channel.fetch_message(int(old_id))
+                try:
+                    await old_msg.unpin()
+                except Exception as e:
+                    logger.warning(f"Could not unpin old ingest panel: {e}")
+                await old_msg.delete()
+            except discord.NotFound:
+                pass
+            except Exception as e:
+                logger.warning(f"Could not delete old ingest panel {old_id}: {e}")
+
+        view = SubmitClipPanelView()
+        try:
+            panel_msg = await channel.send(embed=self._build_ingest_panel_embed(), view=view)
+            self.bot.add_view(view)
+            try:
+                await panel_msg.pin()
+            except Exception as e:
+                logger.warning(f"Could not pin ingest panel: {e}")
+            self.data["panel_message_id"] = panel_msg.id
+            self._save()
+            logger.info(f"Ingest panel refreshed at bottom ({panel_msg.id}).")
+        except Exception as e:
+            logger.error(f"Failed to refresh ingest panel: {e}")
 
     # --------------------------------------------------------------------------
     # GALLERY PERMISSION LOCK
@@ -867,44 +977,13 @@ class ClipsCog(commands.Cog):
                 ephemeral=True,
             )
 
-        # --- Ingest panel ---
-        panel_embed = discord.Embed(
-            title="🎬 Clips",
-            description=(
-                "Drop your best clips here.\n\n"
-                "Hit **Submit Clip**, pick a category, then paste a "
-                "**Medal.tv** or **YouTube** link — or **upload from PC** "
-                "(Shadow will DM you for the file). Each post gets its own "
-                "thread for chat.\n\n"
-                "React with 🔥 on clips you rate. Once a clip passes the vote "
-                "threshold it gets moved to the **Hall of Fame**."
-            ),
-            color=THEME_PRIMARY,
-        )
-        panel_embed.set_footer(text="ShadowSyn Clips • React with 🔥 to vote")
-
-        panel_msg = None
-        existing_panel_id = self.data.get("panel_message_id")
-        if existing_panel_id:
-            try:
-                panel_msg = await channel.fetch_message(int(existing_panel_id))
-                await panel_msg.edit(embed=panel_embed, view=SubmitClipPanelView())
-            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
-                logger.warning(f"Existing clips panel {existing_panel_id} unavailable ({e}); redeploying fresh.")
-                panel_msg = None
-
-        if panel_msg is None:
-            try:
-                panel_msg = await channel.send(embed=panel_embed, view=SubmitClipPanelView())
-                self.data["panel_message_id"] = panel_msg.id
-            except Exception as e:
-                logger.error(f"Failed to deploy ingest panel: {e}")
-                return await safe_reply(ctx, f"❌ Failed to deploy ingest panel: {e}", ephemeral=True)
-
+        # --- Ingest panel (always latest message in gallery) ---
         try:
-            await panel_msg.pin()
+            await self._refresh_ingest_panel(channel)
+            panel_msg = await channel.fetch_message(int(self.data["panel_message_id"]))
         except Exception as e:
-            logger.warning(f"Failed to pin clips panel: {e}")
+            logger.error(f"Failed to deploy ingest panel: {e}")
+            return await safe_reply(ctx, f"❌ Failed to deploy ingest panel: {e}", ephemeral=True)
 
         # --- Hall of Fame: locked thread on the ingest panel (no extra gallery message) ---
         if CLIPS_HOF_CHANNEL_ID:
