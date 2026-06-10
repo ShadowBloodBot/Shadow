@@ -1,4 +1,5 @@
 # cogs/clips.py
+import io
 import os
 import re
 import json
@@ -121,6 +122,39 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
 
 def _medal_path(url: str) -> str:
     return url.split("medal.tv/", 1)[-1].split("?")[0].strip("/")
+
+
+def _medal_content_id(url: str) -> str | None:
+    """Extract Medal content hash from any supported clip URL shape."""
+    path = _medal_path(_normalize_clip_url(url))
+    if not path:
+        return None
+    for pat in (
+        r"games/[\w-]+/clips?/([\w-]+)$",
+        r"clips?/([\w-]+)$",
+    ):
+        m = re.search(pat, path, re.I)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _parse_medal_api_payload(data: dict) -> tuple[str | None, str | None, str | None]:
+    """Returns (title, thumbnail, video_url) from Medal /api/content JSON."""
+    title = data.get("contentTitle") or data.get("title")
+    thumbnail = (
+        data.get("thumbnailUrl")
+        or data.get("thumbnail720p")
+        or data.get("thumbnail1080p")
+        or data.get("contentThumbnail")
+        or data.get("contentThumbnail1080")
+    )
+    video_url = (
+        data.get("contentUrl720p")
+        or data.get("contentUrl")
+        or data.get("socialMediaVideo")
+    )
+    return title, thumbnail, video_url
 
 
 def _normalize_clip_url(url: str) -> str:
@@ -474,42 +508,52 @@ class ClipsCog(commands.Cog):
             logger.warning(f"YouTube oEmbed failed for {url}: {e}")
         return title or "YouTube Clip", thumbnail
 
-    async def _fetch_medal_metadata(self, url: str):
-        title, thumbnail = None, None
+    async def _fetch_medal_api(self, content_id: str) -> dict | None:
         session = await self._get_session()
-
         try:
-            async with session.get(url, headers=UA_HEADERS, allow_redirects=True, timeout=15) as resp:
-                html = await resp.text()
-
-            m = re.search(r"/api/content/([\w-]+)/socialVideoUrl", html)
-            if m:
-                chash = m.group(1)
-                try:
-                    api_url = f"https://medal.tv/api/content/{chash}"
-                    async with session.get(api_url, headers=UA_HEADERS, timeout=15) as r2:
-                        if r2.status == 200:
-                            data = await r2.json(content_type=None)
-                            title = data.get("contentTitle") or data.get("title")
-                            thumbnail = (
-                                data.get("contentThumbnail")
-                                or data.get("thumbnailUrl")
-                                or data.get("contentThumbnail1080")
-                            )
-                except Exception as e:
-                    logger.warning(f"Medal content API fetch failed ({chash}): {e}")
-
-            if not title:
-                title = _extract_og(html, "og:title") or _extract_og(html, "twitter:title")
-            if not thumbnail:
-                thumbnail = _extract_og(html, "og:image") or _extract_og(html, "twitter:image")
-
+            api_url = f"https://medal.tv/api/content/{content_id}"
+            async with session.get(api_url, headers=UA_HEADERS, timeout=15) as resp:
+                if resp.status == 200:
+                    return await resp.json(content_type=None)
         except Exception as e:
-            logger.warning(f"Medal HTML scrape failed for {url}: {e}")
+            logger.warning(f"Medal API fetch failed ({content_id}): {e}")
+        return None
 
-        if (not title or title == "Untitled Clip" or not thumbnail) and MEDAL_API_KEY:
+    async def _fetch_medal_metadata(self, url: str) -> tuple[str, str | None, str | None]:
+        """Returns (title, thumbnail, video_url). API-first using the clip id in the URL."""
+        title, thumbnail, video_url = None, None, None
+        session = await self._get_session()
+        clean = _normalize_clip_url(url)
+
+        content_id = _medal_content_id(clean)
+        if content_id:
+            data = await self._fetch_medal_api(content_id)
+            if data:
+                title, thumbnail, video_url = _parse_medal_api_payload(data)
+
+        if not title or not thumbnail:
             try:
-                search_url = f"https://developers.medal.tv/v1/search?text={quote(url, safe='')}&limit=1"
+                async with session.get(clean, headers=UA_HEADERS, allow_redirects=True, timeout=15) as resp:
+                    html = await resp.text()
+                if not content_id:
+                    m = re.search(r"/api/content/([\w-]+)/socialVideoUrl", html)
+                    if m:
+                        data = await self._fetch_medal_api(m.group(1))
+                        if data:
+                            t, th, v = _parse_medal_api_payload(data)
+                            title = title or t
+                            thumbnail = thumbnail or th
+                            video_url = video_url or v
+                if not title:
+                    title = _extract_og(html, "og:title") or _extract_og(html, "twitter:title")
+                if not thumbnail:
+                    thumbnail = _extract_og(html, "og:image") or _extract_og(html, "twitter:image")
+            except Exception as e:
+                logger.warning(f"Medal HTML scrape failed for {clean}: {e}")
+
+        if (not title or not thumbnail) and MEDAL_API_KEY:
+            try:
+                search_url = f"https://developers.medal.tv/v1/search?text={quote(clean, safe='')}&limit=1"
                 async with session.get(
                     search_url,
                     headers={**UA_HEADERS, "Authorization": MEDAL_API_KEY},
@@ -521,7 +565,7 @@ class ClipsCog(commands.Cog):
                         if items:
                             item = items[0]
                             title = title or item.get("contentTitle") or item.get("title")
-                            thumbnail = thumbnail or item.get("contentThumbnail") or item.get("thumbnailUrl")
+                            thumbnail = thumbnail or item.get("thumbnailUrl") or item.get("contentThumbnail")
             except Exception as e:
                 logger.warning(f"Medal developer search fallback failed: {e}")
 
@@ -531,12 +575,32 @@ class ClipsCog(commands.Cog):
             if any(marker in title.lower() for marker in GENERIC_MEDAL_TITLE_MARKERS):
                 title = None
 
-        return title or "Untitled Clip", thumbnail
+        return title or "Untitled Clip", thumbnail, video_url
 
-    async def _fetch_clip_metadata(self, url: str):
-        if _is_valid_youtube_url(url):
-            return await self._fetch_youtube_metadata(url)
-        return await self._fetch_medal_metadata(url)
+    async def _download_medal_video(self, video_url: str, max_bytes: int) -> discord.File | None:
+        """Stream Medal MP4 into a Discord attachment when within server size cap."""
+        session = await self._get_session()
+        try:
+            async with session.get(video_url, headers=UA_HEADERS, allow_redirects=True, timeout=60) as resp:
+                if resp.status != 200:
+                    logger.warning(f"Medal video download status {resp.status}")
+                    return None
+                cl = resp.headers.get("Content-Length")
+                if cl and int(cl) > max_bytes:
+                    logger.info(f"Medal video too large ({cl} bytes), skipping attachment.")
+                    return None
+                buf = bytearray()
+                async for chunk in resp.content.iter_chunked(256 * 1024):
+                    buf.extend(chunk)
+                    if len(buf) > max_bytes:
+                        logger.info("Medal video exceeded size cap while downloading.")
+                        return None
+                if not buf:
+                    return None
+                return discord.File(io.BytesIO(bytes(buf)), filename="clip.mp4")
+        except Exception as e:
+            logger.warning(f"Medal video download failed: {e}")
+            return None
 
     # --------------------------------------------------------------------------
     # GALLERY POST
@@ -636,12 +700,23 @@ class ClipsCog(commands.Cog):
                 ephemeral=True,
             )
 
-        title, thumbnail = await self._fetch_clip_metadata(url)
-        source = "youtube" if _is_valid_youtube_url(url) else "medal"
+        guild = channel.guild or await self._resolve_guild()
+        max_bytes = self._upload_limit_bytes(guild)
+        clip_file = None
+
+        if _is_valid_youtube_url(url):
+            title, thumbnail = await self._fetch_youtube_metadata(url)
+            source = "youtube"
+        else:
+            title, thumbnail, video_url = await self._fetch_medal_metadata(url)
+            source = "medal"
+            if video_url:
+                clip_file = await self._download_medal_video(video_url, max_bytes)
+
         embed = self._build_clip_embed(
             interaction.user,
             url=url,
-            thumbnail=thumbnail,
+            thumbnail=None if clip_file else thumbnail,
         )
         await self._finalize_clip_post(
             channel,
@@ -651,6 +726,7 @@ class ClipsCog(commands.Cog):
             url=url,
             thumbnail=thumbnail,
             source=source,
+            file=clip_file,
             reply_interaction=interaction,
         )
 
