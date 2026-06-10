@@ -73,7 +73,7 @@ YOUTUBE_ID_RE = re.compile(
     r"(?:v=|youtu\.be/|shorts/)([\w-]{11})",
     re.I,
 )
-UPLOAD_MAX_BYTES = 25 * 1024 * 1024
+UPLOAD_FALLBACK_BYTES = 25 * 1024 * 1024
 UPLOAD_VIDEO_TYPES = {
     "video/mp4",
     "video/webm",
@@ -152,6 +152,11 @@ def _youtube_id(url: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _format_mb(num_bytes: int) -> str:
+    mb = num_bytes / (1024 * 1024)
+    return str(int(mb)) if mb == int(mb) else f"{mb:.1f}"
+
+
 def _extract_og(html: str, prop: str):
     patterns = [
         rf'property="{prop}"[^>]+content="([^"]+)"',
@@ -221,12 +226,15 @@ class ClipUploadButton(Button):
 
     async def callback(self, interaction: Interaction):
         self.cog._pending_uploads[interaction.user.id] = self.category
+        guild = interaction.guild or await self.cog._resolve_guild()
+        max_bytes = self.cog._upload_limit_bytes(guild)
         try:
             dm = await interaction.user.create_dm()
             await dm.send(
                 f"**Clip upload — {self.category}**\n\n"
                 "Reply here with your video file (`mp4`, `webm`, `mov`).\n"
-                f"Max size: **{UPLOAD_MAX_BYTES // (1024 * 1024)}MB**. One file per message."
+                f"Max size: **{_format_mb(max_bytes)}MB** (this server's Discord limit). "
+                "One file per message."
             )
             await interaction.response.send_message(
                 "📬 Check your **DMs** — send the video file to Shadow there.",
@@ -329,6 +337,21 @@ class ClipsCog(commands.Cog):
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
         return self.session
+
+    def _upload_limit_bytes(self, guild: discord.Guild | None) -> int:
+        """Discord server cap from boost tier (25 / 50 / 100 MB)."""
+        if guild is not None and getattr(guild, "filesize_limit", None):
+            return guild.filesize_limit
+        return UPLOAD_FALLBACK_BYTES
+
+    async def _resolve_guild(self) -> discord.Guild | None:
+        guild = self.bot.get_guild(TARGET_GUILD_ID)
+        if guild is None:
+            try:
+                guild = await self.bot.fetch_guild(TARGET_GUILD_ID)
+            except Exception as e:
+                logger.warning(f"Could not fetch guild for upload limit: {e}")
+        return guild
 
     # --------------------------------------------------------------------------
     # PERSISTENT VIEW RESTORATION
@@ -596,10 +619,13 @@ class ClipsCog(commands.Cog):
                 await dm_channel.send("❌ Clips channel is unavailable. Tell an admin.")
                 return
 
-        if attachment.size > UPLOAD_MAX_BYTES:
+        guild = channel.guild or await self._resolve_guild()
+        max_bytes = self._upload_limit_bytes(guild)
+        if attachment.size > max_bytes:
             await dm_channel.send(
-                f"❌ File too large (**{attachment.size // (1024 * 1024)}MB**). "
-                f"Max is **{UPLOAD_MAX_BYTES // (1024 * 1024)}MB**."
+                f"❌ File too large (**{_format_mb(attachment.size)}MB**). "
+                f"This server allows up to **{_format_mb(max_bytes)}MB** per file "
+                "(boost tier sets the cap — 25 / 50 / 100 MB)."
             )
             return
 
