@@ -15,10 +15,14 @@ from deep_translator import GoogleTranslator
 # --- CONSTANTS ---
 THEME_PRIMARY      = 0x2B0B35
 TTS_ROLE_ID        = 955600320287887400
+TTS_HISTORY_THREAD_ID = 1400048671973703690
 MAX_TEXT_LENGTH    = 250   # Protects against mega-spam timeouts
 AUTO_LEAVE_TIMEOUT = 120   # Leaves VC after 2 minutes of silence
+VOICE_SETTLE_MAX   = 0.5   # Max wait after fresh connect (Railway); exits early when stable
 
 TEMP_AUDIO_DIR = Path("temp_audio")
+FFMPEG_BEFORE  = "-probesize 32 -analyzeduration 0"
+FFMPEG_OPTIONS = "-loglevel error"
 
 # --- LANGUAGE CONFIGURATION ---
 TTS_LANGUAGES = [
@@ -86,6 +90,52 @@ class TTSCog(commands.Cog):
                 print(f"⚠️ Failed to clean temp dir: {e}")
         TEMP_AUDIO_DIR.mkdir(exist_ok=True)
 
+    async def _ensure_voice(self, guild: discord.Guild, channel: discord.VoiceChannel):
+        vc = guild.voice_client
+        if not vc or not vc.is_connected():
+            vc = await channel.connect(timeout=20.0)
+            elapsed = 0.0
+            while elapsed < VOICE_SETTLE_MAX:
+                await asyncio.sleep(0.1)
+                elapsed += 0.1
+                if vc.is_connected():
+                    break
+        elif vc.channel.id != channel.id:
+            await vc.move_to(channel)
+        if not vc.is_connected():
+            raise RuntimeError("Voice connection failed")
+        return vc
+
+    async def _post_speak_history(
+        self,
+        author: discord.Member,
+        voice_channel: discord.VoiceChannel,
+        original_text: str,
+        spoken_text: str,
+        is_translated: bool,
+        lang_name: str,
+    ):
+        try:
+            thread = self.bot.get_channel(TTS_HISTORY_THREAD_ID)
+            if thread is None:
+                thread = await self.bot.fetch_channel(TTS_HISTORY_THREAD_ID)
+
+            embed = discord.Embed(
+                title="🗣️ /speak Request",
+                color=THEME_PRIMARY,
+            )
+            embed.add_field(name="User", value=f"{author.mention} (`{author.display_name}`)", inline=True)
+            embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
+            embed.add_field(name="Language", value=lang_name, inline=True)
+            embed.add_field(name="English", value=original_text, inline=False)
+            if is_translated:
+                embed.add_field(name="Translation", value=spoken_text, inline=False)
+            embed.set_footer(text="ShadowSyn TTS History")
+
+            await thread.send(embed=embed)
+        except Exception as e:
+            print(f"⚠️ TTS history log failed: {e}")
+
     # -------------------------------------------------------------------------
     # ⏳ AUTO-DISCONNECT: fires after queue empties and silence timeout elapses
     # -------------------------------------------------------------------------
@@ -151,11 +201,13 @@ class TTSCog(commands.Cog):
 
         target_channel = member.voice.channel
 
-        await ctx.defer(ephemeral=True)
-
-        # Cancel any pending AFK leave timer — we're about to speak again
         if self.leave_timer:
             self.leave_timer.cancel()
+
+        # Head-start voice handshake before defer — first /speak is connect-bound.
+        voice_task = asyncio.create_task(self._ensure_voice(ctx.guild, target_channel))
+
+        await ctx.defer(ephemeral=True)
 
         lang_name = next((c.name for c in TTS_LANGUAGES if c.value == language), language)
         file_path = TEMP_AUDIO_DIR / f"tts_{uuid.uuid4().hex[:8]}.mp3"
@@ -181,24 +233,17 @@ class TTSCog(commands.Cog):
             await edge_tts.Communicate(spoken_text, EDGE_VOICES[language]).save(str(file_path))
             return spoken_text, is_translated
 
-        async def ensure_voice():
-            vc = ctx.guild.voice_client
-            if not vc or not vc.is_connected():
-                vc = await target_channel.connect(timeout=20.0)
-                await asyncio.sleep(1.5)  # Railway voice gateway stabilisation
-            elif vc.channel.id != target_channel.id:
-                await vc.move_to(target_channel)
-            return vc
-
         try:
             (spoken_text, is_translated), vc = await asyncio.gather(
                 prepare_audio(),
-                ensure_voice(),
+                voice_task,
             )
             if not vc.is_connected():
                 _safe_delete(file_path)
                 return await ctx.followup.send("❌ Connection lost before speaking.", ephemeral=True)
-            source = discord.FFmpegOpusAudio(str(file_path), options="-loglevel error")
+            source = discord.FFmpegOpusAudio(
+                str(file_path), before_options=FFMPEG_BEFORE, options=FFMPEG_OPTIONS
+            )
         except Exception as e:
             _safe_delete(file_path)
             return await ctx.followup.send(f"❌ Audio/voice setup failed: {e}", ephemeral=True)
@@ -221,6 +266,15 @@ class TTSCog(commands.Cog):
         embed = discord.Embed(description=display_desc, color=THEME_PRIMARY)
         embed.set_footer(text=f"{status}  |  Requested by {ctx.author.display_name}  |  {lang_name}")
         await ctx.followup.send(embed=embed, ephemeral=True)
+
+        await self._post_speak_history(
+            ctx.author,
+            target_channel,
+            text,
+            spoken_text,
+            is_translated,
+            lang_name,
+        )
 
 
 # -----------------------------------------------------------------------------
