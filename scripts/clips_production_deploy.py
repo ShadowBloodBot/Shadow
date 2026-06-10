@@ -26,6 +26,11 @@ SERVICE_NAME = "Shadow"
 CLIPS_CHANNEL_ID = "955609588470808657"
 SHADOW_BOT_ID = "1401788343825727618"
 THEME_PRIMARY = 0x2B0B35
+INGEST_PANEL_TITLE = "🎬 Clips"
+INGEST_PANEL_DESCRIPTION = (
+    "Hit **Submit Clip** — paste a Medal / YouTube link or upload a file.\n"
+    "Each clip gets a thread. Enough 🔥 and it lands in the **Hall of Fame**."
+)
 
 SEND_MESSAGES = 1 << 11
 CREATE_PUBLIC_THREADS = 1 << 35
@@ -168,31 +173,59 @@ async def lock_permissions(session: aiohttp.ClientSession, token: str):
     print(f"Gallery permissions locked ({len(patched)} targets)")
 
 
-async def remove_old_panels(session: aiohttp.ClientSession, token: str):
-    """Unpin and delete prior ingest panels so the new one sits at the bottom."""
+def _is_ingest_panel(msg: dict) -> bool:
+    embeds = msg.get("embeds") or []
+    if not embeds:
+        return False
+    return embeds[0].get("title") == INGEST_PANEL_TITLE
+
+
+async def remove_old_panels(session: aiohttp.ClientSession, token: str, known_panel_id: str | None = None):
+    """Delete prior ingest panels (pinned or not) so the new one sits at the bottom."""
+    removed: set[str] = set()
+
+    if known_panel_id:
+        status, _ = await discord_api(session, token, "DELETE", f"/channels/{CLIPS_CHANNEL_ID}/messages/{known_panel_id}")
+        if status in (200, 204):
+            removed.add(known_panel_id)
+            print(f"Removed old panel {known_panel_id}")
+
     status, pins = await discord_api(session, token, "GET", f"/channels/{CLIPS_CHANNEL_ID}/pins")
-    if status != 200 or not isinstance(pins, list):
-        return
-    for item in pins:
-        embeds = item.get("embeds") or []
-        title = embeds[0].get("title") if embeds else ""
-        if title != "🎬 Clips":
-            continue
-        mid = item["id"]
-        await discord_api(session, token, "DELETE", f"/channels/{CLIPS_CHANNEL_ID}/pins/{mid}")
-        await discord_api(session, token, "DELETE", f"/channels/{CLIPS_CHANNEL_ID}/messages/{mid}")
-        print(f"Removed old panel {mid}")
+    if status == 200 and isinstance(pins, list):
+        for item in pins:
+            if not _is_ingest_panel(item):
+                continue
+            mid = item["id"]
+            if mid in removed:
+                continue
+            await discord_api(session, token, "DELETE", f"/channels/{CLIPS_CHANNEL_ID}/pins/{mid}")
+            await discord_api(session, token, "DELETE", f"/channels/{CLIPS_CHANNEL_ID}/messages/{mid}")
+            removed.add(mid)
+            print(f"Removed pinned panel {mid}")
+
+    before = None
+    for _ in range(5):
+        path = f"/channels/{CLIPS_CHANNEL_ID}/messages?limit=50"
+        if before:
+            path += f"&before={before}"
+        status, batch = await discord_api(session, token, "GET", path)
+        if status != 200 or not isinstance(batch, list) or not batch:
+            break
+        for item in batch:
+            mid = item["id"]
+            if mid in removed or not _is_ingest_panel(item):
+                continue
+            await discord_api(session, token, "DELETE", f"/channels/{CLIPS_CHANNEL_ID}/messages/{mid}")
+            removed.add(mid)
+            print(f"Removed stray panel {mid}")
+        before = batch[-1]["id"]
 
 
 async def deploy_panel(session: aiohttp.ClientSession, token: str) -> tuple[str, str | None]:
     panel_embed = {
-        "title": "🎬 Clips",
-        "description": (
-            "**Submit Clip** → pick a category → Medal / YouTube link or PC upload.\n"
-            "Chat in each clip's thread. 🔥 votes can move clips to the **Hall of Fame**."
-        ),
+        "title": INGEST_PANEL_TITLE,
+        "description": INGEST_PANEL_DESCRIPTION,
         "color": THEME_PRIMARY,
-        "footer": {"text": "ShadowSyn Clips"},
     }
     components = [{
         "type": 1,
@@ -219,7 +252,7 @@ async def deploy_panel(session: aiohttp.ClientSession, token: str) -> tuple[str,
         except Exception:
             pass
 
-    await remove_old_panels(session, token)
+    await remove_old_panels(session, token, repo.get("panel_message_id"))
 
     status, panel = await discord_api(
         session,
@@ -236,7 +269,7 @@ async def deploy_panel(session: aiohttp.ClientSession, token: str) -> tuple[str,
     hof_thread_id = repo.get("hof_thread_id")
     if hof_thread_id:
         status, thread = await discord_api(session, token, "GET", f"/channels/{hof_thread_id}")
-        if status == 200:
+        if status == 200 and str(thread.get("id")) != str(panel_id):
             print(f"HOF thread reused: {hof_thread_id}")
             return str(panel_id), str(hof_thread_id)
 
@@ -250,8 +283,12 @@ async def deploy_panel(session: aiohttp.ClientSession, token: str) -> tuple[str,
     hof_id = None
     if status in (200, 201):
         hof_id = thread.get("id")
-        await discord_api(session, token, "PATCH", f"/channels/{hof_id}", {"locked": True})
-        print(f"HOF thread created: {hof_id}")
+        if str(hof_id) == str(panel_id):
+            print(f"HOF thread warning: thread id matched panel id ({hof_id})")
+            hof_id = None
+        else:
+            await discord_api(session, token, "PATCH", f"/channels/{hof_id}", {"locked": True})
+            print(f"HOF thread created: {hof_id}")
     else:
         print(f"HOF thread warning: {status} {thread}")
 

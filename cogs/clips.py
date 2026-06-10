@@ -5,12 +5,12 @@ import json
 import asyncio
 import logging
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, urlunparse
 
 import aiohttp
 import discord
-from discord import Interaction, ButtonStyle, SelectOption
-from discord.ui import View, Button, Select, Modal, TextInput
+from discord import Interaction, ButtonStyle
+from discord.ui import View, Button, Modal, TextInput
 from discord.ext import commands
 
 # ==============================================================================
@@ -19,7 +19,7 @@ from discord.ext import commands
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | [ShadowSyn] %(levelname)s | %(message)s",
-    handlers=[logging.StreamHandler()]
+    handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger("ShadowSyn.Clips")
 
@@ -34,32 +34,27 @@ TARGET_GUILD_ID = 908659586536468540
 
 CLIPS_CHANNEL_ID = 955609588470808657
 HOF_VOTE_THRESHOLD = 10
+INGEST_PANEL_TITLE = "🎬 Clips"
+INGEST_PANEL_DESCRIPTION = (
+    "Hit **Submit Clip** — paste a Medal / YouTube link or upload a file.\n"
+    "Each clip gets a thread. Enough 🔥 and it lands in the **Hall of Fame**."
+)
 
-# Optional dedicated read-only Hall of Fame channel. Falls back to hof_thread_id.
 try:
     CLIPS_HOF_CHANNEL_ID = int(os.getenv("CLIPS_HOF_CHANNEL_ID", "0")) or None
 except (TypeError, ValueError):
     CLIPS_HOF_CHANNEL_ID = None
 
-# Optional developer key for the official Medal search API as a last-resort fallback.
 MEDAL_API_KEY = os.getenv("MEDAL_API_KEY")
-
-# Game taxonomy: (label, emoji) — drives both the Select menu and embed title prefix.
-CLIP_CATEGORIES = [
-    ("PvP/Combat", "💥"),
-    ("Funny/Misc", "😂"),
-    ("Other", "🎬"),
-]
-CATEGORY_EMOJI = {label: emoji for label, emoji in CLIP_CATEGORIES}
 
 UA_HEADERS = {"User-Agent": "ShadowSyn/1.0 (+https://medal.tv)"}
 
-MEDAL_URL_RE = re.compile(r"^https?://(?:www\.)?medal\.tv/[^\s]+$", re.I)
+MEDAL_HOST_RE = re.compile(r"^https?://(?:www\.)?medal\.tv/", re.I)
 MEDAL_CLIP_PATH_RE = re.compile(
     r"(?:"
-    r"clip/\d+(?:/[\w-]+)?"
-    r"|clips/\d+(?:/[\w-]+)?"
-    r"|games/[\w-]+/clips?/\d+(?:/[\w-]+)?"
+    r"clip/[\w-]+"
+    r"|clips/[\w-]+"
+    r"|games/[\w-]+/clips?/[\w-]+"
     r")",
     re.I,
 )
@@ -96,7 +91,7 @@ try:
 except Exception:
     PERSIST_ROOT = Path(".").resolve()
 
-CLIPS_STORE = (PERSIST_ROOT / "clips_repo.json")
+CLIPS_STORE = PERSIST_ROOT / "clips_repo.json"
 
 
 def _atomic_write(file_path: Path, data):
@@ -116,25 +111,35 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
     try:
         if hasattr(ctx_or_inter, "respond"):
             return await ctx_or_inter.respond(*args, **kwargs)
-        elif hasattr(ctx_or_inter, "response"):
+        if hasattr(ctx_or_inter, "response"):
             if not ctx_or_inter.response.is_done():
                 return await ctx_or_inter.response.send_message(*args, **kwargs)
-            else:
-                return await ctx_or_inter.followup.send(*args, **kwargs)
+            return await ctx_or_inter.followup.send(*args, **kwargs)
     except Exception:
         return None
+
+
+def _medal_path(url: str) -> str:
+    return url.split("medal.tv/", 1)[-1].split("?")[0].strip("/")
+
+
+def _normalize_clip_url(url: str) -> str:
+    """Trim whitespace; drop Medal tracking params so links validate and store cleanly."""
+    url = url.strip()
+    if not MEDAL_HOST_RE.match(url):
+        return url
+    parsed = urlparse(url)
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
 
 
 def _is_valid_medal_url(url: str) -> bool:
     if not url:
         return False
-    url = url.strip()
-    if not MEDAL_URL_RE.match(url):
+    url = _normalize_clip_url(url)
+    if not MEDAL_HOST_RE.match(url):
         return False
-    path = url.split("medal.tv/", 1)[-1].split("?")[0].strip("/")
-    if not path:
-        return False
-    return bool(MEDAL_CLIP_PATH_RE.search(url))
+    path = _medal_path(url)
+    return bool(path and MEDAL_CLIP_PATH_RE.search(path))
 
 
 def _is_valid_youtube_url(url: str) -> bool:
@@ -157,6 +162,14 @@ def _format_mb(num_bytes: int) -> str:
     return str(int(mb)) if mb == int(mb) else f"{mb:.1f}"
 
 
+def _thread_name(author: discord.User | discord.Member, title: str | None) -> str:
+    """Thread label: poster first, title as fallback."""
+    name = (getattr(author, "display_name", None) or str(author))[:90]
+    if name:
+        return name
+    return (title[:90] if title else "Clip") or "Clip"
+
+
 def _extract_og(html: str, prop: str):
     patterns = [
         rf'property="{prop}"[^>]+content="([^"]+)"',
@@ -175,7 +188,8 @@ def _extract_og(html: str, prop: str):
 # UI COMPONENTS
 # ==============================================================================
 class SubmitClipPanelView(View):
-    """Persistent ingest panel. Logic handled statelessly in on_interaction."""
+    """Persistent ingest panel — handled in on_interaction."""
+
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(Button(
@@ -186,85 +200,67 @@ class SubmitClipPanelView(View):
         ))
 
 
-class ClipCategorySelect(Select):
-    """Ephemeral step 1: pick a category before link modal or file upload."""
-    def __init__(self, cog):
-        self.cog = cog
-        options = [SelectOption(label=label, value=label, emoji=emoji) for label, emoji in CLIP_CATEGORIES]
-        super().__init__(placeholder="Select a category for your clip...", options=options, min_values=1, max_values=1)
-
-    async def callback(self, interaction: Interaction):
-        category = self.values[0]
-        if interaction.user.id not in self.cog._flow_sessions:
-            self.cog._flow_begin(interaction.user.id, interaction)
-        else:
-            self.cog._flow_track(interaction.user.id, interaction)
-        self.cog._flow_set_category(interaction.user.id, category)
-        await interaction.response.send_message(
-            view=ClipSourceView(self.cog, category),
-            ephemeral=True,
-        )
-
-
-class ClipCategoryView(View):
-    def __init__(self, cog):
-        super().__init__(timeout=180)
-        self.add_item(ClipCategorySelect(cog))
-
-
 class ClipLinkButton(Button):
-    def __init__(self, cog, category: str):
+    def __init__(self, cog, user_id: int):
         super().__init__(label="Paste Link", style=ButtonStyle.primary, emoji="🔗")
         self.cog = cog
-        self.category = category
+        self.user_id = user_id
 
     async def callback(self, interaction: Interaction):
-        self.cog._flow_track(interaction.user.id, interaction)
-        await interaction.response.send_modal(ClipUrlModal(self.cog, self.category))
+        self.cog._flow_track(self.user_id, interaction)
+        await interaction.response.send_modal(ClipUrlModal(self.cog, self.user_id))
 
 
 class ClipUploadButton(Button):
-    def __init__(self, cog, category: str):
+    def __init__(self, cog, user_id: int):
         super().__init__(label="Upload from PC", style=ButtonStyle.secondary, emoji="📁")
         self.cog = cog
-        self.category = category
+        self.user_id = user_id
 
     async def callback(self, interaction: Interaction):
-        self.cog._flow_track(interaction.user.id, interaction)
+        self.cog._flow_track(self.user_id, interaction)
+        self.cog._flow_set_upload_pending(self.user_id)
+        await interaction.response.defer(ephemeral=True)
+
         guild = interaction.guild or await self.cog._resolve_guild()
         max_bytes = self.cog._upload_limit_bytes(guild)
         try:
             dm = await interaction.user.create_dm()
             prompt = await dm.send(
-                f"Send your **{self.category}** clip here (`mp4` / `webm` / `mov`, max **{_format_mb(max_bytes)}MB**)."
+                f"Drop your clip here — `mp4`, `webm`, or `mov` (max **{_format_mb(max_bytes)}MB**)."
             )
-            self.cog._flow_set_dm_prompt(interaction.user.id, prompt.id)
-            await interaction.response.send_message("\u200b", ephemeral=True)
+            self.cog._flow_set_dm_prompt(self.user_id, prompt.id)
         except discord.Forbidden:
-            self.cog._flow_clear(interaction.user.id)
-            await interaction.response.send_message(
-                "❌ Enable server DMs (Privacy settings) to upload files.",
+            self.cog._flow_clear(self.user_id)
+            await interaction.followup.send(
+                "❌ Enable DMs from server members to upload files.",
                 ephemeral=True,
             )
         except Exception as e:
-            self.cog._flow_clear(interaction.user.id)
-            logger.error(f"Failed to open upload DM for {interaction.user.id}: {e}")
-            await interaction.response.send_message("❌ Could not open upload DM. Try again.", ephemeral=True)
+            self.cog._flow_clear(self.user_id)
+            logger.error(f"Failed to open upload DM for {self.user_id}: {e}")
+            await interaction.followup.send("❌ Could not open upload DM. Try again.", ephemeral=True)
 
 
 class ClipSourceView(View):
-    def __init__(self, cog, category: str):
+    """Ephemeral: link or file — one step after Submit Clip."""
+
+    def __init__(self, cog, user_id: int):
         super().__init__(timeout=180)
-        self.add_item(ClipLinkButton(cog, category))
-        self.add_item(ClipUploadButton(cog, category))
+        self.cog = cog
+        self.user_id = user_id
+        self.add_item(ClipLinkButton(cog, user_id))
+        self.add_item(ClipUploadButton(cog, user_id))
+
+    async def on_timeout(self):
+        self.cog._flow_clear(self.user_id)
 
 
 class ClipUrlModal(Modal):
-    """Ephemeral step: Medal.tv or YouTube URL."""
-    def __init__(self, cog, category: str):
+    def __init__(self, cog, user_id: int):
         super().__init__(title="Clip Link")
         self.cog = cog
-        self.category = category
+        self.user_id = user_id
         self.add_item(TextInput(
             label="Medal or YouTube URL",
             placeholder="https://medal.tv/... or https://youtu.be/...",
@@ -274,20 +270,20 @@ class ClipUrlModal(Modal):
         ))
 
     async def callback(self, interaction: Interaction):
-        url = self.children[0].value.strip()
+        raw = self.children[0].value.strip()
+        url = _normalize_clip_url(raw)
         if not _is_valid_clip_url(url):
             return await safe_reply(
                 interaction,
-                "❌ Invalid Medal or YouTube link.",
+                "❌ That doesn't look like a Medal or YouTube clip link.",
                 ephemeral=True,
             )
-        self.cog._flow_track(interaction.user.id, interaction)
+        self.cog._flow_track(self.user_id, interaction)
         await interaction.response.defer(ephemeral=True)
-        await self.cog.publish_clip(interaction, url, self.category)
+        await self.cog.publish_clip(interaction, url)
 
 
 class ClipVoteView(View):
-    """Persistent 🔥 vote view. Logic handled statelessly in on_interaction."""
     def __init__(self, message_id: int, count: int = 0):
         super().__init__(timeout=None)
         self.add_item(Button(
@@ -315,7 +311,7 @@ class ClipsCog(commands.Cog):
         logger.info("ClipsCog unloaded. aiohttp session scheduled for closure.")
 
     # --------------------------------------------------------------------------
-    # PERSISTENCE LAYER
+    # PERSISTENCE
     # --------------------------------------------------------------------------
     def _load_data(self):
         if CLIPS_STORE.exists():
@@ -339,8 +335,17 @@ class ClipsCog(commands.Cog):
             self.session = aiohttp.ClientSession()
         return self.session
 
+    async def _clips_channel(self) -> discord.TextChannel | None:
+        channel = self.bot.get_channel(CLIPS_CHANNEL_ID)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(CLIPS_CHANNEL_ID)
+            except Exception as e:
+                logger.error(f"Clips channel unavailable: {e}")
+                return None
+        return channel if isinstance(channel, discord.TextChannel) else None
+
     def _upload_limit_bytes(self, guild: discord.Guild | None) -> int:
-        """Discord server cap from boost tier (25 / 50 / 100 MB)."""
         if guild is not None and getattr(guild, "filesize_limit", None):
             return guild.filesize_limit
         return UPLOAD_FALLBACK_BYTES
@@ -354,9 +359,12 @@ class ClipsCog(commands.Cog):
                 logger.warning(f"Could not fetch guild for upload limit: {e}")
         return guild
 
+    # --------------------------------------------------------------------------
+    # SUBMIT FLOW (ephemeral cleanup)
+    # --------------------------------------------------------------------------
     def _flow_begin(self, user_id: int, interaction: discord.Interaction):
         self._flow_sessions[user_id] = {
-            "category": None,
+            "upload_pending": False,
             "interactions": [interaction],
             "dm_prompt_id": None,
         }
@@ -366,10 +374,10 @@ class ClipsCog(commands.Cog):
         if sess is not None:
             sess["interactions"].append(interaction)
 
-    def _flow_set_category(self, user_id: int, category: str):
+    def _flow_set_upload_pending(self, user_id: int):
         sess = self._flow_sessions.get(user_id)
         if sess is not None:
-            sess["category"] = category
+            sess["upload_pending"] = True
 
     def _flow_set_dm_prompt(self, user_id: int, message_id: int):
         sess = self._flow_sessions.get(user_id)
@@ -407,7 +415,7 @@ class ClipsCog(commands.Cog):
                 pass
 
     # --------------------------------------------------------------------------
-    # PERSISTENT VIEW RESTORATION
+    # PERSISTENT VIEWS
     # --------------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_ready(self):
@@ -424,9 +432,6 @@ class ClipsCog(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to restore clip views on_ready: {e}")
 
-    # --------------------------------------------------------------------------
-    # STATELESS INTERACTION LISTENER
-    # --------------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
         if interaction.type != discord.InteractionType.component:
@@ -437,7 +442,7 @@ class ClipsCog(commands.Cog):
             try:
                 self._flow_begin(interaction.user.id, interaction)
                 await interaction.response.send_message(
-                    view=ClipCategoryView(self),
+                    view=ClipSourceView(self, interaction.user.id),
                     ephemeral=True,
                 )
             except Exception as e:
@@ -447,10 +452,9 @@ class ClipsCog(commands.Cog):
         if custom_id.startswith("clip_fire_"):
             mid = custom_id.replace("clip_fire_", "")
             await self._handle_vote(interaction, mid)
-            return
 
     # --------------------------------------------------------------------------
-    # METADATA SCRAPER
+    # METADATA
     # --------------------------------------------------------------------------
     async def _fetch_youtube_metadata(self, url: str):
         title, thumbnail = None, None
@@ -468,12 +472,9 @@ class ClipsCog(commands.Cog):
                         thumbnail = data.get("thumbnail_url")
         except Exception as e:
             logger.warning(f"YouTube oEmbed failed for {url}: {e}")
-        if not title:
-            title = "YouTube Clip"
-        return title, thumbnail
+        return title or "YouTube Clip", thumbnail
 
     async def _fetch_medal_metadata(self, url: str):
-        """Returns (title, thumbnail). Graceful fallback on every failure path."""
         title, thumbnail = None, None
         session = await self._get_session()
 
@@ -481,7 +482,6 @@ class ClipsCog(commands.Cog):
             async with session.get(url, headers=UA_HEADERS, allow_redirects=True, timeout=15) as resp:
                 html = await resp.text()
 
-            # Primary: locate the content hash embedded in the social video endpoint.
             m = re.search(r"/api/content/([\w-]+)/socialVideoUrl", html)
             if m:
                 chash = m.group(1)
@@ -499,7 +499,6 @@ class ClipsCog(commands.Cog):
                 except Exception as e:
                     logger.warning(f"Medal content API fetch failed ({chash}): {e}")
 
-            # Fallback: Open Graph / Twitter card tags from the HTML.
             if not title:
                 title = _extract_og(html, "og:title") or _extract_og(html, "twitter:title")
             if not thumbnail:
@@ -508,7 +507,6 @@ class ClipsCog(commands.Cog):
         except Exception as e:
             logger.warning(f"Medal HTML scrape failed for {url}: {e}")
 
-        # Last-resort: official developer search API (if a key is configured).
         if (not title or title == "Untitled Clip" or not thumbnail) and MEDAL_API_KEY:
             try:
                 search_url = f"https://developers.medal.tv/v1/search?text={quote(url, safe='')}&limit=1"
@@ -527,16 +525,13 @@ class ClipsCog(commands.Cog):
             except Exception as e:
                 logger.warning(f"Medal developer search fallback failed: {e}")
 
-        # Sanitize the title — Medal often appends its own suffix or returns a generic landing title.
         if title:
             title = re.sub(r"\s*[-|]\s*(Clipped\s+.+?\s+with\s+)?Medal\.tv\s*$", "", title, flags=re.I).strip()
             title = re.sub(r"&amp;", "&", title)
             if any(marker in title.lower() for marker in GENERIC_MEDAL_TITLE_MARKERS):
                 title = None
-        if not title:
-            title = "Untitled Clip"
 
-        return title, thumbnail
+        return title or "Untitled Clip", thumbnail
 
     async def _fetch_clip_metadata(self, url: str):
         if _is_valid_youtube_url(url):
@@ -544,20 +539,26 @@ class ClipsCog(commands.Cog):
         return await self._fetch_medal_metadata(url)
 
     # --------------------------------------------------------------------------
-    # EMBED BUILDER
+    # GALLERY POST
     # --------------------------------------------------------------------------
-    def _build_clip_embed(self, title, category, url, thumbnail, author, gold=False, source: str = "link"):
+    def _build_clip_embed(
+        self,
+        author: discord.User | discord.Member,
+        *,
+        url: str | None = None,
+        thumbnail: str | None = None,
+        gold: bool = False,
+    ) -> discord.Embed:
         embed = discord.Embed(
-            url=url if url else None,
+            url=url or None,
             color=THEME_GOLD if gold else THEME_PRIMARY,
         )
         if thumbnail:
             embed.set_image(url=thumbnail)
-        if author:
-            embed.set_author(
-                name=author.display_name,
-                icon_url=author.display_avatar.url if author.display_avatar else None,
-            )
+        embed.set_author(
+            name=author.display_name,
+            icon_url=author.display_avatar.url if author.display_avatar else None,
+        )
         if gold:
             embed.set_footer(text="🏛️ Hall of Fame")
         return embed
@@ -566,7 +567,6 @@ class ClipsCog(commands.Cog):
         self,
         channel: discord.TextChannel,
         embed: discord.Embed,
-        category: str,
         title: str,
         author: discord.User | discord.Member,
         *,
@@ -579,10 +579,7 @@ class ClipsCog(commands.Cog):
         cleanup_user_message: discord.Message | None = None,
     ):
         try:
-            if file:
-                msg = await channel.send(embed=embed, file=file)
-            else:
-                msg = await channel.send(embed=embed)
+            msg = await channel.send(embed=embed, file=file) if file else await channel.send(embed=embed)
         except Exception as e:
             logger.error(f"Failed to post clip embed: {e}")
             err = "❌ Failed to post your clip. Try again shortly."
@@ -601,7 +598,7 @@ class ClipsCog(commands.Cog):
 
         try:
             await msg.create_thread(
-                name=(title[:90] or "Clip Discussion"),
+                name=_thread_name(author, title),
                 auto_archive_duration=10080,
             )
         except Exception as e:
@@ -611,7 +608,6 @@ class ClipsCog(commands.Cog):
             "voters": [],
             "hof_posted": False,
             "title": title,
-            "category": category,
             "url": url,
             "author_id": author.id,
             "thumbnail": thumbnail,
@@ -631,25 +627,25 @@ class ClipsCog(commands.Cog):
         )
         return msg
 
-    # --------------------------------------------------------------------------
-    # CLIP PUBLICATION
-    # --------------------------------------------------------------------------
-    async def publish_clip(self, interaction: discord.Interaction, url: str, category: str):
-        channel = self.bot.get_channel(CLIPS_CHANNEL_ID)
+    async def publish_clip(self, interaction: discord.Interaction, url: str):
+        channel = await self._clips_channel()
         if channel is None:
-            try:
-                channel = await self.bot.fetch_channel(CLIPS_CHANNEL_ID)
-            except Exception as e:
-                logger.error(f"Clips channel unavailable: {e}")
-                return await safe_reply(interaction, "❌ Clips channel is unavailable. Tell an admin.", ephemeral=True)
+            return await safe_reply(
+                interaction,
+                "❌ Clips channel is unavailable. Tell an admin.",
+                ephemeral=True,
+            )
 
         title, thumbnail = await self._fetch_clip_metadata(url)
         source = "youtube" if _is_valid_youtube_url(url) else "medal"
-        embed = self._build_clip_embed(title, category, url, thumbnail, interaction.user, source=source)
+        embed = self._build_clip_embed(
+            interaction.user,
+            url=url,
+            thumbnail=thumbnail,
+        )
         await self._finalize_clip_post(
             channel,
             embed,
-            category,
             title,
             interaction.user,
             url=url,
@@ -662,41 +658,31 @@ class ClipsCog(commands.Cog):
         self,
         author: discord.User | discord.Member,
         attachment: discord.Attachment,
-        category: str,
         dm_channel: discord.DMChannel,
         *,
         user_message: discord.Message | None = None,
     ):
-        channel = self.bot.get_channel(CLIPS_CHANNEL_ID)
+        channel = await self._clips_channel()
         if channel is None:
-            try:
-                channel = await self.bot.fetch_channel(CLIPS_CHANNEL_ID)
-            except Exception as e:
-                logger.error(f"Clips channel unavailable: {e}")
-                await dm_channel.send("❌ Clips channel is unavailable. Tell an admin.")
-                return
+            await dm_channel.send("❌ Clips channel is unavailable. Tell an admin.")
+            return
 
         guild = channel.guild or await self._resolve_guild()
         max_bytes = self._upload_limit_bytes(guild)
         if attachment.size > max_bytes:
             await dm_channel.send(
-                f"❌ File too large (**{_format_mb(attachment.size)}MB**). "
-                f"This server allows up to **{_format_mb(max_bytes)}MB** per file "
-                "(boost tier sets the cap — 25 / 50 / 100 MB)."
+                f"❌ Too large (**{_format_mb(attachment.size)}MB**). "
+                f"Server cap is **{_format_mb(max_bytes)}MB**."
             )
             return
 
         content_type = (attachment.content_type or "").split(";")[0].strip().lower()
         if content_type and content_type not in UPLOAD_VIDEO_TYPES:
-            await dm_channel.send(
-                "❌ Unsupported file type. Send a video (`mp4`, `webm`, `mov`)."
-            )
+            await dm_channel.send("❌ Send a video file (`mp4`, `webm`, `mov`).")
             return
 
-        title = Path(attachment.filename or "Uploaded Clip").stem[:80] or "Uploaded Clip"
-        embed = self._build_clip_embed(
-            title, category, None, None, author, source="upload",
-        )
+        title = Path(attachment.filename or "clip").stem[:80] or "Uploaded Clip"
+        embed = self._build_clip_embed(author)
 
         try:
             clip_file = await attachment.to_file()
@@ -708,7 +694,6 @@ class ClipsCog(commands.Cog):
         await self._finalize_clip_post(
             channel,
             embed,
-            category,
             title,
             author,
             source="upload",
@@ -722,9 +707,8 @@ class ClipsCog(commands.Cog):
         if message.author.bot or not isinstance(message.channel, discord.DMChannel):
             return
         sess = self._flow_sessions.get(message.author.id)
-        if not sess or not sess.get("category"):
+        if not sess or not sess.get("upload_pending"):
             return
-        category = sess["category"]
         if not message.attachments:
             await message.channel.send("📎 Attach a video file.", delete_after=8)
             return
@@ -735,7 +719,6 @@ class ClipsCog(commands.Cog):
             await self.publish_clip_file(
                 message.author,
                 message.attachments[0],
-                category,
                 message.channel,
                 user_message=message,
             )
@@ -744,7 +727,7 @@ class ClipsCog(commands.Cog):
             await message.channel.send("❌ Upload failed.", delete_after=8)
 
     # --------------------------------------------------------------------------
-    # VOTE HANDLING
+    # VOTING & HALL OF FAME
     # --------------------------------------------------------------------------
     async def _handle_vote(self, interaction: discord.Interaction, mid: str):
         try:
@@ -754,19 +737,22 @@ class ClipsCog(commands.Cog):
 
         clip = self.data["clips"].get(mid)
         if clip is None:
-            # Self-heal for clips posted before this build / lost from persistence.
-            clip = {"voters": [], "hof_posted": False, "title": None, "category": "Other",
-                    "url": None, "author_id": None, "thumbnail": None}
+            clip = {
+                "voters": [],
+                "hof_posted": False,
+                "title": None,
+                "url": None,
+                "author_id": None,
+                "thumbnail": None,
+            }
             self.data["clips"][mid] = clip
 
         voters = clip.setdefault("voters", [])
         uid = interaction.user.id
         if uid in voters:
             voters.remove(uid)
-            voted = False
         else:
             voters.append(uid)
-            voted = True
         count = len(voters)
         self._save()
 
@@ -778,6 +764,7 @@ class ClipsCog(commands.Cog):
             if inducting and interaction.message and interaction.message.embeds:
                 gold_embed = interaction.message.embeds[0].copy()
                 gold_embed.color = discord.Color(THEME_GOLD)
+                gold_embed.set_footer(text="🏛️ Hall of Fame")
                 await interaction.message.edit(embed=gold_embed, view=new_view)
             else:
                 await interaction.message.edit(view=new_view)
@@ -785,14 +772,17 @@ class ClipsCog(commands.Cog):
             logger.error(f"Failed to update vote view for clip {mid}: {e}")
 
         if inducting:
-            source_embed = gold_embed or (interaction.message.embeds[0] if (interaction.message and interaction.message.embeds) else None)
-            posted = await self._induct_hof(interaction.guild, source_embed)
-            if posted:
+            source_embed = gold_embed or (
+                interaction.message.embeds[0]
+                if interaction.message and interaction.message.embeds
+                else None
+            )
+            if await self._induct_hof(interaction.guild, source_embed):
                 clip["hof_posted"] = True
                 self._save()
                 try:
                     await interaction.followup.send(
-                        "🏆 Inducted into the Hall of Fame!",
+                        "🏆 Hall of Fame!",
                         ephemeral=True,
                         delete_after=4,
                     )
@@ -801,17 +791,10 @@ class ClipsCog(commands.Cog):
                 return
 
         try:
-            await interaction.followup.send(
-                f"🔥 **{count}**",
-                ephemeral=True,
-                delete_after=2,
-            )
+            await interaction.followup.send(f"🔥 {count}", ephemeral=True, delete_after=2)
         except Exception:
             pass
 
-    # --------------------------------------------------------------------------
-    # HALL OF FAME
-    # --------------------------------------------------------------------------
     async def _resolve_hof_destination(self, guild: discord.Guild):
         target_id = CLIPS_HOF_CHANNEL_ID or self.data.get("hof_thread_id")
         if not target_id:
@@ -846,32 +829,29 @@ class ClipsCog(commands.Cog):
     # INGEST PANEL
     # --------------------------------------------------------------------------
     def _build_ingest_panel_embed(self) -> discord.Embed:
-        panel_embed = discord.Embed(
-            title="🎬 Clips",
-            description=(
-                "**Submit Clip** → pick a category → Medal / YouTube link or PC upload.\n"
-                "Chat in each clip's thread. 🔥 votes can move clips to the **Hall of Fame**."
-            ),
+        return discord.Embed(
+            title=INGEST_PANEL_TITLE,
+            description=INGEST_PANEL_DESCRIPTION,
             color=THEME_PRIMARY,
         )
-        panel_embed.set_footer(text="ShadowSyn Clips")
-        return panel_embed
+
+    async def _delete_ingest_panel(self, channel: discord.TextChannel, message_id: int | str | None):
+        if not message_id:
+            return
+        try:
+            old_msg = await channel.fetch_message(int(message_id))
+            try:
+                await old_msg.unpin()
+            except Exception:
+                pass
+            await old_msg.delete()
+        except discord.NotFound:
+            pass
+        except Exception as e:
+            logger.warning(f"Could not delete ingest panel {message_id}: {e}")
 
     async def _refresh_ingest_panel(self, channel: discord.TextChannel):
-        """Delete the old Submit Clip panel and repost it as the latest message."""
-        old_id = self.data.get("panel_message_id")
-        if old_id:
-            try:
-                old_msg = await channel.fetch_message(int(old_id))
-                try:
-                    await old_msg.unpin()
-                except Exception:
-                    pass
-                await old_msg.delete()
-            except discord.NotFound:
-                pass
-            except Exception as e:
-                logger.warning(f"Could not delete old ingest panel {old_id}: {e}")
+        await self._delete_ingest_panel(channel, self.data.get("panel_message_id"))
 
         view = SubmitClipPanelView()
         try:
@@ -879,7 +859,7 @@ class ClipsCog(commands.Cog):
             self.bot.add_view(view)
             self.data["panel_message_id"] = panel_msg.id
             self._save()
-            logger.info(f"Ingest panel refreshed at bottom ({panel_msg.id}).")
+            logger.info(f"Ingest panel refreshed ({panel_msg.id}).")
         except Exception as e:
             logger.error(f"Failed to refresh ingest panel: {e}")
 
@@ -887,10 +867,6 @@ class ClipsCog(commands.Cog):
     # GALLERY PERMISSION LOCK
     # --------------------------------------------------------------------------
     async def _lock_gallery_permissions(self, channel: discord.TextChannel):
-        """
-        Gallery channel is bot-post only. Deny top-level send for @everyone and
-        every role/member with a channel overwrite. Banter stays in clip threads.
-        """
         if not isinstance(channel, discord.TextChannel):
             return False, "Not a text channel."
 
@@ -909,11 +885,9 @@ class ClipsCog(commands.Cog):
 
         targets: list[discord.Role | discord.Member] = [guild.default_role]
         for target in channel.overwrites:
-            tid = target.id
-            if tid in skip_ids:
+            if target.id in skip_ids or target in targets:
                 continue
-            if target not in targets:
-                targets.append(target)
+            targets.append(target)
 
         updated = 0
         try:
@@ -937,7 +911,7 @@ class ClipsCog(commands.Cog):
             return False, str(e)
 
     # --------------------------------------------------------------------------
-    # ADMIN DEPLOYMENT
+    # ADMIN DEPLOY
     # --------------------------------------------------------------------------
     @discord.slash_command(
         name="clips_deploy",
@@ -949,15 +923,9 @@ class ClipsCog(commands.Cog):
     async def clips_deploy(self, ctx: discord.ApplicationContext):
         await safe_reply(ctx, "🛠️ Deploying clips system...", ephemeral=True)
 
-        channel = self.bot.get_channel(CLIPS_CHANNEL_ID)
+        channel = await self._clips_channel()
         if channel is None:
-            try:
-                channel = await self.bot.fetch_channel(CLIPS_CHANNEL_ID)
-            except Exception as e:
-                return await safe_reply(ctx, f"❌ Clips channel unavailable: {e}", ephemeral=True)
-
-        if not isinstance(channel, discord.TextChannel):
-            return await safe_reply(ctx, "❌ Clips channel must be a text channel.", ephemeral=True)
+            return await safe_reply(ctx, "❌ Clips channel unavailable.", ephemeral=True)
 
         try:
             channel = await ctx.guild.fetch_channel(CLIPS_CHANNEL_ID)
@@ -972,7 +940,6 @@ class ClipsCog(commands.Cog):
                 ephemeral=True,
             )
 
-        # --- Ingest panel (always latest message in gallery) ---
         try:
             await self._refresh_ingest_panel(channel)
             panel_msg = await channel.fetch_message(int(self.data["panel_message_id"]))
@@ -980,13 +947,12 @@ class ClipsCog(commands.Cog):
             logger.error(f"Failed to deploy ingest panel: {e}")
             return await safe_reply(ctx, f"❌ Failed to deploy ingest panel: {e}", ephemeral=True)
 
-        # --- Hall of Fame: locked thread on the ingest panel (no extra gallery message) ---
         if CLIPS_HOF_CHANNEL_ID:
-            hof_status = f"Using external Hall of Fame channel: <#{CLIPS_HOF_CHANNEL_ID}>"
+            hof_status = f"Hall of Fame channel: <#{CLIPS_HOF_CHANNEL_ID}>"
         elif self.data.get("hof_thread_id"):
-            hof_status = f"Reusing Hall of Fame thread: <#{self.data['hof_thread_id']}>"
+            hof_status = f"Hall of Fame thread: <#{self.data['hof_thread_id']}>"
         else:
-            hof_status = "No Hall of Fame thread created."
+            hof_status = "No Hall of Fame thread yet."
             try:
                 hof_thread = await panel_msg.create_thread(
                     name="🏛️ Hall of Fame",
@@ -997,7 +963,7 @@ class ClipsCog(commands.Cog):
                 except Exception as e:
                     logger.warning(f"Failed to lock Hall of Fame thread: {e}")
                 self.data["hof_thread_id"] = hof_thread.id
-                hof_status = f"Hall of Fame thread created: <#{hof_thread.id}> (locked, read-only)"
+                hof_status = f"Hall of Fame thread: <#{hof_thread.id}> (locked)"
             except Exception as e:
                 logger.error(f"Failed to build Hall of Fame thread: {e}")
                 hof_status = f"⚠️ HOF thread failed: {e}"
@@ -1006,9 +972,9 @@ class ClipsCog(commands.Cog):
 
         await safe_reply(
             ctx,
-            f"✅ Clips system deployed in {channel.mention}.\n"
+            f"✅ Clips live in {channel.mention}.\n"
             f"• {perm_status}\n"
-            f"• Panel live (ID `{self.data['panel_message_id']}`)\n"
+            f"• Panel ID `{self.data['panel_message_id']}`\n"
             f"• {hof_status}",
             ephemeral=True,
         )
@@ -1016,14 +982,11 @@ class ClipsCog(commands.Cog):
     @clips_deploy.error
     async def clips_deploy_error(self, ctx: discord.ApplicationContext, error: discord.DiscordException):
         if isinstance(error, (commands.MissingRole, commands.CheckFailure)):
-            await safe_reply(ctx, "🚫 Admin clearance required to deploy the clips system.", ephemeral=True)
+            await safe_reply(ctx, "🚫 Admin clearance required.", ephemeral=True)
         else:
             logger.error(f"clips_deploy error: {error}")
             await safe_reply(ctx, f"⚠️ Error: {error}", ephemeral=True)
 
 
-# ==============================================================================
-# ENTRY POINT
-# ==============================================================================
 def setup(bot: discord.Bot):
     bot.add_cog(ClipsCog(bot))
