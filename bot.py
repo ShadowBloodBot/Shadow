@@ -69,6 +69,7 @@ cogs_list = [
     "cogs.tts",
     "cogs.tracker",
     "cogs.steam_tracker",
+    "cogs.clips",
     "cogs.admin_secure",
 ]
 
