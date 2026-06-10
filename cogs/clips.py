@@ -139,8 +139,19 @@ def _medal_content_id(url: str) -> str | None:
     return None
 
 
-def _parse_medal_api_payload(data: dict) -> tuple[str | None, str | None, str | None]:
-    """Returns (title, thumbnail, video_url) from Medal /api/content JSON."""
+MEDAL_VIDEO_KEYS = (
+    "contentUrl720p",
+    "contentUrl480p",
+    "contentUrl360p",
+    "contentUrl240p",
+    "contentUrl1080p",
+    "contentUrl",
+    "socialMediaVideo",
+)
+
+
+def _parse_medal_api_payload(data: dict) -> tuple[str | None, str | None, list[str]]:
+    """Returns (title, thumbnail, video_url_candidates) from Medal /api/content JSON."""
     title = data.get("contentTitle") or data.get("title")
     thumbnail = (
         data.get("thumbnailUrl")
@@ -149,12 +160,14 @@ def _parse_medal_api_payload(data: dict) -> tuple[str | None, str | None, str | 
         or data.get("contentThumbnail")
         or data.get("contentThumbnail1080")
     )
-    video_url = (
-        data.get("contentUrl720p")
-        or data.get("contentUrl")
-        or data.get("socialMediaVideo")
-    )
-    return title, thumbnail, video_url
+    seen: set[str] = set()
+    video_urls: list[str] = []
+    for key in MEDAL_VIDEO_KEYS:
+        url = data.get(key)
+        if url and url not in seen:
+            seen.add(url)
+            video_urls.append(url)
+    return title, thumbnail, video_urls
 
 
 def _normalize_clip_url(url: str) -> str:
@@ -519,31 +532,32 @@ class ClipsCog(commands.Cog):
             logger.warning(f"Medal API fetch failed ({content_id}): {e}")
         return None
 
-    async def _fetch_medal_metadata(self, url: str) -> tuple[str, str | None, str | None]:
-        """Returns (title, thumbnail, video_url). API-first using the clip id in the URL."""
-        title, thumbnail, video_url = None, None, None
+    async def _fetch_medal_metadata(self, url: str) -> tuple[str, str | None, list[str]]:
+        """Returns (title, thumbnail, video_url_candidates). API-first using the clip id in the URL."""
+        title, thumbnail, video_urls = None, None, []
         session = await self._get_session()
         clean = _normalize_clip_url(url)
+        api_data: dict | None = None
 
         content_id = _medal_content_id(clean)
         if content_id:
-            data = await self._fetch_medal_api(content_id)
-            if data:
-                title, thumbnail, video_url = _parse_medal_api_payload(data)
+            api_data = await self._fetch_medal_api(content_id)
+            if api_data:
+                title, thumbnail, video_urls = _parse_medal_api_payload(api_data)
 
-        if not title or not thumbnail:
+        if not title or not video_urls:
             try:
                 async with session.get(clean, headers=UA_HEADERS, allow_redirects=True, timeout=15) as resp:
                     html = await resp.text()
-                if not content_id:
+                if not api_data:
                     m = re.search(r"/api/content/([\w-]+)/socialVideoUrl", html)
                     if m:
-                        data = await self._fetch_medal_api(m.group(1))
-                        if data:
-                            t, th, v = _parse_medal_api_payload(data)
+                        api_data = await self._fetch_medal_api(m.group(1))
+                        if api_data:
+                            t, th, vids = _parse_medal_api_payload(api_data)
                             title = title or t
                             thumbnail = thumbnail or th
-                            video_url = video_url or v
+                            video_urls = video_urls or vids
                 if not title:
                     title = _extract_og(html, "og:title") or _extract_og(html, "twitter:title")
                 if not thumbnail:
@@ -551,7 +565,7 @@ class ClipsCog(commands.Cog):
             except Exception as e:
                 logger.warning(f"Medal HTML scrape failed for {clean}: {e}")
 
-        if (not title or not thumbnail) and MEDAL_API_KEY:
+        if (not title or not video_urls) and MEDAL_API_KEY:
             try:
                 search_url = f"https://developers.medal.tv/v1/search?text={quote(clean, safe='')}&limit=1"
                 async with session.get(
@@ -566,6 +580,10 @@ class ClipsCog(commands.Cog):
                             item = items[0]
                             title = title or item.get("contentTitle") or item.get("title")
                             thumbnail = thumbnail or item.get("thumbnailUrl") or item.get("contentThumbnail")
+                            for key in MEDAL_VIDEO_KEYS:
+                                u = item.get(key)
+                                if u and u not in video_urls:
+                                    video_urls.append(u)
             except Exception as e:
                 logger.warning(f"Medal developer search fallback failed: {e}")
 
@@ -575,32 +593,74 @@ class ClipsCog(commands.Cog):
             if any(marker in title.lower() for marker in GENERIC_MEDAL_TITLE_MARKERS):
                 title = None
 
-        return title or "Untitled Clip", thumbnail, video_url
+        return title or "Untitled Clip", thumbnail, video_urls
 
-    async def _download_medal_video(self, video_url: str, max_bytes: int) -> discord.File | None:
-        """Stream Medal MP4 into a Discord attachment when within server size cap."""
+    async def _probe_video_size(self, video_url: str) -> int | None:
         session = await self._get_session()
         try:
-            async with session.get(video_url, headers=UA_HEADERS, allow_redirects=True, timeout=60) as resp:
+            async with session.head(video_url, headers=UA_HEADERS, allow_redirects=True, timeout=20) as resp:
                 if resp.status != 200:
-                    logger.warning(f"Medal video download status {resp.status}")
+                    return None
+                cl = resp.headers.get("Content-Length")
+                return int(cl) if cl else None
+        except Exception:
+            return None
+
+    async def _download_medal_video(self, video_url: str, max_bytes: int) -> discord.File | None:
+        """Stream Medal MP4 into a Discord attachment — native inline playback."""
+        session = await self._get_session()
+        try:
+            async with session.get(video_url, headers=UA_HEADERS, allow_redirects=True, timeout=180) as resp:
+                if resp.status != 200:
+                    logger.warning(f"Medal video download status {resp.status} for {video_url[:80]}")
                     return None
                 cl = resp.headers.get("Content-Length")
                 if cl and int(cl) > max_bytes:
-                    logger.info(f"Medal video too large ({cl} bytes), skipping attachment.")
                     return None
                 buf = bytearray()
-                async for chunk in resp.content.iter_chunked(256 * 1024):
+                async for chunk in resp.content.iter_chunked(512 * 1024):
                     buf.extend(chunk)
                     if len(buf) > max_bytes:
-                        logger.info("Medal video exceeded size cap while downloading.")
                         return None
                 if not buf:
                     return None
-                return discord.File(io.BytesIO(bytes(buf)), filename="clip.mp4")
+                logger.info(f"Medal video ready ({len(buf) / (1024 * 1024):.1f}MB).")
+                payload = io.BytesIO(bytes(buf))
+                payload.seek(0)
+                return discord.File(payload, filename="clip.mp4", spoiler=False)
         except Exception as e:
             logger.warning(f"Medal video download failed: {e}")
             return None
+
+    async def _download_best_medal_video(self, candidates: list[str], max_bytes: int) -> discord.File | None:
+        """
+        Pick the highest-quality Medal URL that fits the server cap.
+        Probes sizes when available; falls back through the quality ladder.
+        """
+        if not candidates:
+            return None
+
+        sized: list[tuple[int, str]] = []
+        unknown: list[str] = []
+        for url in candidates:
+            size = await self._probe_video_size(url)
+            if size is None:
+                unknown.append(url)
+            elif size <= max_bytes:
+                sized.append((size, url))
+
+        ordered = [url for _, url in sorted(sized, key=lambda x: x[0], reverse=True)]
+        ordered.extend(unknown)
+
+        seen: set[str] = set()
+        for url in ordered:
+            if url in seen:
+                continue
+            seen.add(url)
+            clip = await self._download_medal_video(url, max_bytes)
+            if clip is not None:
+                return clip
+        return None
 
     # --------------------------------------------------------------------------
     # GALLERY POST
@@ -612,13 +672,18 @@ class ClipsCog(commands.Cog):
         url: str | None = None,
         thumbnail: str | None = None,
         gold: bool = False,
+        video_attached: bool = False,
     ) -> discord.Embed:
-        embed = discord.Embed(
-            url=url or None,
-            color=THEME_GOLD if gold else THEME_PRIMARY,
-        )
-        if thumbnail:
-            embed.set_image(url=thumbnail)
+        """
+        video_attached: author bar only — Discord renders the MP4 player natively below.
+        No external link or static thumbnail that looks like a broken player.
+        """
+        embed = discord.Embed(color=THEME_GOLD if gold else THEME_PRIMARY)
+        if not video_attached:
+            if url:
+                embed.url = url
+            if thumbnail:
+                embed.set_image(url=thumbnail)
         embed.set_author(
             name=author.display_name,
             icon_url=author.display_avatar.url if author.display_avatar else None,
@@ -701,22 +766,33 @@ class ClipsCog(commands.Cog):
             )
 
         guild = channel.guild or await self._resolve_guild()
-        max_bytes = self._upload_limit_bytes(guild)
+        # Leave 1 MB headroom for Discord attachment overhead.
+        max_bytes = max(self._upload_limit_bytes(guild) - (1024 * 1024), 8 * 1024 * 1024)
         clip_file = None
+        video_attached = False
 
         if _is_valid_youtube_url(url):
             title, thumbnail = await self._fetch_youtube_metadata(url)
             source = "youtube"
         else:
-            title, thumbnail, video_url = await self._fetch_medal_metadata(url)
+            title, thumbnail, video_urls = await self._fetch_medal_metadata(url)
             source = "medal"
-            if video_url:
-                clip_file = await self._download_medal_video(video_url, max_bytes)
+            clip_file = await self._download_best_medal_video(video_urls, max_bytes)
+            if clip_file is None:
+                return await safe_reply(
+                    interaction,
+                    f"❌ Couldn't pull this Medal clip into Discord "
+                    f"(server cap **{_format_mb(max_bytes)}MB**). "
+                    "Try **Upload from PC** or a shorter clip.",
+                    ephemeral=True,
+                )
+            video_attached = True
 
         embed = self._build_clip_embed(
             interaction.user,
             url=url,
-            thumbnail=None if clip_file else thumbnail,
+            thumbnail=thumbnail,
+            video_attached=video_attached,
         )
         await self._finalize_clip_post(
             channel,
@@ -758,7 +834,7 @@ class ClipsCog(commands.Cog):
             return
 
         title = Path(attachment.filename or "clip").stem[:80] or "Uploaded Clip"
-        embed = self._build_clip_embed(author)
+        embed = self._build_clip_embed(author, video_attached=True)
 
         try:
             clip_file = await attachment.to_file()
