@@ -71,6 +71,7 @@ cogs_list = [
     "cogs.steam_tracker",
     "cogs.clips",
     "cogs.admin_secure",
+    "cogs.hub",
 ]
 
 for cog in cogs_list:
