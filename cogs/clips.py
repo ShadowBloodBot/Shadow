@@ -480,7 +480,7 @@ class ClipsCog(commands.Cog):
                 self._save()
                 await safe_reply(
                     interaction,
-                    f"🏆 This clip hit **{HOF_VOTE_THRESHOLD} votes** and was inducted into the Hall of Fame!",
+                    "🏆 This clip passed the vote threshold and was inducted into the Hall of Fame!",
                     ephemeral=True,
                 )
                 return
@@ -546,18 +546,18 @@ class ClipsCog(commands.Cog):
 
         # --- Ingest panel ---
         panel_embed = discord.Embed(
-            title="🏆 Clip Gallery",
+            title="🎬 Clips",
             description=(
-                "This channel is a **curated highlight reel**.\n\n"
-                "Click **Submit Clip** below, pick a category, and paste your "
-                "**Medal.tv** link. ShadowSyn will format it into a clean gallery post "
-                "with its own banter thread.\n\n"
-                f"React with 🔥 on any clip — once a clip reaches **{HOF_VOTE_THRESHOLD} votes** "
-                "it's enshrined in the **Hall of Fame**."
+                "Drop your best Medal clips here.\n\n"
+                "Hit **Submit Clip**, pick a category, and paste your "
+                "**Medal.tv** link. It gets posted as a clean embed with its own "
+                "thread for chat.\n\n"
+                "React with 🔥 on clips you rate. Once a clip passes the vote "
+                "threshold it gets moved to the **Hall of Fame**."
             ),
             color=THEME_PRIMARY,
         )
-        panel_embed.set_footer(text="ShadowSyn Clips • Zero-noise ingest")
+        panel_embed.set_footer(text="ShadowSyn Clips • React with 🔥 to vote")
 
         panel_msg = None
         existing_panel_id = self.data.get("panel_message_id")
