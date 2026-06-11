@@ -1,0 +1,1174 @@
+{
+  "meta": {
+    "version": 1,
+    "scraped_at": "2026-06-11T08:35:18.694711+00:00",
+    "sources": [
+      "sandgame.wiki",
+      "build_sand_guide.py"
+    ],
+    "pages_total": 52,
+    "pages_scraped": 42
+  },
+  "items": [
+    {
+      "name": "Blitz Pistol PPS-5",
+      "category": "Handgun",
+      "weapon_family": "Blitz Pistol",
+      "variant": "PPS-5",
+      "rarity": "Common",
+      "where_to_obtain": "Weapon Crates",
+      "craft_recipe_text": "25 Scrap Metal (any bench)",
+      "action_plan": "Starter sidearm only",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "Blitz Pistol 10R",
+      "category": "Handgun",
+      "weapon_family": "Blitz Pistol",
+      "variant": "10R",
+      "rarity": "Uncommon",
+      "where_to_obtain": "Weapon Crates",
+      "craft_recipe_text": "4 Weapon Parts + 4 Metal Rods",
+      "action_plan": "CQC spray option",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "Blitz Pistol 15R",
+      "category": "Handgun",
+      "weapon_family": "Blitz Pistol",
+      "variant": "15R",
+      "rarity": "Rare",
+      "where_to_obtain": "Weapon Crates",
+      "craft_recipe_text": null,
+      "action_plan": "Best automatic pistol",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "EB Revolver Zseb",
+      "category": "Handgun",
+      "weapon_family": "EB Revolver",
+      "variant": "Zseb",
+      "rarity": "Common",
+      "where_to_obtain": "Weapon Crates",
+      "craft_recipe_text": "25 Scrap Metal",
+      "action_plan": "Backup only",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "EB Revolver Bantam",
+      "category": "Handgun",
+      "weapon_family": "EB Revolver",
+      "variant": "Bantam",
+      "rarity": "Uncommon",
+      "where_to_obtain": "Craft only",
+      "craft_recipe_text": "Zseb + 25 Scrap Metal",
+      "action_plan": "Melee hybrid sidearm",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "866/9 Rifle Einzel",
+      "category": "Rifle",
+      "weapon_family": "866/9 Rifle",
+      "variant": "Einzel",
+      "rarity": "Common",
+      "where_to_obtain": "Weapon Crates",
+      "craft_recipe_text": null,
+      "action_plan": "Early game only",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "866/9 Rifle Mehrzel",
+      "category": "Rifle",
+      "weapon_family": "866/9 Rifle",
+      "variant": "Mehrzel",
+      "rarity": "Noteworthy",
+      "where_to_obtain": "Weapon Crates",
+      "craft_recipe_text": null,
+      "action_plan": "Best sustained 9mm rifle",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "M82 Rifle",
+      "category": "player_weapon",
+      "weapon_family": "M82 Rifle",
+      "variant": "Standard",
+      "rarity": "Rare",
+      "where_to_obtain": "Weapon Crates",
+      "craft_recipe_text": "4 Weapon Parts + 4 Metal Rods",
+      "action_plan": "Good Trampler deck weapon",
+      "source": "sandgame.wiki",
+      "type": "Single-Shot Rifle",
+      "mag": "6",
+      "damage": "60",
+      "ammo": "{{Icon|9x42mm|3=9x42mm Ammo|4=right}}",
+      "value": "50",
+      "page": "M82 Rifle"
+    },
+    {
+      "name": "M82 Rifle Aperture",
+      "category": "Rifle",
+      "weapon_family": "M82 Rifle",
+      "variant": "Aperture",
+      "rarity": "Noteworthy",
+      "where_to_obtain": "Weapon Crates",
+      "craft_recipe_text": null,
+      "action_plan": "Medium range deck fights",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "1874 Petros",
+      "category": "Rifle",
+      "weapon_family": "1874 Petros",
+      "variant": "Standard",
+      "rarity": "Uncommon",
+      "where_to_obtain": "Weapon Crates",
+      "craft_recipe_text": null,
+      "action_plan": "Base for upgrades",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "1874 Petros Sniper",
+      "category": "Rifle",
+      "weapon_family": "1874 Petros",
+      "variant": "Sniper",
+      "rarity": "Noteworthy",
+      "where_to_obtain": "Craft",
+      "craft_recipe_text": "Petros + 2 Optic Lenses + 2 Weapon Parts",
+      "action_plan": "Long-range pick",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "1874 Petros Silenced",
+      "category": "Rifle",
+      "weapon_family": "1874 Petros",
+      "variant": "Silenced",
+      "rarity": "Rare",
+      "where_to_obtain": "Craft",
+      "craft_recipe_text": "Petros + 5 Metal Rods",
+      "action_plan": "Stealth kills",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "1874 Petros Sniper+Silenced",
+      "category": "Rifle",
+      "weapon_family": "1874 Petros",
+      "variant": "Sniper+Silenced",
+      "rarity": "Remarkable",
+      "where_to_obtain": "Craft (Fort bench)",
+      "craft_recipe_text": "Sniper + 5 Rods OR Silenced + 2 Lenses",
+      "action_plan": "BEST rifle — craft ASAP",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "Drobulet",
+      "category": "Shotgun",
+      "weapon_family": "Drobulet",
+      "variant": "Standard",
+      "rarity": "Common",
+      "where_to_obtain": "Shop / Weapon Crates",
+      "craft_recipe_text": "25 Scrap Metal",
+      "action_plan": "Buy from orbital shop early",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "Drobulet Vertical Choke",
+      "category": "Shotgun",
+      "weapon_family": "Drobulet",
+      "variant": "Vertical Choke",
+      "rarity": "Uncommon",
+      "where_to_obtain": "Craft only",
+      "craft_recipe_text": "Drobulet + 25 Scrap Metal",
+      "action_plan": "Niche upgrade",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "Pepper Mill",
+      "category": "Shotgun",
+      "weapon_family": "Pepper Mill",
+      "variant": "Standard",
+      "rarity": "Rare",
+      "where_to_obtain": "Weapon Crates",
+      "craft_recipe_text": "4 Fabric + 4 Metal Rods",
+      "action_plan": "Solid rare shotgun",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "Pepper Mill Triplet",
+      "category": "Shotgun",
+      "weapon_family": "Pepper Mill",
+      "variant": "Triplet",
+      "rarity": "Noteworthy",
+      "where_to_obtain": "Weapon Crates",
+      "craft_recipe_text": null,
+      "action_plan": "BEST shotgun — hunt Noteworthy crates",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "Anti-Reactor Rifle",
+      "category": "Special",
+      "weapon_family": "Anti-Reactor Rifle",
+      "variant": "—",
+      "rarity": "Experimental",
+      "where_to_obtain": "Dreadnaught ONLY",
+      "craft_recipe_text": null,
+      "action_plan": "Endgame PvP trump card",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "Orbital Strike Pointer Zeigefinger",
+      "category": "Special",
+      "weapon_family": "Orbital Strike Pointer",
+      "variant": "Zeigefinger",
+      "rarity": "Experimental",
+      "where_to_obtain": "Dreadnaught ONLY",
+      "craft_recipe_text": null,
+      "action_plan": "Area denial / boss fights",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "AV1 Rocket Launcher",
+      "category": "Special",
+      "weapon_family": "AV1 Rocket Launcher",
+      "variant": "—",
+      "rarity": "Remarkable",
+      "where_to_obtain": "Weapon Crates",
+      "craft_recipe_text": null,
+      "action_plan": "Anti-structure / Trampler",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "RW1 Rocket Launcher",
+      "category": "Special",
+      "weapon_family": "RW1 Rocket Launcher",
+      "variant": "—",
+      "rarity": "—",
+      "where_to_obtain": "Weapon Crates",
+      "craft_recipe_text": null,
+      "action_plan": "Backup explosive option",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "HG-6 Contact Grenade",
+      "category": "Throwable",
+      "weapon_family": "HG-6 Contact Grenade",
+      "variant": "—",
+      "rarity": "Rare",
+      "where_to_obtain": "Weapon Crates",
+      "craft_recipe_text": null,
+      "action_plan": "CQC / boarding grenades",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "RG79s Smoke Grenade",
+      "category": "Throwable",
+      "weapon_family": "RG79s Smoke Grenade",
+      "variant": "—",
+      "rarity": "—",
+      "where_to_obtain": "Weapon Crates",
+      "craft_recipe_text": null,
+      "action_plan": "Extract cover / retreat",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "Time Bomb",
+      "category": "Throwable",
+      "weapon_family": "Time Bomb",
+      "variant": "—",
+      "rarity": "Uncommon",
+      "where_to_obtain": "Craft",
+      "craft_recipe_text": "2 Fabric + 2 Gunpowder (Fort bench)",
+      "action_plan": "Essential for Forts / locked areas",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "40mm Autocannon (Rusty)",
+      "category": "Mounted",
+      "weapon_family": "40mm Autocannon",
+      "tier": "Rusty",
+      "rarity": "Rusty",
+      "ammo": "40mm Shell",
+      "where_to_obtain": "Starter kit (free)",
+      "action_plan": "Use on first expeditions; replace ASAP",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "40mm Autocannon (Worn)",
+      "category": "Mounted",
+      "weapon_family": "40mm Autocannon",
+      "tier": "Worn",
+      "rarity": "Worn",
+      "ammo": "40mm Shell",
+      "where_to_obtain": "Weapon Crates, towns",
+      "action_plan": "Upgrade when found",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "40mm Autocannon (Pristine)",
+      "category": "Mounted",
+      "weapon_family": "40mm Autocannon",
+      "tier": "Pristine",
+      "rarity": "Pristine",
+      "ammo": "40mm Shell",
+      "where_to_obtain": "Rare+ Weapon Crates, Forts",
+      "action_plan": "Main workhorse — hunt Rare/Very Rare crates",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "40mm Autocannon (Experimental)",
+      "category": "Mounted",
+      "weapon_family": "40mm Autocannon",
+      "tier": "Experimental",
+      "rarity": "Experimental",
+      "ammo": "40mm Shell",
+      "where_to_obtain": "Dreadnaught ONLY",
+      "action_plan": "Storm Dive Final Extract → Dreadnaught",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "80mm Naval Cannon (Rusty)",
+      "category": "Mounted",
+      "weapon_family": "80mm Naval Cannon",
+      "tier": "Rusty",
+      "rarity": "Rusty",
+      "ammo": "80mm Shell",
+      "where_to_obtain": "Fort static mounts, crates",
+      "action_plan": "Snipe components at range",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "80mm Naval Cannon (Worn)",
+      "category": "Mounted",
+      "weapon_family": "80mm Naval Cannon",
+      "tier": "Worn",
+      "rarity": "Worn",
+      "ammo": "80mm Shell",
+      "where_to_obtain": "Weapon Crates",
+      "action_plan": "Upgrade from Rusty",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "80mm Naval Cannon (Pristine)",
+      "category": "Mounted",
+      "weapon_family": "80mm Naval Cannon",
+      "tier": "Pristine",
+      "rarity": "Pristine",
+      "ammo": "80mm Shell",
+      "where_to_obtain": "Rare+ Weapon Crates, Forts",
+      "action_plan": "Pair with 40mm for balanced loadout",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "80mm Naval Cannon (Experimental)",
+      "category": "Mounted",
+      "weapon_family": "80mm Naval Cannon",
+      "tier": "Experimental",
+      "rarity": "Experimental",
+      "ammo": "80mm Shell",
+      "where_to_obtain": "Dreadnaught ONLY",
+      "action_plan": "Endgame must-have for Trampler wars",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "70mm Shotgun Cannon (Rusty)",
+      "category": "Mounted",
+      "weapon_family": "70mm Shotgun Cannon",
+      "tier": "Rusty",
+      "rarity": "Rusty",
+      "ammo": "70mm Shell",
+      "where_to_obtain": "Starter kit (free)",
+      "action_plan": "Boarding / CQC only",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "70mm Shotgun Cannon (Worn)",
+      "category": "Mounted",
+      "weapon_family": "70mm Shotgun Cannon",
+      "tier": "Worn",
+      "rarity": "Worn",
+      "ammo": "70mm Shell",
+      "where_to_obtain": "Weapon Crates",
+      "action_plan": "Upgrade for brawler builds",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "70mm Shotgun Cannon (Pristine)",
+      "category": "Mounted",
+      "weapon_family": "70mm Shotgun Cannon",
+      "tier": "Pristine",
+      "rarity": "Pristine",
+      "ammo": "70mm Shell",
+      "where_to_obtain": "Rare+ Weapon Crates",
+      "action_plan": "Brawler Trampler build core",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "70mm Shotgun Cannon (Experimental)",
+      "category": "Mounted",
+      "weapon_family": "70mm Shotgun Cannon",
+      "tier": "Experimental",
+      "rarity": "Experimental",
+      "ammo": "70mm Shell",
+      "where_to_obtain": "Dreadnaught ONLY",
+      "action_plan": "Storm Dive endgame CQC",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "1874e Petros Rifle",
+      "rarity": "Uncommon",
+      "type": "Single-Shot Rifle",
+      "mag": "1",
+      "damage": "60",
+      "ammo": "11x54mm Ammo",
+      "value": "50",
+      "source": "sandgame.wiki",
+      "page": "1874 Petros Rifle",
+      "category": "player_weapon"
+    },
+    {
+      "name": "1874S Petros Sniper Rifle",
+      "rarity": "Noteworthy",
+      "type": "Single-Shot Rifle",
+      "mag": "1",
+      "damage": "60",
+      "ammo": "11x54mm Ammo",
+      "value": null,
+      "source": "sandgame.wiki",
+      "page": "1874 Petros Rifle",
+      "category": "player_weapon"
+    },
+    {
+      "name": "1874E/SD Petros Rifle (Silenced)",
+      "rarity": "Rare",
+      "type": "Single-Shot Rifle",
+      "mag": "1",
+      "damage": "60",
+      "ammo": "11x54mm Ammo",
+      "value": null,
+      "source": "sandgame.wiki",
+      "page": "1874 Petros Rifle",
+      "category": "player_weapon"
+    },
+    {
+      "name": "1874SC/SI Petros Rifle",
+      "rarity": "Remarkable",
+      "type": "Single-Shot Rifle",
+      "mag": "1",
+      "damage": "60",
+      "ammo": "11x54mm Ammo",
+      "value": null,
+      "source": "sandgame.wiki",
+      "page": "1874 Petros Rifle",
+      "category": "player_weapon"
+    },
+    {
+      "name": "M1866/9 \"Einzel\" Breechloader",
+      "rarity": "Common",
+      "type": "Single-Shot Rifle",
+      "mag": "1",
+      "damage": "50",
+      "ammo": "{{Icon|9x42mm|3=9x42mm Ammo|4=right}}",
+      "value": "25",
+      "source": "sandgame.wiki",
+      "page": "866/9 Rifle",
+      "category": "player_weapon"
+    },
+    {
+      "name": "KF866/9R \"Mehrzel\" Repeater",
+      "rarity": "Noteworthy",
+      "type": "Single-Shot Rifle",
+      "mag": "6",
+      "damage": "50",
+      "ammo": "{{Icon|9x42mm|3=9x42mm Ammo|4=right}}",
+      "value": "150",
+      "source": "sandgame.wiki",
+      "page": "866/9 Rifle",
+      "category": "player_weapon"
+    },
+    {
+      "name": "Blitz PPS-5",
+      "rarity": "Common",
+      "type": "Semi-Automatic Pistol",
+      "mag": "5",
+      "damage": "15",
+      "ammo": "{{Icon|8x21mm|3=8x21mm Ammo|4=right}}",
+      "value": null,
+      "source": "sandgame.wiki",
+      "page": "Blitz Pistol",
+      "category": "player_weapon"
+    },
+    {
+      "name": "Blitz 10R",
+      "rarity": "Uncommon",
+      "type": "Semi-Automatic Pistol",
+      "mag": "10",
+      "damage": "15",
+      "ammo": "{{Icon|8x21mm|3=8x21mm Ammo|4=right}}",
+      "value": "50",
+      "source": "sandgame.wiki",
+      "page": "Blitz Pistol",
+      "category": "player_weapon"
+    },
+    {
+      "name": "Blitz 15R",
+      "rarity": "Rare",
+      "type": "Semi-Automatic Pistol",
+      "mag": "15",
+      "damage": "15",
+      "ammo": "{{Icon|8x21mm|3=8x21mm Ammo|4=right}}",
+      "value": null,
+      "source": "sandgame.wiki",
+      "page": "Blitz Pistol",
+      "category": "player_weapon"
+    },
+    {
+      "name": "Drobulet Shotgun",
+      "rarity": "Common",
+      "type": "Shotgun",
+      "mag": "1",
+      "damage": "60",
+      "ammo": "{{Icon|12 GA Ammo|3=12-Gauge Ammo|4=right}}",
+      "value": "25",
+      "source": "sandgame.wiki",
+      "page": "Drobulet Shotgun",
+      "category": "player_weapon"
+    },
+    {
+      "name": "Drobulet Shotgun Vertical Choke",
+      "rarity": "Uncommon",
+      "type": "Shotgun",
+      "mag": "1",
+      "damage": "80",
+      "ammo": "{{Icon|12 GA Ammo|3=12-Gauge Ammo|4=right}}",
+      "value": "50",
+      "source": "sandgame.wiki",
+      "page": "Drobulet Shotgun",
+      "category": "player_weapon"
+    },
+    {
+      "name": "EB \"Zseb\" Revolver",
+      "rarity": "Common",
+      "type": "Revolver",
+      "mag": "6",
+      "damage": "15",
+      "ammo": "{{Icon|8x21mm|3=8x21mm Ammo|4=right}}",
+      "value": "25",
+      "source": "sandgame.wiki",
+      "page": "EB Revolver",
+      "category": "player_weapon"
+    },
+    {
+      "name": "EB \"Bantam\" Revolver",
+      "rarity": "Uncommon",
+      "type": "Revolver",
+      "mag": "6",
+      "damage": "15",
+      "ammo": "{{Icon|8x21mm|3=8x21mm Ammo|4=right}}",
+      "value": "50",
+      "source": "sandgame.wiki",
+      "page": "EB Revolver",
+      "category": "player_weapon"
+    },
+    {
+      "name": "M82 \"Aperture\" Rifle",
+      "rarity": "Noteworthy",
+      "type": "Single-Shot Rifle",
+      "mag": "6",
+      "damage": "60",
+      "ammo": "{{Icon|9x42mm|3=9x42mm Ammo|4=right}}",
+      "value": "50",
+      "source": "sandgame.wiki",
+      "page": "M82 Rifle",
+      "category": "player_weapon"
+    },
+    {
+      "name": "Pepper Mill Shotgun",
+      "rarity": "Rare",
+      "type": "Shotgun",
+      "mag": "3",
+      "damage": "60",
+      "ammo": "{{Icon|12 GA Ammo|3=12-Gauge Ammo|4=right}}",
+      "value": "50",
+      "source": "sandgame.wiki",
+      "page": "Pepper Mill Shotgun",
+      "category": "player_weapon"
+    },
+    {
+      "name": "Triplet Shotgun",
+      "rarity": "Noteworthy",
+      "type": "Shotgun",
+      "mag": "3",
+      "damage": "80",
+      "ammo": "{{Icon|12 GA Ammo|3=12-Gauge Ammo|4=right}}",
+      "value": "150",
+      "source": "sandgame.wiki",
+      "page": "Pepper Mill Shotgun",
+      "category": "player_weapon"
+    }
+  ],
+  "recipes": [
+    {
+      "output": "Blitz Pistol PPS-5",
+      "workbench": "Workbench",
+      "inputs": [
+        {
+          "item": "Scrap Metal",
+          "qty": 25
+        }
+      ],
+      "source": "build_sand_guide"
+    },
+    {
+      "output": "Blitz Pistol 10R",
+      "workbench": "Any workbench",
+      "inputs": [
+        {
+          "item": "Weapon Parts",
+          "qty": 4
+        },
+        {
+          "item": "Metal Rods",
+          "qty": 4
+        }
+      ],
+      "source": "build_sand_guide"
+    },
+    {
+      "output": "EB Revolver Zseb",
+      "workbench": "Any workbench",
+      "inputs": [
+        {
+          "item": "Scrap Metal",
+          "qty": 25
+        }
+      ],
+      "source": "build_sand_guide"
+    },
+    {
+      "output": "EB Revolver Bantam",
+      "workbench": "Any workbench",
+      "inputs": [
+        {
+          "item": "Zseb",
+          "qty": 1
+        },
+        {
+          "item": "Scrap Metal",
+          "qty": 25
+        }
+      ],
+      "source": "build_sand_guide"
+    },
+    {
+      "output": "M82 Rifle",
+      "workbench": "Any workbench",
+      "inputs": [
+        {
+          "item": "Weapon Parts",
+          "qty": 4
+        },
+        {
+          "item": "Metal Rods",
+          "qty": 4
+        }
+      ],
+      "source": "build_sand_guide"
+    },
+    {
+      "output": "1874 Petros Sniper",
+      "workbench": "Any workbench",
+      "inputs": [
+        {
+          "item": "1874 Petros",
+          "qty": 1
+        },
+        {
+          "item": "Optic Lenses",
+          "qty": 2
+        },
+        {
+          "item": "Weapon Parts",
+          "qty": 2
+        }
+      ],
+      "source": "build_sand_guide"
+    },
+    {
+      "output": "1874 Petros Silenced",
+      "workbench": "Any workbench",
+      "inputs": [
+        {
+          "item": "1874 Petros",
+          "qty": 1
+        },
+        {
+          "item": "Metal Rods",
+          "qty": 5
+        }
+      ],
+      "source": "build_sand_guide"
+    },
+    {
+      "output": "1874 Petros Sniper+Silenced",
+      "workbench": "Advanced/Fort Workbench",
+      "inputs": [
+        {
+          "item": "1874 Petros Sniper",
+          "qty": 1
+        },
+        {
+          "item": "Metal Rods",
+          "qty": 5
+        }
+      ],
+      "source": "build_sand_guide"
+    },
+    {
+      "output": "Drobulet",
+      "workbench": "Any workbench",
+      "inputs": [
+        {
+          "item": "Scrap Metal",
+          "qty": 25
+        }
+      ],
+      "source": "build_sand_guide"
+    },
+    {
+      "output": "Drobulet Vertical Choke",
+      "workbench": "Any workbench",
+      "inputs": [
+        {
+          "item": "Drobulet",
+          "qty": 1
+        },
+        {
+          "item": "Scrap Metal",
+          "qty": 25
+        }
+      ],
+      "source": "build_sand_guide"
+    },
+    {
+      "output": "Pepper Mill",
+      "workbench": "Any workbench",
+      "inputs": [
+        {
+          "item": "Fabric",
+          "qty": 4
+        },
+        {
+          "item": "Metal Rods",
+          "qty": 4
+        }
+      ],
+      "source": "build_sand_guide"
+    },
+    {
+      "output": "Time Bomb",
+      "workbench": "Advanced/Fort Workbench",
+      "inputs": [
+        {
+          "item": "Fabric",
+          "qty": 2
+        },
+        {
+          "item": "Gunpowder",
+          "qty": 2
+        }
+      ],
+      "source": "build_sand_guide"
+    }
+  ],
+  "landmarks": [
+    {
+      "name": "Kaiserplatz",
+      "type": "Landmark",
+      "threat_level": "Medium",
+      "expected_loot": "Weapon crates, food, general",
+      "access_requirements": "Explosives for red doors",
+      "best_for": "Mid-tier weapon farm",
+      "source": "sandgame.wiki",
+      "wiki_excerpt": "Category:Landmarks"
+    },
+    {
+      "name": "Venedig",
+      "type": "Landmark",
+      "threat_level": "Medium",
+      "expected_loot": "General loot pools",
+      "access_requirements": "Explosives for red doors",
+      "best_for": "Safe Voyage farming",
+      "source": "sandgame.wiki",
+      "wiki_excerpt": "Category:Landmarks"
+    },
+    {
+      "name": "Meeresauge",
+      "type": "Landmark",
+      "threat_level": "Medium",
+      "expected_loot": "General loot",
+      "access_requirements": "Red doors",
+      "best_for": "Starter runs",
+      "source": "sandgame.wiki",
+      "wiki_excerpt": "Category:Landmarks"
+    },
+    {
+      "name": "Fort Istria",
+      "type": "Fort",
+      "threat_level": "High",
+      "expected_loot": "Pristine turrets, rare crates",
+      "access_requirements": "80mm/t explosives, mine care",
+      "best_for": "Turret upgrades",
+      "source": "sandgame.wiki",
+      "wiki_excerpt": "Category:Landmarks"
+    },
+    {
+      "name": "Fort Metternich",
+      "type": "Fort",
+      "threat_level": "High",
+      "expected_loot": "Pristine turrets, crafting mats",
+      "access_requirements": "Explosives + careful pathing",
+      "best_for": "Turret + craft farm",
+      "source": "sandgame.wiki",
+      "wiki_excerpt": "Category:Landmarks"
+    },
+    {
+      "name": "Fort Arpad",
+      "type": "Fort",
+      "threat_level": "High",
+      "expected_loot": "High-tier military loot",
+      "access_requirements": "Explosives",
+      "best_for": "Best military loot",
+      "source": "sandgame.wiki",
+      "wiki_excerpt": "Category:Landmarks"
+    },
+    {
+      "name": "Fort Tarndpol",
+      "type": "Fort",
+      "threat_level": "High",
+      "expected_loot": "High-tier military loot",
+      "access_requirements": "Explosives",
+      "best_for": "Military loot",
+      "source": "sandgame.wiki",
+      "wiki_excerpt": "Category:Landmarks"
+    },
+    {
+      "name": "Dreadnaught",
+      "type": "Landmark",
+      "threat_level": "EXTREME",
+      "expected_loot": "Experimental turrets, Anti-Reactor, Orbital Strike",
+      "access_requirements": "Final Extract event, sandstorm",
+      "best_for": "Endgame BIS loot",
+      "source": "sandgame.wiki",
+      "wiki_excerpt": "thumb|The Dreadnought prior to the final zone (above) compared to when it is uncovered (below).\nthumb|The Uncovered Dreadnought once the final storm has begun. \nThe Dreadnaught is a Landmark that can only be found in the game mode Storm Dive, and holds some of the best loot in the game.\n\n====Spawning====\nUnlike other landmarks, the dreadnaught does not spawn at the start of the game, instead it has a rare chance"
+    },
+    {
+      "name": "Sandworm Pit",
+      "type": "Secret (Storm Dive)",
+      "threat_level": "High",
+      "expected_loot": "Rare materials",
+      "access_requirements": "Final storm phase",
+      "best_for": "Alternative endgame",
+      "source": "build_sand_guide"
+    },
+    {
+      "name": "Archipel Von Leopold",
+      "type": "Landmark",
+      "wiki_excerpt": "Category:Landmarks",
+      "source": "sandgame.wiki"
+    },
+    {
+      "name": "Factorio",
+      "type": "Landmark",
+      "wiki_excerpt": "Category:Landmarks",
+      "source": "sandgame.wiki"
+    },
+    {
+      "name": "Rauchwolke",
+      "type": "Landmark",
+      "wiki_excerpt": "Category:Landmarks",
+      "source": "sandgame.wiki"
+    },
+    {
+      "name": "Schwalbenberg",
+      "type": "Landmark",
+      "wiki_excerpt": "Category:Landmarks",
+      "source": "sandgame.wiki"
+    },
+    {
+      "name": "Segen",
+      "type": "Landmark",
+      "wiki_excerpt": "This page has no content, perhaps you would like to add some? \nCategory:Landmarks\nCategory:Article Needs Improvement",
+      "source": "sandgame.wiki"
+    },
+    {
+      "name": "Strudel",
+      "type": "Landmark",
+      "wiki_excerpt": "Category:Landmarks",
+      "source": "sandgame.wiki"
+    },
+    {
+      "name": "Stufeninsel",
+      "type": "Landmark",
+      "wiki_excerpt": "Category:Landmarks",
+      "source": "sandgame.wiki"
+    }
+  ],
+  "acquisition_plans": [
+    {
+      "phase": "1 — START",
+      "step": 1,
+      "goal": "Learn controls & extract loop",
+      "mode": "Voyage",
+      "target_location": "Any town (Meeresauge)",
+      "loadout_needed": "Starter Trampler + Rusty turrets",
+      "success_criteria": "Extract with any loot safely",
+      "source": "build_sand_guide"
+    },
+    {
+      "phase": "1 — START",
+      "step": 2,
+      "goal": "Buy Drobulet from orbital shop",
+      "mode": "Hangar",
+      "target_location": "Orbital station shop",
+      "loadout_needed": "Crowns from first run",
+      "success_criteria": "Have backup shotgun",
+      "source": "build_sand_guide"
+    },
+    {
+      "phase": "1 — START",
+      "step": 3,
+      "goal": "Craft basic weapons",
+      "mode": "Hangar",
+      "target_location": "Any workbench",
+      "loadout_needed": "25 Scrap Metal",
+      "success_criteria": "EB Zseb or Blitz PPS-5 crafted",
+      "source": "build_sand_guide"
+    },
+    {
+      "phase": "2 — EARLY",
+      "step": 4,
+      "goal": "Farm Weapon Crates in towns",
+      "mode": "Voyage",
+      "target_location": "Kaiserplatz, Venedig, Segen",
+      "loadout_needed": "Drobulet + starter turrets",
+      "success_criteria": "Find Uncommon/Rare player weapons",
+      "source": "build_sand_guide"
+    },
+    {
+      "phase": "2 — EARLY",
+      "step": 5,
+      "goal": "Stock food & medkits",
+      "mode": "Voyage",
+      "target_location": "Every town visited",
+      "loadout_needed": "Cargo hold space",
+      "success_criteria": "Never die to hunger",
+      "source": "build_sand_guide"
+    },
+    {
+      "phase": "2 — EARLY",
+      "step": 6,
+      "goal": "Craft Old Smuggler's Jacket",
+      "mode": "Hangar",
+      "target_location": "Any workbench",
+      "loadout_needed": "2 Fabric + 10 Threads",
+      "success_criteria": "+1 armor for survivability",
+      "source": "build_sand_guide"
+    },
+    {
+      "phase": "3 — MID",
+      "step": 8,
+      "goal": "First Fort raid",
+      "mode": "Voyage",
+      "target_location": "Fort Istria or Metternich",
+      "loadout_needed": "Time Bombs or grenades, mine awareness",
+      "success_criteria": "Extract 1 Pristine turret",
+      "source": "build_sand_guide"
+    },
+    {
+      "phase": "3 — MID",
+      "step": 9,
+      "goal": "Upgrade to Pristine 40mm",
+      "mode": "Voyage/Fort",
+      "target_location": "Fort Weapons Crates",
+      "loadout_needed": "Explosives for doors",
+      "success_criteria": "Replace Rusty 40mm on Trampler",
+      "source": "build_sand_guide"
+    },
+    {
+      "phase": "3 — MID",
+      "step": 11,
+      "goal": "Craft 1874 Petros Sniper",
+      "mode": "Fort run",
+      "target_location": "Fort Advanced workbench",
+      "loadout_needed": "Petros + 2 Optic Lenses + 2 Weapon Parts",
+      "success_criteria": "Long-range rifle online",
+      "source": "build_sand_guide"
+    },
+    {
+      "phase": "3 — MID",
+      "step": 12,
+      "goal": "Add Pristine 80mm to Trampler",
+      "mode": "Fort raids",
+      "target_location": "Forts, military POIs",
+      "loadout_needed": "Shell crates stocked",
+      "success_criteria": "Balanced 40mm + 80mm loadout",
+      "source": "build_sand_guide"
+    },
+    {
+      "phase": "4 — ADVANCED",
+      "step": 14,
+      "goal": "Craft 1874 Sniper Silenced",
+      "mode": "Fort bench",
+      "target_location": "Fort Metternich/Arpad",
+      "loadout_needed": "Prior recipes + 5 Metal Rods",
+      "success_criteria": "Remarkable stealth sniper",
+      "source": "build_sand_guide"
+    },
+    {
+      "phase": "5 — ENDGAME",
+      "step": 17,
+      "goal": "Run Storm Dive mode",
+      "mode": "Storm Dive",
+      "target_location": "Full map",
+      "loadout_needed": "Best Pristine loadout, full ammo",
+      "success_criteria": "Survive sandstorm to Final Extract",
+      "source": "build_sand_guide"
+    },
+    {
+      "phase": "5 — ENDGAME",
+      "step": 18,
+      "goal": "Race to Dreadnaught",
+      "mode": "Storm Dive",
+      "target_location": "Map center (Final Extract)",
+      "loadout_needed": "Squad recommended",
+      "success_criteria": "Reach Dreadnaught before storm",
+      "source": "build_sand_guide"
+    },
+    {
+      "phase": "5 — ENDGAME",
+      "step": 19,
+      "goal": "Loot Experimental turrets",
+      "mode": "Storm Dive",
+      "target_location": "Dreadnaught interior",
+      "loadout_needed": "Fight PvP + PvE",
+      "success_criteria": "Extract Experimental 40mm/80mm/70mm",
+      "source": "build_sand_guide"
+    }
+  ],
+  "faq_intents": [
+    {
+      "intent": "get_pristine_turret",
+      "patterns": [
+        "pristine",
+        "turret",
+        "cannon",
+        "autocannon",
+        "naval",
+        "shotgun cannon",
+        "mounted"
+      ],
+      "answer_template": "pristine_turret_steps"
+    },
+    {
+      "intent": "craft_item",
+      "patterns": [
+        "craft",
+        "make",
+        "build",
+        "recipe",
+        "workbench",
+        "bench"
+      ],
+      "answer_template": "craft_steps"
+    },
+    {
+      "intent": "material_cost",
+      "patterns": [
+        "material",
+        "materials",
+        "cost",
+        "recipe",
+        "how many",
+        "need for"
+      ],
+      "answer_template": "material_list"
+    },
+    {
+      "intent": "where_to_loot",
+      "patterns": [
+        "where",
+        "find",
+        "loot",
+        "get",
+        "obtain",
+        "farm",
+        "drop"
+      ],
+      "answer_template": "loot_location"
+    },
+    {
+      "intent": "fort_raid",
+      "patterns": [
+        "fort",
+        "red door",
+        "time bomb",
+        "breach",
+        "minefield"
+      ],
+      "answer_template": "fort_steps"
+    },
+    {
+      "intent": "storm_dive",
+      "patterns": [
+        "storm dive",
+        "dreadnaught",
+        "experimental",
+        "endgame",
+        "final extract"
+      ],
+      "answer_template": "storm_dive_steps"
+    }
+  ],
+  "item_aliases": {
+    "1874 petros sniper silenced": [
+      "1874S/SD Petros Sniper Rifle (Silenced)",
+      "1874 Petros Sniper Silenced",
+      "1874SC/SI Petros Rifle",
+      "petros sniper silenced"
+    ],
+    "1874 petros sniper": [
+      "1874S Petros Sniper Rifle",
+      "petros sniper"
+    ],
+    "1874 petros silenced": [
+      "1874E/SD Petros Rifle (Silenced)",
+      "petros silenced"
+    ],
+    "1874 petros": [
+      "1874 Petros Rifle",
+      "1874e Petros Rifle",
+      "petros"
+    ],
+    "pristine 40mm": [
+      "40mm Autocannon Pristine"
+    ],
+    "pristine 80mm": [
+      "80mm Naval Cannon Pristine"
+    ],
+    "pristine 70mm": [
+      "70mm Shotgun Cannon Pristine"
+    ],
+    "pristine cannons": [
+      "40mm Autocannon",
+      "80mm Naval Cannon",
+      "70mm Shotgun Cannon"
+    ],
+    "time bomb": [
+      "Time Bomb"
+    ],
+    "triplet shotgun": [
+      "Triplet Shotgun",
+      "Pepper Mill Triplet"
+    ]
+  },
+  "turret_tiers": []
+}

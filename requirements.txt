@@ -6,3 +6,4 @@ yt-dlp
 pynacl
 py-cord[voice] @ git+https://github.com/Pycord-Development/pycord.git
 httpx
+rapidfuzz>=3.9.0

@@ -73,6 +73,7 @@ cogs_list = [
     "cogs.clips",
     "cogs.admin_secure",
     "cogs.hub",
+    "cogs.sand",
 ]
 
 for cog in cogs_list:
