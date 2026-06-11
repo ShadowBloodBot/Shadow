@@ -57,6 +57,8 @@ class ShadowBot(discord.Bot):
 
 bot = ShadowBot(intents=intents)
 
+TARGET_GUILD_ID = 908659586536468540
+
 # ==========================================
 # MODULE INTEGRATION (COGS)
 # ==========================================
@@ -90,6 +92,23 @@ for cog in cogs_list:
 async def on_ready():
     logger.info(f"Master Bot is online! Logged in as {bot.user}")
     logger.info(f"Connected to {len(bot.guilds)} guild(s).")
+
+    for cmd in bot.pending_application_commands:
+        subs = [getattr(s, "name", "?") for s in (getattr(cmd, "subcommands", None) or [])]
+        if subs:
+            logger.info(f"App command: /{cmd.name} → {', '.join(subs)}")
+        else:
+            logger.info(f"App command: /{cmd.name}")
+
+    try:
+        await bot.sync_commands(guild_ids=[TARGET_GUILD_ID])
+        logger.info(f"Guild slash sync complete for {TARGET_GUILD_ID}")
+    except discord.errors.Forbidden:
+        logger.error(
+            "403 during guild slash sync — re-invite bot with applications.commands scope"
+        )
+    except Exception as e:
+        logger.error(f"Guild slash sync failed: {e}")
 
 # ==========================================
 # EXECUTION & NETWORK PATCHING

@@ -270,6 +270,14 @@ class HubCog(commands.Cog):
             inline=False,
         )
         embed.add_field(
+            name="🏜️ SAND",
+            value=(
+                "In the SAND thread: `/sand query <question>` — loot, craft, materials, forts, Storm Dive.\n"
+                "`/sand help` for examples."
+            ),
+            inline=False,
+        )
+        embed.add_field(
             name="🤖 Commands",
             value=(
                 "`/speak` — bot speaks your text in VC, any language\n"
