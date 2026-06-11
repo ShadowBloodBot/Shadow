@@ -6,6 +6,7 @@ import random
 import discord
 from discord.ui import Modal, TextInput, View
 
+from ..announcements import maybe_announce_win
 from ..constants import THEME_INFO, THEME_LOSS, THEME_PRIMARY, THEME_WARNING, THEME_WIN, VAULT_HOUSE_MULTIPLIER
 from ..economy import get_balance, record_stat, update_balance
 from ..helpers import WagerPickerView, coins_to_usd, format_coins
@@ -132,6 +133,16 @@ async def run_vault_heist(interaction: discord.Interaction, bet: int, target: fl
                 f"Balance: {format_coins(get_balance(user_id))}"
             ),
             color=THEME_WIN,
+        )
+        await maybe_announce_win(
+            interaction.client,
+            interaction.user,
+            "Vault Heist",
+            profit,
+            payout,
+            bet,
+            f"Clean getaway at **{target:.2f}x** (crashed {crash_point:.2f}x)!",
+            flags={"vault_multiplier": target},
         )
     else:
         record_stat(user_id, "total_lost", bet)

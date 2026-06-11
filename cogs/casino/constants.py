@@ -27,6 +27,10 @@ MIN_BET = COINS_PER_CENT
 MAX_BET = 2_500
 QUICK_BETS = [10, 50, 100, 250, 500]
 
+# Public feed thresholds (profit, not payout)
+BIG_WIN_MIN_PROFIT = 500
+JACKPOT_MIN_PROFIT = 2_500
+
 # ── Steam shop ──
 SHOP_MIN_COINS = 20_000
 SHOP_TIERS = [

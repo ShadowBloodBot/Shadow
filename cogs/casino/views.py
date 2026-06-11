@@ -49,7 +49,8 @@ def build_gamble_hub_embed(user: discord.User) -> discord.Embed:
         "🃏 **Blackjack** — 6:5 natural · double down\n"
         "🎡 **Roulette** — European single-zero\n"
         "🏦 **Vault Heist** — set your cash-out multiplier\n"
-        "_Min bet **1¢** (10 Coins) · max $2.50/table_"
+        "_Min bet **1¢** (10 Coins) · max $2.50/table_\n"
+        "_Big wins & jackpots broadcast in this channel_"
     )
     buyin_block = "\n".join(
         f"• [{t['label']}]({paypal_tier_url(t['usd'])}) → **{t['coins']:,}** 🪙"
@@ -137,6 +138,8 @@ class GambleHubView(View):
             await inter.response.send_message(
                 embed=view.generate_embed(), view=view, ephemeral=True
             )
+            if view.game_over:
+                await view.announce_if_notable(inter.client)
 
         embed = discord.Embed(
             title="🃏 Elite Blackjack",

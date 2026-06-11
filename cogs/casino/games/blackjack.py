@@ -6,6 +6,7 @@ import discord
 from discord import ButtonStyle
 from discord.ui import View
 
+from ..announcements import maybe_announce_win
 from ..constants import (
     BLACKJACK_NATURAL_MULTIPLIER,
     RANKS,
@@ -118,6 +119,41 @@ class BlackjackView(View):
             return
         record_stat(self.user_id, "total_lost", self.bet)
 
+    def _win_details(self) -> tuple[int, int, str, dict]:
+        """Return (profit, payout, headline, flags) when player won; else zeros."""
+        player_total = calculate_hand(self.player_hand)
+        dealer_total = calculate_hand(self.dealer_hand)
+        flags: dict = {}
+
+        if player_total > 21:
+            return 0, 0, "", flags
+        if dealer_total > 21:
+            payout = self.bet * 2
+            return payout - self.bet, payout, "Dealer bust!", flags
+        if player_total == 21 and len(self.player_hand) == 2 and dealer_total != 21:
+            payout = int(self.bet * BLACKJACK_NATURAL_MULTIPLIER)
+            flags["blackjack_natural"] = True
+            return payout - self.bet, payout, "BLACKJACK!", flags
+        if player_total > dealer_total:
+            payout = self.bet * 2
+            return payout - self.bet, payout, "Table win!", flags
+        return 0, 0, "", flags
+
+    async def announce_if_notable(self, bot: discord.Client) -> None:
+        profit, payout, headline, flags = self._win_details()
+        if profit <= 0:
+            return
+        await maybe_announce_win(
+            bot,
+            self.user,
+            "Blackjack",
+            profit,
+            payout,
+            self.bet,
+            headline,
+            flags=flags,
+        )
+
     def generate_embed(self) -> discord.Embed:
         status, color = self._status_block()
         player_total = calculate_hand(self.player_hand)
@@ -166,6 +202,8 @@ class BlackjackView(View):
         if calculate_hand(self.player_hand) >= 21:
             self._resolve()
         await interaction.response.edit_message(embed=self.generate_embed(), view=self)
+        if self.game_over:
+            await self.announce_if_notable(interaction.client)
 
     @discord.ui.button(label="Stand", style=ButtonStyle.secondary, emoji="🛑", row=0)
     async def stand(self, button, interaction: discord.Interaction):
@@ -175,6 +213,8 @@ class BlackjackView(View):
             return await interaction.response.send_message("Round ended.", ephemeral=True)
         self._resolve()
         await interaction.response.edit_message(embed=self.generate_embed(), view=self)
+        if self.game_over:
+            await self.announce_if_notable(interaction.client)
 
     @discord.ui.button(label="Double", style=ButtonStyle.danger, emoji="✖️", row=0)
     async def double_down(self, button, interaction: discord.Interaction):
@@ -193,3 +233,5 @@ class BlackjackView(View):
         self.player_hand.append(self.deck.pop())
         self._resolve()
         await interaction.response.edit_message(embed=self.generate_embed(), view=self)
+        if self.game_over:
+            await self.announce_if_notable(interaction.client)

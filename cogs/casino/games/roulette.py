@@ -6,6 +6,7 @@ import random
 import discord
 from discord.ui import Modal, Select, TextInput, View
 
+from ..announcements import maybe_announce_win
 from ..constants import ROULETTE_RED, THEME_GOLD, THEME_LOSS, THEME_PRIMARY, THEME_WIN
 from ..economy import get_balance, record_stat, update_balance
 from ..helpers import WagerPickerView, coins_to_usd, format_coins, parse_wager
@@ -176,6 +177,21 @@ async def spin_roulette(
         record_stat(user_id, "total_won", profit)
         color = THEME_WIN
         outcome = f"✅ **Winner!** Payout {format_coins(payout)} (+{profit:,} profit)"
+        flags: dict = {}
+        headline = f"Hit **{bet_label}** on {result}!"
+        if bet_type == "straight":
+            flags["roulette_straight"] = True
+            headline = f"Straight **{target}** hits {result}!"
+        await maybe_announce_win(
+            interaction.client,
+            interaction.user,
+            "Roulette",
+            profit,
+            payout,
+            amount,
+            headline,
+            flags=flags,
+        )
     else:
         record_stat(user_id, "total_lost", amount)
         color = THEME_LOSS
