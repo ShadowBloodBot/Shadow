@@ -189,7 +189,6 @@ class SandGuideCog(commands.Cog):
     sand = discord.SlashCommandGroup(
         "sand",
         "SAND: Raiders of Sophie — loot, craft & acquisition guide",
-        guild_ids=[TARGET_GUILD_ID],
     )
 
     @sand.command(
