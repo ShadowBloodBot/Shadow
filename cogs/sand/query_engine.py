@@ -273,13 +273,16 @@ def build_craft_chain(output_name: str, knowledge: dict, depth: int = 0, max_dep
         sub = build_craft_chain(inp["item"], knowledge, depth + 1, max_depth)
         chain.extend(sub)
 
+    input_summary = ", ".join(
+        f"{inp['qty']}× {inp['item']}" for inp in recipe["inputs"]
+    )
     chain.append({
         "step": len(chain) + 1,
         "output": output_name,
         "workbench": recipe.get("workbench", "Workbench"),
         "action": (
             f"Craft **{output_name}** @ {recipe.get('workbench', 'Workbench')} "
-            f"({', '.join(f'{i['qty']}× {i['item']}' for i in recipe['inputs'])})"
+            f"({input_summary})"
         ),
         "inputs": recipe["inputs"],
     })
