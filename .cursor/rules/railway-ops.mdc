@@ -1,0 +1,46 @@
+---
+description: Railway deploy credentials and verification for ShadowSyn
+alwaysApply: true
+---
+
+# Railway Ops (Shadow)
+
+## Credentials (local only — never commit)
+
+Railway API access lives in the **project root**:
+
+```
+.env.railway
+```
+
+Gitignored via `.env.*`. Contains `RAILWAY_API_TOKEN`, `RAILWAY_PROJECT_ID`, `RAILWAY_SERVICE`.
+
+All `scripts/railway_*.py` and `*_production_deploy.py` scripts load this file automatically. **Do not** paste the token into rules, commits, or chat.
+
+## Shadow service
+
+| Item | Value |
+|---|---|
+| Project | `sublime-enthusiasm` |
+| Project ID | `b147a1c2-7073-4ba9-be34-14f30b200bb4` |
+| Service | `Shadow` |
+
+## Deploy workflow
+
+1. Commit + `git push origin main` (Railway auto-builds from GitHub).
+2. Poll until green:
+   ```bash
+   python scripts/railway_wait_deploy.py
+   ```
+3. Sanity-check API connectivity:
+   ```bash
+   python scripts/railway_ping.py
+   ```
+
+If Railway calls return **403**, confirm `.env.railway` exists and scripts send a `User-Agent` header.
+
+## Agent behaviour
+
+- After any Shadow production push, run `railway_wait_deploy.py` and report SUCCESS/FAILED.
+- Never add `.env.railway` to git or copy the token elsewhere.
+- If the token is missing or expired, ask Joseph to refresh `.env.railway` — do not guess credentials.
