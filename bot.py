@@ -67,6 +67,7 @@ cogs_list = [
     "cogs.jtc",
     "cogs.audit_logs",
     "cogs.tts",
+    "cogs.music",
     "cogs.tracker",
     "cogs.steam_tracker",
     "cogs.clips",

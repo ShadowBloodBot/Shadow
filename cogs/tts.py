@@ -146,6 +146,31 @@ class TTSCog(commands.Cog):
             await vc.disconnect()
             print(f"👋 Auto-disconnected from {guild.name} due to inactivity.")
 
+    def _music_is_active(self, guild_id: int) -> bool:
+        music = self.bot.get_cog("MusicCog")
+        return bool(music and music.is_active(guild_id))
+
+    async def interrupt(self, guild: discord.Guild):
+        """Music took over — stop TTS playback and clear the queue."""
+        if self.leave_timer and not self.leave_timer.done():
+            self.leave_timer.cancel()
+        self.leave_timer = None
+
+        while not self.queue.empty():
+            try:
+                _source, file_path = self.queue.get_nowait()
+                _safe_delete(file_path)
+            except asyncio.QueueEmpty:
+                break
+
+        vc = guild.voice_client
+        if vc and vc.is_playing():
+            vc.stop()
+
+        if self.queue_worker and not self.queue_worker.done():
+            self.queue_worker.cancel()
+            self.queue_worker = None
+
     # -------------------------------------------------------------------------
     # 🎵 QUEUE WORKER: processes TTS clips one at a time, never overlapping
     # -------------------------------------------------------------------------
@@ -153,6 +178,10 @@ class TTSCog(commands.Cog):
         try:
             while not self.queue.empty():
                 source, file_path = await self.queue.get()
+
+                if self._music_is_active(guild.id):
+                    _safe_delete(file_path)
+                    continue
 
                 vc = guild.voice_client
                 if not vc or not vc.is_connected():
@@ -198,6 +227,12 @@ class TTSCog(commands.Cog):
         member = ctx.guild.get_member(ctx.author.id)
         if not getattr(member, "voice", None) or not member.voice.channel:
             return await ctx.respond("❌ You must be in a Voice Channel to use this.", ephemeral=True)
+
+        if self._music_is_active(ctx.guild.id):
+            return await ctx.respond(
+                "❌ Music is playing — wait for the queue to finish or use `/stop` first.",
+                ephemeral=True,
+            )
 
         target_channel = member.voice.channel
 

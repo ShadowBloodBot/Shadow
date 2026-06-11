@@ -253,6 +253,15 @@ class HubCog(commands.Cog):
             inline=False,
         )
         embed.add_field(
+            name="🎵 Music",
+            value=(
+                "In VC: paste a **YouTube** or **Spotify** link — ShadowSyn plays it automatically.\n"
+                "`/play` — song name (pick from results) or link\n"
+                "`/pause` · `/resume` · `/skip` · `/stop` · `/queue`"
+            ),
+            inline=False,
+        )
+        embed.add_field(
             name="🏆 Clips",
             value=(
                 f"Hit **Submit Clip** in <#{CLIPS_CHANNEL_ID}> — Medal/YouTube link or file upload. "
