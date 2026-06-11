@@ -73,6 +73,7 @@ cogs_list = [
     "cogs.tracker",
     "cogs.steam_tracker",
     "cogs.clips",
+    "cogs.steam_codes",
     "cogs.admin_secure",
     "cogs.hub",
     "cogs.sand",

@@ -270,6 +270,14 @@ class HubCog(commands.Cog):
             inline=False,
         )
         embed.add_field(
+            name="🎮 Steam Codes",
+            value=(
+                f"Open <#{STEAM_CODES_CHANNEL_ID}> and hit **Add Steam Code** — "
+                "your friend code joins the guild directory (multiple alts allowed)."
+            ),
+            inline=False,
+        )
+        embed.add_field(
             name="🏜️ SAND",
             value=(
                 "In the SAND thread: `/sand query <question>` — loot, craft, materials, forts, Storm Dive.\n"
@@ -291,7 +299,7 @@ class HubCog(commands.Cog):
             embed.add_field(
                 name="🛠️ Admin",
                 value=(
-                    "`/clips_deploy` · `/role_button` · "
+                    "`/clips_deploy` · `/steam_codes_deploy` · `/role_button` · "
                     "`/send_custom` · `/edit_custom` · `/morehaste` · `/steam`"
                 ),
                 inline=False,
