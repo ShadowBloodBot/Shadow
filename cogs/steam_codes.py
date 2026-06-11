@@ -1,4 +1,5 @@
 # cogs/steam_codes.py
+import asyncio
 import json
 import logging
 import os
@@ -478,14 +479,40 @@ class SteamCodesCog(commands.Cog):
         return added
 
     async def _purge_channel(self, channel: discord.TextChannel) -> int:
+        """Delete all messages with rate-limit backoff (Discord 429 safe)."""
         deleted = 0
+        panel_id = self.data.get("panel_message_id")
         try:
-            async for msg in channel.history(limit=None):
-                try:
-                    await msg.delete()
-                    deleted += 1
-                except Exception as e:
-                    logger.warning(f"Could not delete message {msg.id}: {e}")
+            while True:
+                batch = [msg async for msg in channel.history(limit=100)]
+                if not batch:
+                    break
+                for msg in batch:
+                    if panel_id and msg.id == int(panel_id):
+                        continue
+                    if msg.author == self.bot.user:
+                        embed = msg.embeds[0].title if msg.embeds else ""
+                        if embed == PANEL_TITLE:
+                            continue
+                    for attempt in range(8):
+                        try:
+                            await msg.delete()
+                            deleted += 1
+                            break
+                        except discord.NotFound:
+                            break
+                        except discord.HTTPException as exc:
+                            if exc.status == 429:
+                                retry = getattr(exc, "retry_after", 2.0) or 2.0
+                                logger.warning(f"Purge rate limited — waiting {retry}s")
+                                await asyncio.sleep(float(retry) + 0.5)
+                                continue
+                            logger.warning(f"Could not delete message {msg.id}: {exc}")
+                            break
+                        except Exception as e:
+                            logger.warning(f"Could not delete message {msg.id}: {e}")
+                            break
+                    await asyncio.sleep(1.1)
         except Exception as e:
             logger.error(f"Channel purge failed: {e}")
         return deleted
