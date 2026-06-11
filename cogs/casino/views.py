@@ -21,10 +21,10 @@ from .constants import (
 from .economy import claim_status, get_balance, process_daily_claim, top_balances
 from .games.blackjack import BlackjackView
 from .games.roulette import RouletteLobbyView
-from .games.vault_heist import VaultHeistModal
+from .games.vault_heist import VaultHeistSetupView
 from .helpers import (
-    BetAmountModal,
     CASINO_CHANNEL_MENTION,
+    WagerPickerView,
     coins_to_usd,
     deny_if_not_gambler,
     format_countdown,
@@ -48,7 +48,8 @@ def build_gamble_hub_embed(user: discord.User) -> discord.Embed:
     games_block = (
         "🃏 **Blackjack** — 6:5 natural · double down\n"
         "🎡 **Roulette** — European single-zero\n"
-        "🏦 **Vault Heist** — set your cash-out multiplier"
+        "🏦 **Vault Heist** — set your cash-out multiplier\n"
+        "_Min bet **1¢** (10 Coins) · max $2.50/table_"
     )
     buyin_block = "\n".join(
         f"• [{t['label']}]({paypal_tier_url(t['usd'])}) → **{t['coins']:,}** 🪙"
@@ -137,8 +138,18 @@ class GambleHubView(View):
                 embed=view.generate_embed(), view=view, ephemeral=True
             )
 
-        await interaction.response.send_modal(
-            BetAmountModal("Elite Blackjack", balance, start_game)
+        embed = discord.Embed(
+            title="🃏 Elite Blackjack",
+            description=(
+                f"Balance: {format_wallet(balance)}\n"
+                "Pick a wager — **1¢** minimum (10 Coins)."
+            ),
+            color=THEME_PRIMARY,
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            view=WagerPickerView(balance, "Elite Blackjack", start_game),
+            ephemeral=True,
         )
 
     @discord.ui.button(label="Roulette", style=ButtonStyle.primary, emoji="🎡", row=0)
@@ -148,7 +159,8 @@ class GambleHubView(View):
             title="🎡 European Roulette",
             description=(
                 "Select your bet type from the menu below.\n"
-                f"Balance: {format_wallet(balance)}"
+                f"Balance: {format_wallet(balance)}\n"
+                "Wagers from **1¢** (10 Coins)."
             ),
             color=THEME_PRIMARY,
         )
@@ -161,7 +173,19 @@ class GambleHubView(View):
     @discord.ui.button(label="Vault Heist", style=ButtonStyle.primary, emoji="🏦", row=0)
     async def vault_heist(self, button, interaction: discord.Interaction):
         balance = get_balance(str(interaction.user.id))
-        await interaction.response.send_modal(VaultHeistModal(balance))
+        embed = discord.Embed(
+            title="🏦 Vault Heist",
+            description=(
+                f"Balance: {format_wallet(balance)}\n"
+                "Pick a wager — **1¢** minimum (10 Coins)."
+            ),
+            color=THEME_PRIMARY,
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            view=VaultHeistSetupView(balance),
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="Daily Claim", style=ButtonStyle.success, emoji="💰", row=3)
     async def daily_claim(self, button, interaction: discord.Interaction):

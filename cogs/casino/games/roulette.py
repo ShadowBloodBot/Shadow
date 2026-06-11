@@ -8,7 +8,7 @@ from discord.ui import Modal, Select, TextInput, View
 
 from ..constants import ROULETTE_RED, THEME_GOLD, THEME_LOSS, THEME_PRIMARY, THEME_WIN
 from ..economy import get_balance, record_stat, update_balance
-from ..helpers import format_coins
+from ..helpers import WagerPickerView, coins_to_usd, format_coins, parse_wager
 
 
 BET_OPTIONS = [
@@ -63,25 +63,19 @@ class StraightNumberModal(Modal):
         self.balance = balance
         self.bet_type = bet_type
         self.on_ready = on_ready
-        self.add_item(TextInput(label=f"Wager (Max {balance:,})"[:45], placeholder="Amount or 'all'"))
+        self.add_item(TextInput(label="Wager — 10 Coins = 1¢"[:45], placeholder="10, 50, 100, or 'all'"))
         self.add_item(TextInput(label="Number (0–36)"[:45], placeholder="e.g. 17", min_length=1, max_length=2))
 
     async def callback(self, interaction: discord.Interaction):
-        raw = self.children[0].value.lower().strip()
-        amount = self.balance if raw == "all" else None
-        if amount is None:
-            try:
-                amount = int(raw.replace(",", ""))
-            except ValueError:
-                return await interaction.response.send_message("❌ Invalid wager.", ephemeral=True)
+        amount, err = parse_wager(self.children[0].value, self.balance)
+        if err:
+            return await interaction.response.send_message(err, ephemeral=True)
         try:
             target = int(self.children[1].value.strip())
         except ValueError:
             return await interaction.response.send_message("❌ Invalid number.", ephemeral=True)
         if not 0 <= target <= 36:
             return await interaction.response.send_message("❌ Pick 0–36.", ephemeral=True)
-        if amount <= 0 or amount > self.balance:
-            return await interaction.response.send_message("❌ Invalid wager.", ephemeral=True)
         await self.on_ready(interaction, amount, self.bet_type, target)
 
 
@@ -91,18 +85,12 @@ class RouletteWagerModal(Modal):
         self.balance = balance
         self.bet_type = bet_type
         self.on_ready = on_ready
-        self.add_item(TextInput(label=f"Wager (Max {balance:,})"[:45], placeholder="Amount or 'all'"))
+        self.add_item(TextInput(label="Wager — 10 Coins = 1¢"[:45], placeholder="10, 50, 100, or 'all'"))
 
     async def callback(self, interaction: discord.Interaction):
-        raw = self.children[0].value.lower().strip()
-        amount = self.balance if raw == "all" else None
-        if amount is None:
-            try:
-                amount = int(raw.replace(",", ""))
-            except ValueError:
-                return await interaction.response.send_message("❌ Invalid wager.", ephemeral=True)
-        if amount <= 0 or amount > self.balance:
-            return await interaction.response.send_message("❌ Invalid wager.", ephemeral=True)
+        amount, err = parse_wager(self.children[0].value, self.balance)
+        if err:
+            return await interaction.response.send_message(err, ephemeral=True)
         await self.on_ready(interaction, amount, self.bet_type, None)
 
 

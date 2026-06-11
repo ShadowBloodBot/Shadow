@@ -2,6 +2,6 @@
 
 from .blackjack import BlackjackView
 from .roulette import RouletteLobbyView
-from .vault_heist import VaultHeistModal
+from .vault_heist import VaultHeistSetupView
 
-__all__ = ["BlackjackView", "RouletteLobbyView", "VaultHeistModal"]
+__all__ = ["BlackjackView", "RouletteLobbyView", "VaultHeistSetupView"]

@@ -3,7 +3,16 @@
 import discord
 from discord.ui import Modal, TextInput
 
-from .constants import COINS_PER_USD, CASINO_CHANNEL_ID, GAMBLER_ROLE_ID, MAX_BET, MIN_BET, SHOP_MIN_COINS
+from .constants import (
+    COINS_PER_CENT,
+    COINS_PER_USD,
+    CASINO_CHANNEL_ID,
+    GAMBLER_ROLE_ID,
+    MAX_BET,
+    MIN_BET,
+    QUICK_BETS,
+    SHOP_MIN_COINS,
+)
 from .economy import get_balance
 
 
@@ -83,6 +92,38 @@ def format_countdown(seconds: int) -> str:
     return f"{mins}m"
 
 
+def format_wager_label(coins: int) -> str:
+    """Human label for quick-bet buttons (cent-first for grinders)."""
+    if coins < COINS_PER_USD:
+        cents = coins // COINS_PER_CENT
+        return f"{cents}¢"
+    return coins_to_usd(coins)
+
+
+def parse_wager(raw: str, balance: int) -> tuple[int | None, str | None]:
+    """Parse wager text; amounts must be whole-cent increments."""
+    text = raw.lower().strip()
+    if text == "all":
+        amount = balance - (balance % COINS_PER_CENT)
+        if amount < MIN_BET:
+            return None, f"Balance too low for a cent wager (min {MIN_BET} Coins / 1¢)."
+        return amount, None
+    try:
+        amount = int(text.replace(",", "").replace("$", ""))
+    except ValueError:
+        return None, "❌ Enter a whole number of Coins, or `all`."
+
+    if amount % COINS_PER_CENT != 0:
+        return None, f"❌ Wagers must be in **cent steps** ({COINS_PER_CENT} Coins = 1¢)."
+    if amount < MIN_BET:
+        return None, f"❌ Minimum wager is **{MIN_BET} Coins (1¢)**."
+    if amount > MAX_BET:
+        return None, f"❌ Maximum wager is **{MAX_BET:,} Coins** ({coins_to_usd(MAX_BET)})."
+    if amount > balance:
+        return None, "❌ Insufficient balance."
+    return amount, None
+
+
 class BetAmountModal(Modal):
     def __init__(self, title: str, balance: int, callback_func):
         super().__init__(title=title[:45])
@@ -90,39 +131,48 @@ class BetAmountModal(Modal):
         self.callback_func = callback_func
         self.add_item(
             TextInput(
-                label=f"Wager ({coins_to_usd(balance)} avail)"[:45],
-                placeholder="50, 100, 250, 500, or 'all'",
+                label=f"Wager in Coins — 10 = 1¢"[:45],
+                placeholder="10, 50, 100, 250, or 'all'",
                 min_length=1,
             )
         )
 
     async def callback(self, interaction: discord.Interaction):
-        raw = self.children[0].value.lower().strip()
-        if raw == "all":
-            amount = self.balance
-        else:
-            try:
-                amount = int(raw.replace(",", ""))
-            except ValueError:
-                return await interaction.response.send_message(
-                    "❌ Enter a valid whole number.", ephemeral=True
-                )
-
-        if amount < MIN_BET:
-            return await interaction.response.send_message(
-                f"❌ Minimum wager is {MIN_BET:,} Coins ({coins_to_usd(MIN_BET)}).",
-                ephemeral=True,
-            )
-        if amount > MAX_BET:
-            return await interaction.response.send_message(
-                f"❌ Maximum wager is {MAX_BET:,} Coins ({coins_to_usd(MAX_BET)}).",
-                ephemeral=True,
-            )
-        if amount > self.balance:
-            return await interaction.response.send_message(
-                "❌ Insufficient balance.", ephemeral=True
-            )
+        amount, err = parse_wager(self.children[0].value, self.balance)
+        if err:
+            return await interaction.response.send_message(err, ephemeral=True)
         await self.callback_func(interaction, amount)
+
+
+class WagerPickerView(discord.ui.View):
+    """Quick cent wagers + custom amount modal."""
+
+    def __init__(self, balance: int, title: str, on_amount):
+        super().__init__(timeout=120)
+        self.balance = balance
+        self.title = title
+        self.on_amount = on_amount
+
+        for coins in QUICK_BETS:
+            if coins <= balance:
+                btn = discord.ui.Button(
+                    label=format_wager_label(coins),
+                    style=discord.ButtonStyle.secondary,
+                )
+                btn.callback = self._make_quick_callback(coins)
+                self.add_item(btn)
+
+    def _make_quick_callback(self, coins: int):
+        async def handler(interaction: discord.Interaction):
+            await self.on_amount(interaction, coins)
+
+        return handler
+
+    @discord.ui.button(label="Custom", style=discord.ButtonStyle.primary, emoji="✏️", row=1)
+    async def custom(self, button, interaction: discord.Interaction):
+        await interaction.response.send_modal(
+            BetAmountModal(self.title, self.balance, self.on_amount)
+        )
 
 
 def gambler_gate(interaction: discord.Interaction) -> bool:

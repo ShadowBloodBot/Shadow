@@ -4,18 +4,17 @@ import asyncio
 import random
 
 import discord
-from discord.ui import Modal, TextInput
+from discord.ui import Modal, TextInput, View
 
-from ..constants import THEME_INFO, THEME_LOSS, THEME_WARNING, THEME_WIN, VAULT_HOUSE_MULTIPLIER
+from ..constants import THEME_INFO, THEME_LOSS, THEME_PRIMARY, THEME_WARNING, THEME_WIN, VAULT_HOUSE_MULTIPLIER
 from ..economy import get_balance, record_stat, update_balance
-from ..helpers import format_coins
+from ..helpers import WagerPickerView, coins_to_usd, format_coins
 
 
-class VaultHeistModal(Modal):
-    def __init__(self, balance: int):
-        super().__init__(title="Vault Heist Setup"[:45])
-        self.balance = balance
-        self.add_item(TextInput(label=f"Wager (Max {balance:,})"[:45], placeholder="Amount or 'all'"))
+class VaultMultiplierModal(Modal):
+    def __init__(self, bet: int):
+        super().__init__(title="Vault Heist — Cash-Out"[:45])
+        self.bet = bet
         self.add_item(
             TextInput(
                 label="Cash-out multiplier (min 1.10x)"[:45],
@@ -25,26 +24,47 @@ class VaultHeistModal(Modal):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        raw = self.children[0].value.lower().strip()
-        amount = self.balance if raw == "all" else None
-        if amount is None:
-            try:
-                amount = int(raw.replace(",", ""))
-            except ValueError:
-                return await interaction.response.send_message("❌ Invalid wager.", ephemeral=True)
         try:
-            target = float(self.children[1].value.replace(",", "."))
+            target = float(self.children[0].value.replace(",", "."))
         except ValueError:
             return await interaction.response.send_message("❌ Invalid multiplier.", ephemeral=True)
-
-        if amount <= 0 or amount > self.balance:
-            return await interaction.response.send_message("❌ Invalid wager.", ephemeral=True)
         if target < 1.10:
             return await interaction.response.send_message("❌ Minimum cash-out is **1.10x**.", ephemeral=True)
         if target > 100:
             return await interaction.response.send_message("❌ Maximum cash-out is **100x**.", ephemeral=True)
+        await run_vault_heist(interaction, self.bet, target)
 
-        await run_vault_heist(interaction, amount, target)
+
+class VaultHeistSetupView(WagerPickerView):
+    """Pick cent wager, then set cash-out multiplier."""
+
+    def __init__(self, balance: int):
+        super().__init__(balance, "Vault Heist", self._on_amount)
+
+    async def _on_amount(self, interaction: discord.Interaction, amount: int):
+        embed = discord.Embed(
+            title="🏦 Vault Heist — Set Multiplier",
+            description=(
+                f"Wager locked: {format_coins(amount)} ({coins_to_usd(amount)})\n"
+                "Tap **Launch Heist** to set your cash-out target."
+            ),
+            color=THEME_PRIMARY,
+        )
+        await interaction.response.send_message(
+            embed=embed,
+            view=_MultiplierOnlyView(amount),
+            ephemeral=True,
+        )
+
+
+class _MultiplierOnlyView(View):
+    def __init__(self, bet: int):
+        super().__init__(timeout=120)
+        self.bet = bet
+
+    @discord.ui.button(label="Launch Heist", style=discord.ButtonStyle.danger, emoji="🏦")
+    async def launch(self, button, interaction: discord.Interaction):
+        await interaction.response.send_modal(VaultMultiplierModal(self.bet))
 
 
 async def run_vault_heist(interaction: discord.Interaction, bet: int, target: float) -> None:
@@ -127,7 +147,7 @@ async def run_vault_heist(interaction: discord.Interaction, bet: int, target: fl
             color=THEME_LOSS,
         )
 
-    result_embed.set_footer(text="House edge ~3.5% • Set your target wisely")
+    result_embed.set_footer(text="House edge ~3.5% • Grind from 1¢ wagers")
     try:
         await interaction.edit_original_response(embed=result_embed)
     except Exception:
