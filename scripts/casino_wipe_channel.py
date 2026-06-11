@@ -94,6 +94,32 @@ async def post_wipe_notice(session: aiohttp.ClientSession, channel_id: str) -> N
             print(f"Notice post failed ({resp.status}): {text[:200]}")
 
 
+async def purge_all(session: aiohttp.ClientSession, channel_id: str) -> int:
+    """Delete messages in batches until channel is empty."""
+    deleted = 0
+    while True:
+        async with session.get(
+            f"https://discord.com/api/v10/channels/{channel_id}/messages?limit=100",
+            headers=HEADERS,
+        ) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise RuntimeError(f"Fetch failed ({resp.status}): {text[:300]}")
+            batch = await resp.json()
+        if not batch:
+            break
+        for msg in batch:
+            status = await delete_message(session, channel_id, msg["id"])
+            if status in (204, 404):
+                deleted += 1
+                if deleted % 25 == 0:
+                    print(f"Progress: {deleted} deleted…")
+            else:
+                print(f"  Failed {msg['id']}: HTTP {status}")
+            await asyncio.sleep(1.0)
+    return deleted
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
@@ -104,16 +130,9 @@ async def main() -> None:
     print(f"Mode: {'DRY RUN' if args.dry_run else 'LIVE DELETE'}")
 
     async with aiohttp.ClientSession() as session:
-        messages = await fetch_messages(session, CASINO_CHANNEL_ID)
-        print(f"Fetched {len(messages)} messages.")
-
-        if not messages:
-            print("Channel already empty.")
-            if not args.dry_run and not args.no_notice:
-                await post_wipe_notice(session, CASINO_CHANNEL_ID)
-            return
-
         if args.dry_run:
+            messages = await fetch_messages(session, CASINO_CHANNEL_ID)
+            print(f"Fetched {len(messages)} messages.")
             for msg in messages[:20]:
                 author = msg.get("author", {}).get("username", "?")
                 snippet = (msg.get("content") or "")[:40] or (
@@ -125,38 +144,8 @@ async def main() -> None:
             print("Dry run complete.")
             return
 
-        deleted = 0
-        errors = 0
-        deleted_ids: set[str] = set()
-
-        bulk_ids = [
-            m["id"] for m in messages if message_age_days(m) < BULK_DELETE_MAX_AGE_DAYS
-        ]
-        for i in range(0, len(bulk_ids), 100):
-            chunk = bulk_ids[i : i + 100]
-            if len(chunk) < 2:
-                continue
-            status = await bulk_delete(session, CASINO_CHANNEL_ID, chunk)
-            if status == 204:
-                deleted += len(chunk)
-                deleted_ids.update(chunk)
-                print(f"Bulk deleted {len(chunk)}")
-            else:
-                print(f"Bulk delete failed HTTP {status}")
-            await asyncio.sleep(1.0)
-
-        for msg in messages:
-            if msg["id"] in deleted_ids:
-                continue
-            status = await delete_message(session, CASINO_CHANNEL_ID, msg["id"])
-            if status == 204:
-                deleted += 1
-            elif status != 404:
-                errors += 1
-                print(f"  Failed {msg['id']}: HTTP {status}")
-            await asyncio.sleep(0.75)
-
-        print(f"Done. Deleted {deleted}, errors: {errors}")
+        deleted = await purge_all(session, CASINO_CHANNEL_ID)
+        print(f"Done. Deleted {deleted} messages.")
 
         if not args.no_notice:
             await post_wipe_notice(session, CASINO_CHANNEL_ID)
