@@ -5,7 +5,6 @@ from discord import ButtonStyle
 from discord.ui import Modal, Select, TextInput, View
 
 from .constants import (
-    BUYIN_TIERS,
     MEMBER_TENURE_DAYS,
     OWNER_ID,
     REDEEM_MAX_PER_MONTH,
@@ -24,8 +23,7 @@ from .economy import (
     redeem_cooldown_remaining,
     resolve_redemption,
 )
-from .helpers import coins_to_usd, deny_if_not_gambler, format_wallet, progress_to_shop
-from .buyin import paypal_tier_url
+from .helpers import coins_to_usd, format_wallet
 
 
 def _tenure_ok(member: discord.Member) -> tuple[bool, str]:
@@ -176,15 +174,6 @@ class RedeemTierSelect(Select):
 ShopTierSelect = RedeemTierSelect
 
 
-class ShopView(View):
-    def __init__(self, balance: int):
-        super().__init__(timeout=180)
-        from .buyin import BuyInTierSelect
-
-        self.add_item(BuyInTierSelect(row=0))
-        self.add_item(RedeemTierSelect(balance, row=1))
-
-
 class RedemptionAdminView(View):
     def __init__(self, request_id: str, user_id: int, coins: int):
         super().__init__(timeout=None)
@@ -260,40 +249,3 @@ class RedemptionAdminView(View):
                 await user.send(embed=dm)
             except Exception:
                 pass
-
-
-def build_shop_embed(user: discord.User, balance: int) -> discord.Embed:
-    embed = discord.Embed(
-        title="🛒 ShadowSyn Rewards Shop",
-        description=(
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"**Peg:** 10,000 Coins = $10 USD\n"
-            f"**Minimum redemption:** {SHOP_MIN_COINS:,} Coins (${SHOP_MIN_COINS // 1000})\n\n"
-            f"{progress_to_shop(balance)}\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        ),
-        color=THEME_GOLD,
-    )
-    tier_lines = [
-        f"{t['emoji']} **{t['label']}** — {t['coins']:,} 🪙"
-        for t in SHOP_TIERS
-    ]
-    buyin_lines = [
-        f"💵 [{t['label']}]({paypal_tier_url(t['usd'])}) — **{t['coins']:,}** 🪙"
-        for t in BUYIN_TIERS
-    ]
-    embed.add_field(name="💵 Buy Coins (USD)", value="\n".join(buyin_lines), inline=False)
-    embed.add_field(name="🎁 Redeem Steam Wallet", value="\n".join(tier_lines), inline=False)
-    embed.add_field(
-        name="Rules",
-        value=(
-            f"• {MEMBER_TENURE_DAYS}-day membership required\n"
-            f"• {REDEEM_MAX_PER_MONTH} redemptions per month\n"
-            "• 7-day cooldown between redemptions\n"
-            "• 1 pending request at a time"
-        ),
-        inline=False,
-    )
-    embed.set_footer(text=f"Balance: {format_wallet(balance)}")
-    embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
-    return embed

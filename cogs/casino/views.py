@@ -10,6 +10,8 @@ from .constants import (
     BUYIN_TIERS,
     CASINO_CHANNEL_ID,
     DAILY_CLAIM_AMOUNT,
+    MEMBER_TENURE_DAYS,
+    REDEEM_MAX_PER_MONTH,
     SHOP_MIN_COINS,
     SHOP_TIERS,
     THEME_GOLD,
@@ -40,7 +42,7 @@ def build_gamble_hub_embed(user: discord.User) -> discord.Embed:
     claim_line = (
         f"✅ **Daily Claim** ready — +{DAILY_CLAIM_AMOUNT:,} Coins ({coins_to_usd(DAILY_CLAIM_AMOUNT)})"
         if can_claim
-        else f"⏳ Daily claim in **{format_countdown(remaining)}**"
+        else f"⏳ Daily claim in **{format_countdown(remaining)}** — use **Daily Claim** button"
     )
 
     games_block = (
@@ -90,18 +92,15 @@ def build_gamble_hub_embed(user: discord.User) -> discord.Embed:
         value=(
             f"{progress_to_shop(balance)}\n"
             f"Min **{SHOP_MIN_COINS:,}** 🪙 (${SHOP_MIN_COINS // 1000})\n\n"
-            f"{redeem_block}\n\n*Use the **Redeem Steam** dropdown*"
+            f"{redeem_block}\n\n"
+            f"_{MEMBER_TENURE_DAYS}-day member · {REDEEM_MAX_PER_MONTH}/mo · 7-day cooldown_\n"
+            "*Use the **Redeem Steam** dropdown*"
         ),
         inline=True,
     )
-    embed.set_footer(
-        text="Buttons = games · Dropdowns = buy-in & redeem · Refresh updates balance"
-    )
+    embed.set_footer(text="/gamble opens this hub · Refresh updates balance")
     embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
     return embed
-
-
-build_lobby_embed = build_gamble_hub_embed
 
 
 class GambleHubView(View):
@@ -231,6 +230,3 @@ class GambleHubView(View):
             embed=build_gamble_hub_embed(interaction.user),
             view=self._refresh_view(),
         )
-
-
-CasinoLobby = GambleHubView

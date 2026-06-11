@@ -67,7 +67,7 @@ This is **Shadow**, a Discord bot for a single private gaming community (Quinfal
 - `invest_calculators.py` / `invest_data.py` / `invest_suburb_stats.py` / `suburbs_database.py` — mortgage calculators and curated AU content
 - `war.py` — Guild war signup, class/stat selection, admin draft mode (20-man vanguard generator)
 - `spire.py` — Full Slay the Spire roguelite game in Discord (~1045 lines)
-- `casino.py` — Virtual Scoin economy, Blackjack, Limbo/Crash, PvP duels
+- `casino/` — VIP Casino hub (`/gamble`): Blackjack, Roulette, Vault Heist, PayPal buy-in, Steam redeem, Season 1 Coin economy
 - `tracker.py` — Polls fta.gg tRPC API for Quinfall PvP kill feeds
 - `jtc.py` — Join-to-Create voice channels with in-channel control panel
 - `tts.py` — /speak command using gTTS + deep-translator, FFmpeg audio, auto-disconnect
