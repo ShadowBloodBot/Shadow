@@ -155,21 +155,6 @@ def parse_when(raw: str) -> datetime | None:
     return _parse_at_time(raw)
 
 
-def _parse_poll_options(raw: str) -> list[str]:
-    seen: set[str] = set()
-    options: list[str] = []
-    for part in raw.split(","):
-        opt = part.strip()
-        if not opt:
-            continue
-        key = opt.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        options.append(opt[:80])
-    return options
-
-
 def _bar(pct: float) -> str:
     filled = round(pct / 100 * BAR_WIDTH)
     filled = max(0, min(BAR_WIDTH, filled))
