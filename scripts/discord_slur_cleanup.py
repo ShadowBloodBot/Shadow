@@ -84,20 +84,30 @@ async def fetch_messages(session: aiohttp.ClientSession, channel_id: str) -> lis
         url = f"https://discord.com/api/v10/channels/{channel_id}/messages?limit=100"
         if before:
             url += f"&before={before}"
-        async with session.get(url, headers=HEADERS) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                raise RuntimeError(
-                    f"Fetch failed for channel {channel_id} ({resp.status}): {text[:300]}"
-                )
-            batch = await resp.json()
+        for attempt in range(8):
+            async with session.get(url, headers=HEADERS) as resp:
+                if resp.status == 429:
+                    retry = float(resp.headers.get("Retry-After", "2"))
+                    await asyncio.sleep(retry + 0.5)
+                    continue
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise RuntimeError(
+                        f"Fetch failed for channel {channel_id} ({resp.status}): {text[:300]}"
+                    )
+                batch = await resp.json()
+                break
+        else:
+            raise RuntimeError(f"Fetch rate-limited for channel {channel_id} after retries")
         if not batch:
             break
         messages.extend(batch)
+        if len(messages) % 500 == 0:
+            print(f"  Fetched {len(messages)} so far…")
         before = batch[-1]["id"]
         if len(batch) < 100:
             break
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.75)
     return messages
 
 
