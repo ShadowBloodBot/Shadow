@@ -294,6 +294,15 @@ class HubCog(commands.Cog):
             ),
             inline=False,
         )
+        embed.add_field(
+            name="🛠️ Member Tools",
+            value=(
+                "`/poll` — live button poll with results\n"
+                "`/remindme` — personal reminder (DM or this channel)\n"
+                "`/countdown` — shared event timer with optional role ping"
+            ),
+            inline=False,
+        )
         member = ctx.author
         if isinstance(member, discord.Member) and any(r.id == ROLE_ADMIN_ID for r in member.roles):
             embed.add_field(

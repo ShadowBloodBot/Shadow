@@ -74,6 +74,7 @@ cogs_list = [
     "cogs.steam_tracker",
     "cogs.clips",
     "cogs.steam_codes",
+    "cogs.member_utils",
     "cogs.admin_secure",
     "cogs.member_backup",
     "cogs.hub",
