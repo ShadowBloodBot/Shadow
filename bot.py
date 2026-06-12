@@ -68,6 +68,7 @@ cogs_list = [
     "cogs.casino",
     "cogs.jtc",
     "cogs.audit_logs",
+    "cogs.content_filter",
     "cogs.tts",
     "cogs.music",
     "cogs.tracker",
