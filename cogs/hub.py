@@ -297,7 +297,7 @@ class HubCog(commands.Cog):
         embed.add_field(
             name="🛠️ Member Tools",
             value=(
-                "`/poll` — live button poll with results\n"
+                "`/poll` — live poll (option1, option2, + up to 3 more)\n"
                 "`/remindme` — personal reminder (DM or this channel)\n"
                 "`/countdown` — shared event timer with optional role ping"
             ),

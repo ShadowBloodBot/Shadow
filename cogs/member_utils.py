@@ -666,7 +666,11 @@ class MemberUtilsCog(commands.Cog):
         self,
         ctx: discord.ApplicationContext,
         question: Option(str, "What are you asking?", max_length=200),
-        options: Option(str, "Comma-separated choices (2–5)", max_length=400),
+        option1: Option(str, "Choice 1", max_length=80),
+        option2: Option(str, "Choice 2", max_length=80),
+        option3: Option(str, "Choice 3", required=False, max_length=80),
+        option4: Option(str, "Choice 4", required=False, max_length=80),
+        option5: Option(str, "Choice 5", required=False, max_length=80),
         duration: Option(
             str,
             "How long the poll stays open",
@@ -680,15 +684,26 @@ class MemberUtilsCog(commands.Cog):
             default="24h",
         ),
     ):
-        parsed = _parse_poll_options(options)
+        parsed: list[str] = []
+        seen: set[str] = set()
+        for opt in (option1, option2, option3, option4, option5):
+            if not opt:
+                continue
+            cleaned = opt.strip()[:80]
+            if not cleaned:
+                continue
+            key = cleaned.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            parsed.append(cleaned)
+
         if len(parsed) < 2:
             return await safe_reply(
                 ctx,
-                "❌ Provide at least **2** comma-separated options.",
+                "❌ Fill in at least **option1** and **option2**.",
                 ephemeral=True,
             )
-        if len(parsed) > 5:
-            return await safe_reply(ctx, "❌ Maximum **5** options.", ephemeral=True)
 
         delta = POLL_DURATIONS.get(duration)
         expires_at = _iso(_utc_now() + delta) if delta else None
