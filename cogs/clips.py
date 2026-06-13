@@ -727,20 +727,11 @@ class ClipsCog(commands.Cog):
         *,
         url: str | None = None,
         thumbnail: str | None = None,
-        title: str | None = None,
-        link_embed: bool = False,
         video_attached: bool = False,
     ) -> discord.Embed:
-        """
-        link_embed: Medal/YouTube — URL goes in message content so Discord unfurls
-        the native player (no upload cap). We only add author + title.
-        video_attached: PC upload — Discord renders the attached MP4 below.
-        """
+        """PC upload — author bar; Discord renders the attached MP4 below."""
         embed = discord.Embed(color=THEME_PRIMARY)
-        if link_embed:
-            if title:
-                embed.description = title[:2048]
-        elif not video_attached:
+        if not video_attached:
             if url:
                 embed.url = url
             if thumbnail:
@@ -754,10 +745,10 @@ class ClipsCog(commands.Cog):
     async def _finalize_clip_post(
         self,
         channel: discord.TextChannel,
-        embed: discord.Embed,
         title: str,
         author: discord.User | discord.Member,
         *,
+        embed: discord.Embed | None = None,
         url: str | None = None,
         thumbnail: str | None = None,
         source: str = "link",
@@ -771,7 +762,7 @@ class ClipsCog(commands.Cog):
             kwargs: dict = {}
             if content:
                 kwargs["content"] = content
-            if embed:
+            if embed is not None:
                 kwargs["embed"] = embed
             if file:
                 kwargs["file"] = file
@@ -790,6 +781,9 @@ class ClipsCog(commands.Cog):
 
         vote_view = ClipVoteView(msg.id, 0)
         try:
+            # Let Discord attach the native link preview before we edit on components.
+            if content and embed is None and file is None:
+                await asyncio.sleep(0.75)
             await msg.edit(view=vote_view)
             self.bot.add_view(vote_view)
         except Exception as e:
@@ -836,42 +830,27 @@ class ClipsCog(commands.Cog):
 
         if _is_valid_youtube_url(url):
             title, thumbnail = await self._fetch_youtube_metadata(url)
-            source = "youtube"
-            embed = self._build_clip_embed(
-                interaction.user,
-                title=title,
-                link_embed=True,
-            )
             await self._finalize_clip_post(
                 channel,
-                embed,
                 title,
                 interaction.user,
                 url=url,
                 thumbnail=thumbnail,
-                source=source,
+                source="youtube",
                 content=url,
                 reply_interaction=interaction,
             )
             return
 
         title, thumbnail, _video_urls = await self._fetch_medal_metadata(url)
-        source = "medal"
-        # Medal streams from their CDN via Discord link unfurl — same as posting the URL raw.
-        # Re-uploading would hit Discord's 100MB server attachment cap for no benefit.
-        embed = self._build_clip_embed(
-            interaction.user,
-            title=title,
-            link_embed=True,
-        )
+        # URL only — custom embeds block Discord's native Medal/YouTube video unfurl.
         await self._finalize_clip_post(
             channel,
-            embed,
             title,
             interaction.user,
             url=url,
             thumbnail=thumbnail,
-            source=source,
+            source="medal",
             content=url,
             reply_interaction=interaction,
         )
@@ -920,9 +899,9 @@ class ClipsCog(commands.Cog):
 
         await self._finalize_clip_post(
             channel,
-            embed,
             title,
             author,
+            embed=embed,
             source="upload",
             file=clip_file,
             reply_channel=reply_channel,
