@@ -5,6 +5,8 @@ import re
 import json
 import asyncio
 import logging
+import subprocess
+import tempfile
 from pathlib import Path
 from urllib.parse import quote, urlparse, urlunparse
 
@@ -64,6 +66,8 @@ YOUTUBE_ID_RE = re.compile(
     re.I,
 )
 UPLOAD_FALLBACK_BYTES = 25 * 1024 * 1024
+# PC upload transcode ceiling — ffmpeg fit won't process absurd sources.
+FFMPEG_SOURCE_MAX_BYTES = 512 * 1024 * 1024
 UPLOAD_VIDEO_TYPES = {
     "video/mp4",
     "video/webm",
@@ -134,10 +138,10 @@ def _medal_content_id(url: str) -> str | None:
 
 
 MEDAL_VIDEO_KEYS = (
-    "contentUrl720p",
-    "contentUrl480p",
-    "contentUrl360p",
     "contentUrl240p",
+    "contentUrl360p",
+    "contentUrl480p",
+    "contentUrl720p",
     "contentUrl1080p",
     "contentUrl",
     "socialMediaVideo",
@@ -201,6 +205,70 @@ def _youtube_id(url: str) -> str | None:
 def _format_mb(num_bytes: int) -> str:
     mb = num_bytes / (1024 * 1024)
     return str(int(mb)) if mb == int(mb) else f"{mb:.1f}"
+
+
+def _ffmpeg_fit_to_cap_sync(src: bytes, max_bytes: int) -> bytes | None:
+    """Re-encode to the largest quality that fits max_bytes — full duration, no trim."""
+    if len(src) <= max_bytes:
+        return src
+    if len(src) > FFMPEG_SOURCE_MAX_BYTES:
+        return None
+
+    with tempfile.TemporaryDirectory() as tmp:
+        inp = Path(tmp) / "in.mp4"
+        out = Path(tmp) / "out.mp4"
+        inp.write_bytes(src)
+
+        attempts: list[list[str]] = [
+            [
+                "ffmpeg", "-y", "-i", str(inp),
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart",
+                "-fs", str(max_bytes),
+                str(out),
+            ],
+            [
+                "ffmpeg", "-y", "-i", str(inp),
+                "-c:v", "libx264", "-preset", "fast", "-crf", "28",
+                "-vf", "scale='min(1280,iw)':-2",
+                "-c:a", "aac", "-b:a", "96k",
+                "-movflags", "+faststart",
+                "-fs", str(max_bytes),
+                str(out),
+            ],
+            [
+                "ffmpeg", "-y", "-i", str(inp),
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "32",
+                "-vf", "scale='min(854,iw)':-2",
+                "-c:a", "aac", "-b:a", "64k",
+                "-movflags", "+faststart",
+                "-fs", str(max_bytes),
+                str(out),
+            ],
+        ]
+
+        for cmd in attempts:
+            out.unlink(missing_ok=True)
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    timeout=300,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                logger.warning("ffmpeg transcode timed out")
+                return None
+            if result.returncode != 0:
+                logger.warning(f"ffmpeg pass failed: {result.stderr[-400:].decode(errors='replace')}")
+                continue
+            if out.exists():
+                size = out.stat().st_size
+                if 0 < size <= max_bytes:
+                    logger.info(f"ffmpeg fit OK ({size / (1024 * 1024):.1f}MB / cap {_format_mb(max_bytes)}MB).")
+                    return out.read_bytes()
+    return None
 
 
 def _thread_name(author: discord.User | discord.Member, title: str | None) -> str:
@@ -402,6 +470,14 @@ class ClipsCog(commands.Cog):
         if guild is not None and getattr(guild, "filesize_limit", None):
             return guild.filesize_limit
         return UPLOAD_FALLBACK_BYTES
+
+    async def _ffmpeg_fit_to_cap(self, src: bytes, max_bytes: int) -> bytes | None:
+        loop = asyncio.get_running_loop()
+        try:
+            return await loop.run_in_executor(None, _ffmpeg_fit_to_cap_sync, src, max_bytes)
+        except Exception as e:
+            logger.error(f"ffmpeg fit executor failed: {e}")
+            return None
 
     async def _resolve_guild(self) -> discord.Guild | None:
         guild = self.bot.get_guild(TARGET_GUILD_ID)
@@ -642,73 +718,6 @@ class ClipsCog(commands.Cog):
 
         return title or "Untitled Clip", thumbnail, video_urls
 
-    async def _probe_video_size(self, video_url: str) -> int | None:
-        session = await self._get_session()
-        try:
-            async with session.head(video_url, headers=UA_HEADERS, allow_redirects=True, timeout=20) as resp:
-                if resp.status != 200:
-                    return None
-                cl = resp.headers.get("Content-Length")
-                return int(cl) if cl else None
-        except Exception:
-            return None
-
-    async def _download_medal_video(self, video_url: str, max_bytes: int) -> discord.File | None:
-        """Stream Medal MP4 into a Discord attachment — native inline playback."""
-        session = await self._get_session()
-        try:
-            async with session.get(video_url, headers=UA_HEADERS, allow_redirects=True, timeout=180) as resp:
-                if resp.status != 200:
-                    logger.warning(f"Medal video download status {resp.status} for {video_url[:80]}")
-                    return None
-                cl = resp.headers.get("Content-Length")
-                if cl and int(cl) > max_bytes:
-                    return None
-                buf = bytearray()
-                async for chunk in resp.content.iter_chunked(512 * 1024):
-                    buf.extend(chunk)
-                    if len(buf) > max_bytes:
-                        return None
-                if not buf:
-                    return None
-                logger.info(f"Medal video ready ({len(buf) / (1024 * 1024):.1f}MB).")
-                payload = io.BytesIO(bytes(buf))
-                payload.seek(0)
-                return discord.File(payload, filename="clip.mp4", spoiler=False)
-        except Exception as e:
-            logger.warning(f"Medal video download failed: {e}")
-            return None
-
-    async def _download_best_medal_video(self, candidates: list[str], max_bytes: int) -> discord.File | None:
-        """
-        Pick the highest-quality Medal URL that fits the server cap.
-        Probes sizes when available; falls back through the quality ladder.
-        """
-        if not candidates:
-            return None
-
-        sized: list[tuple[int, str]] = []
-        unknown: list[str] = []
-        for url in candidates:
-            size = await self._probe_video_size(url)
-            if size is None:
-                unknown.append(url)
-            elif size <= max_bytes:
-                sized.append((size, url))
-
-        ordered = [url for _, url in sorted(sized, key=lambda x: x[0], reverse=True)]
-        ordered.extend(unknown)
-
-        seen: set[str] = set()
-        for url in ordered:
-            if url in seen:
-                continue
-            seen.add(url)
-            clip = await self._download_medal_video(url, max_bytes)
-            if clip is not None:
-                return clip
-        return None
-
     # --------------------------------------------------------------------------
     # GALLERY POST
     # --------------------------------------------------------------------------
@@ -718,14 +727,20 @@ class ClipsCog(commands.Cog):
         *,
         url: str | None = None,
         thumbnail: str | None = None,
+        title: str | None = None,
+        link_embed: bool = False,
         video_attached: bool = False,
     ) -> discord.Embed:
         """
-        video_attached: author bar only — Discord renders the MP4 player natively below.
-        No external link or static thumbnail that looks like a broken player.
+        link_embed: Medal/YouTube — URL goes in message content so Discord unfurls
+        the native player (no upload cap). We only add author + title.
+        video_attached: PC upload — Discord renders the attached MP4 below.
         """
         embed = discord.Embed(color=THEME_PRIMARY)
-        if not video_attached:
+        if link_embed:
+            if title:
+                embed.description = title[:2048]
+        elif not video_attached:
             if url:
                 embed.url = url
             if thumbnail:
@@ -747,12 +762,20 @@ class ClipsCog(commands.Cog):
         thumbnail: str | None = None,
         source: str = "link",
         file: discord.File | None = None,
+        content: str | None = None,
         reply_interaction: discord.Interaction | None = None,
         reply_channel: discord.abc.Messageable | None = None,
         cleanup_user_message: discord.Message | None = None,
     ):
         try:
-            msg = await channel.send(embed=embed, file=file) if file else await channel.send(embed=embed)
+            kwargs: dict = {}
+            if content:
+                kwargs["content"] = content
+            if embed:
+                kwargs["embed"] = embed
+            if file:
+                kwargs["file"] = file
+            msg = await channel.send(**kwargs)
         except Exception as e:
             logger.error(f"Failed to post clip embed: {e}")
             err = "❌ Failed to post your clip. Try again shortly."
@@ -811,34 +834,35 @@ class ClipsCog(commands.Cog):
                 ephemeral=True,
             )
 
-        guild = channel.guild or await self._resolve_guild()
-        # Leave 1 MB headroom for Discord attachment overhead.
-        max_bytes = max(self._upload_limit_bytes(guild) - (1024 * 1024), 8 * 1024 * 1024)
-        clip_file = None
-        video_attached = False
-
         if _is_valid_youtube_url(url):
             title, thumbnail = await self._fetch_youtube_metadata(url)
             source = "youtube"
-        else:
-            title, thumbnail, video_urls = await self._fetch_medal_metadata(url)
-            source = "medal"
-            clip_file = await self._download_best_medal_video(video_urls, max_bytes)
-            if clip_file is None:
-                return await safe_reply(
-                    interaction,
-                    f"❌ Couldn't pull this Medal clip into Discord "
-                    f"(server cap **{_format_mb(max_bytes)}MB**). "
-                    "Try **Upload from PC** or a shorter clip.",
-                    ephemeral=True,
-                )
-            video_attached = True
+            embed = self._build_clip_embed(
+                interaction.user,
+                title=title,
+                link_embed=True,
+            )
+            await self._finalize_clip_post(
+                channel,
+                embed,
+                title,
+                interaction.user,
+                url=url,
+                thumbnail=thumbnail,
+                source=source,
+                content=url,
+                reply_interaction=interaction,
+            )
+            return
 
+        title, thumbnail, _video_urls = await self._fetch_medal_metadata(url)
+        source = "medal"
+        # Medal streams from their CDN via Discord link unfurl — same as posting the URL raw.
+        # Re-uploading would hit Discord's 100MB server attachment cap for no benefit.
         embed = self._build_clip_embed(
             interaction.user,
-            url=url,
-            thumbnail=thumbnail,
-            video_attached=video_attached,
+            title=title,
+            link_embed=True,
         )
         await self._finalize_clip_post(
             channel,
@@ -848,7 +872,7 @@ class ClipsCog(commands.Cog):
             url=url,
             thumbnail=thumbnail,
             source=source,
-            file=clip_file,
+            content=url,
             reply_interaction=interaction,
         )
 
@@ -867,12 +891,6 @@ class ClipsCog(commands.Cog):
 
         guild = channel.guild or await self._resolve_guild()
         max_bytes = self._upload_limit_bytes(guild)
-        if attachment.size > max_bytes:
-            await reply_channel.send(
-                f"❌ Too large (**{_format_mb(attachment.size)}MB**). "
-                f"Server cap is **{_format_mb(max_bytes)}MB**."
-            )
-            return
 
         content_type = (attachment.content_type or "").split(";")[0].strip().lower()
         if content_type and content_type not in UPLOAD_VIDEO_TYPES:
@@ -883,7 +901,18 @@ class ClipsCog(commands.Cog):
         embed = self._build_clip_embed(author, video_attached=True)
 
         try:
-            clip_file = await attachment.to_file()
+            if attachment.size > max_bytes:
+                raw = await attachment.read()
+                fitted = await self._ffmpeg_fit_to_cap(raw, max_bytes)
+                if not fitted:
+                    await reply_channel.send(
+                        f"❌ Too large (**{_format_mb(attachment.size)}MB**) and couldn't compress "
+                        f"to fit the **{_format_mb(max_bytes)}MB** server cap."
+                    )
+                    return
+                clip_file = discord.File(io.BytesIO(fitted), filename="clip.mp4", spoiler=False)
+            else:
+                clip_file = await attachment.to_file()
         except Exception as e:
             logger.error(f"Failed to read attachment {attachment.id}: {e}")
             await reply_channel.send("❌ Could not read that file. Try again.")
