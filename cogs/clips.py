@@ -26,15 +26,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ShadowSyn.Clips")
 
+from cogs.guild_registry import (
+    REGISTERED_GUILD_IDS,
+    SHADOW_MAIN_GUILD_ID,
+    ch_id,
+    is_registered_guild,
+    resolve_channel,
+    resolve_role,
+    role_id,
+)
+
 # ==============================================================================
 # CONSTANTS & IDS
 # ==============================================================================
 THEME_PRIMARY = 0x2B0B35
 OWNER_ID = 482463400929263627
-ROLE_ADMIN_ID = 1214794734770323466
-TARGET_GUILD_ID = 908659586536468540
-
-CLIPS_CHANNEL_ID = 955609588470808657
 INGEST_PANEL_TITLE = "🎬 Clips"
 INGEST_PANEL_DESCRIPTION = (
     "Hit **Submit Clip** — paste a Medal / YouTube link or upload a file.\n"
@@ -423,7 +429,7 @@ class ClipsCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
         self.session = None
-        self.data = {"panel_message_id": None, "clips": {}}
+        self.data = {"panels": {}, "clips": {}}
         self._flow_sessions: dict[int, dict] = {}
         self._load_data()
 
@@ -439,14 +445,27 @@ class ClipsCog(commands.Cog):
         if CLIPS_STORE.exists():
             try:
                 loaded = json.loads(CLIPS_STORE.read_text(encoding="utf-8"))
-                self.data["panel_message_id"] = loaded.get("panel_message_id")
+                panels = loaded.get("panels") or {}
+                if not panels and loaded.get("panel_message_id"):
+                    panels = {str(SHADOW_MAIN_GUILD_ID): loaded["panel_message_id"]}
+                self.data["panels"] = panels
                 self.data["clips"] = loaded.get("clips", {}) or {}
                 logger.info(f"Loaded {len(self.data['clips'])} tracked clips from repo.")
             except Exception as e:
                 logger.error(f"Corruption in {CLIPS_STORE.name}, starting fresh. Error: {e}")
-                self.data = {"panel_message_id": None, "clips": {}}
+                self.data = {"panels": {}, "clips": {}}
         else:
             logger.info("No existing clips repo found. Initializing empty state.")
+
+    def _panel_id(self, guild_id: int) -> int | None:
+        raw = self.data.get("panels", {}).get(str(guild_id))
+        try:
+            return int(raw) if raw else None
+        except (TypeError, ValueError):
+            return None
+
+    def _set_panel_id(self, guild_id: int, message_id: int) -> None:
+        self.data.setdefault("panels", {})[str(guild_id)] = message_id
 
     def _save(self):
         _atomic_write(CLIPS_STORE, self.data)
@@ -456,14 +475,10 @@ class ClipsCog(commands.Cog):
             self.session = aiohttp.ClientSession()
         return self.session
 
-    async def _clips_channel(self) -> discord.TextChannel | None:
-        channel = self.bot.get_channel(CLIPS_CHANNEL_ID)
-        if channel is None:
-            try:
-                channel = await self.bot.fetch_channel(CLIPS_CHANNEL_ID)
-            except Exception as e:
-                logger.error(f"Clips channel unavailable: {e}")
-                return None
+    async def _clips_channel(self, guild_id: int | None = None) -> discord.TextChannel | None:
+        if guild_id is None:
+            guild_id = SHADOW_MAIN_GUILD_ID
+        channel = await resolve_channel(self.bot, guild_id, "clips")
         return channel if isinstance(channel, discord.TextChannel) else None
 
     def _upload_limit_bytes(self, guild: discord.Guild | None) -> int:
@@ -479,13 +494,14 @@ class ClipsCog(commands.Cog):
             logger.error(f"ffmpeg fit executor failed: {e}")
             return None
 
-    async def _resolve_guild(self) -> discord.Guild | None:
-        guild = self.bot.get_guild(TARGET_GUILD_ID)
+    async def _resolve_guild(self, guild_id: int | None = None) -> discord.Guild | None:
+        gid = guild_id or SHADOW_MAIN_GUILD_ID
+        guild = self.bot.get_guild(gid)
         if guild is None:
             try:
-                guild = await self.bot.fetch_guild(TARGET_GUILD_ID)
+                guild = await self.bot.fetch_guild(gid)
             except Exception as e:
-                logger.warning(f"Could not fetch guild for upload limit: {e}")
+                logger.warning(f"Could not fetch guild {gid} for upload limit: {e}")
         return guild
 
     async def _open_upload_thread(
@@ -495,7 +511,8 @@ class ClipsCog(commands.Cog):
     ) -> discord.Thread | None:
         """Private upload thread in the gallery — members can post there because
         the gallery lock allows send_messages_in_threads."""
-        channel = await self._clips_channel()
+        gid = user.guild.id if isinstance(user, discord.Member) and user.guild else SHADOW_MAIN_GUILD_ID
+        channel = await self._clips_channel(guild_id=gid)
         if channel is None:
             return None
         try:
@@ -820,7 +837,8 @@ class ClipsCog(commands.Cog):
         return msg
 
     async def publish_clip(self, interaction: discord.Interaction, url: str):
-        channel = await self._clips_channel()
+        gid = user.guild.id if isinstance(user, discord.Member) and user.guild else SHADOW_MAIN_GUILD_ID
+        channel = await self._clips_channel(guild_id=gid)
         if channel is None:
             return await safe_reply(
                 interaction,
@@ -863,7 +881,8 @@ class ClipsCog(commands.Cog):
         *,
         user_message: discord.Message | None = None,
     ):
-        channel = await self._clips_channel()
+        gid = user.guild.id if isinstance(user, discord.Member) and user.guild else SHADOW_MAIN_GUILD_ID
+        channel = await self._clips_channel(guild_id=gid)
         if channel is None:
             await reply_channel.send("❌ Clips channel is unavailable. Tell an admin.")
             return
@@ -1006,15 +1025,16 @@ class ClipsCog(commands.Cog):
             logger.warning(f"Could not delete ingest panel {message_id}: {e}")
 
     async def _refresh_ingest_panel(self, channel: discord.TextChannel):
-        await self._delete_ingest_panel(channel, self.data.get("panel_message_id"))
+        gid = channel.guild.id if channel.guild else SHADOW_MAIN_GUILD_ID
+        await self._delete_ingest_panel(channel, self._panel_id(gid))
 
         view = SubmitClipPanelView()
         try:
             panel_msg = await channel.send(embed=self._build_ingest_panel_embed(), view=view)
             self.bot.add_view(view)
-            self.data["panel_message_id"] = panel_msg.id
+            self._set_panel_id(gid, panel_msg.id)
             self._save()
-            logger.info(f"Ingest panel refreshed ({panel_msg.id}).")
+            logger.info(f"Ingest panel refreshed ({panel_msg.id}) guild {gid}.")
         except Exception as e:
             logger.error(f"Failed to refresh ingest panel: {e}")
 
@@ -1095,19 +1115,24 @@ class ClipsCog(commands.Cog):
     @discord.slash_command(
         name="clips_deploy",
         description="Deploy the clips ingest panel and lock the gallery.",
-        guild_ids=[TARGET_GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
         default_member_permissions=discord.Permissions(administrator=True),
     )
-    @commands.has_role(ROLE_ADMIN_ID)
     async def clips_deploy(self, ctx: discord.ApplicationContext):
+        admin_rid = role_id(ctx.guild.id, "admin_shadow") if ctx.guild else None
+        if admin_rid and not any(r.id == admin_rid for r in ctx.author.roles):
+            return await safe_reply(ctx, "🚫 Admin clearance required.", ephemeral=True)
+
         await safe_reply(ctx, "🛠️ Deploying clips system...", ephemeral=True)
 
-        channel = await self._clips_channel()
+        channel = await self._clips_channel(ctx.guild.id)
         if channel is None:
             return await safe_reply(ctx, "❌ Clips channel unavailable.", ephemeral=True)
 
         try:
-            channel = await ctx.guild.fetch_channel(CLIPS_CHANNEL_ID)
+            cid = ch_id(ctx.guild.id, "clips")
+            if cid:
+                channel = await ctx.guild.fetch_channel(cid)
         except Exception as e:
             logger.warning(f"Could not refresh clips channel before permission lock: {e}")
 
@@ -1132,7 +1157,7 @@ class ClipsCog(commands.Cog):
             ctx,
             f"✅ Clips live in {channel.mention}.\n"
             f"• {perm_status}\n"
-            f"• Panel ID `{self.data['panel_message_id']}`\n"
+            f"• Panel ID `{self._panel_id(ctx.guild.id)}`\n"
             f"• Stale Hall of Fame threads removed: **{purged}**",
             ephemeral=True,
         )

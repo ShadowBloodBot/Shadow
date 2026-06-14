@@ -12,6 +12,15 @@ from discord import ButtonStyle, Interaction
 from discord.ui import View, Button, Modal, TextInput
 from discord.ext import commands
 
+from cogs.guild_registry import (
+    REGISTERED_GUILD_IDS,
+    SHADOW_MAIN_GUILD_ID,
+    ch_id,
+    is_registered_guild,
+    resolve_channel,
+    role_id,
+)
+
 # ==============================================================================
 # TELEMETRY
 # ==============================================================================
@@ -26,10 +35,7 @@ logger = logging.getLogger("ShadowSyn.SteamCodes")
 # CONSTANTS & IDS
 # ==============================================================================
 THEME_PRIMARY = 0x2B0B35
-ROLE_ADMIN_ID = 1214794734770323466
-TARGET_GUILD_ID = 908659586536468540
-
-STEAM_CODES_CHANNEL_ID = 961870662006345798
+OWNER_ID = 482463400929263627
 
 PAGE_SIZE = 10
 
@@ -205,7 +211,7 @@ class AddSteamCodeModal(Modal):
             f"✅ Added **`{code}`** for **{name}**.",
             ephemeral=True,
         )
-        target_page = self.cog._page_for_code(code)
+        target_page = self.cog._page_for_code(code, interaction.guild.id if interaction.guild else None)
         await self.cog._refresh_panel_message(interaction.channel, page=target_page)
 
 
@@ -215,7 +221,7 @@ class AddSteamCodeModal(Modal):
 class SteamCodesCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-        self.data: dict = {"panel_message_id": None, "current_page": 0, "entries": []}
+        self.data: dict = {"panels": {}, "pages": {}, "entries": []}
         self._load_data()
 
     # --------------------------------------------------------------------------
@@ -225,15 +231,40 @@ class SteamCodesCog(commands.Cog):
         if STORE_PATH.exists():
             try:
                 loaded = json.loads(STORE_PATH.read_text(encoding="utf-8"))
-                self.data["panel_message_id"] = loaded.get("panel_message_id")
-                self.data["current_page"] = loaded.get("current_page", 0)
+                panels = loaded.get("panels") or {}
+                pages = loaded.get("pages") or {}
+                if not panels and loaded.get("panel_message_id"):
+                    panels = {str(SHADOW_MAIN_GUILD_ID): loaded["panel_message_id"]}
+                if not pages and "current_page" in loaded:
+                    pages = {str(SHADOW_MAIN_GUILD_ID): loaded.get("current_page", 0)}
+                self.data["panels"] = panels
+                self.data["pages"] = pages
                 self.data["entries"] = loaded.get("entries", []) or []
                 logger.info(f"Loaded {len(self.data['entries'])} steam code entries.")
             except Exception as e:
                 logger.error(f"Corruption in {STORE_PATH.name}, starting fresh: {e}")
-                self.data = {"panel_message_id": None, "current_page": 0, "entries": []}
+                self.data = {"panels": {}, "pages": {}, "entries": []}
         else:
             logger.info("No steam codes store found. Initializing empty state.")
+
+    def _panel_id(self, guild_id: int) -> int | None:
+        raw = self.data.get("panels", {}).get(str(guild_id))
+        try:
+            return int(raw) if raw else None
+        except (TypeError, ValueError):
+            return None
+
+    def _set_panel_id(self, guild_id: int, message_id: int) -> None:
+        self.data.setdefault("panels", {})[str(guild_id)] = message_id
+
+    def _current_page(self, guild_id: int) -> int:
+        try:
+            return int(self.data.get("pages", {}).get(str(guild_id), 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _set_current_page(self, guild_id: int, page: int) -> None:
+        self.data.setdefault("pages", {})[str(guild_id)] = page
 
     def _save(self):
         _atomic_write(STORE_PATH, self.data)
@@ -241,14 +272,9 @@ class SteamCodesCog(commands.Cog):
     # --------------------------------------------------------------------------
     # CHANNEL
     # --------------------------------------------------------------------------
-    async def _codes_channel(self) -> discord.TextChannel | None:
-        channel = self.bot.get_channel(STEAM_CODES_CHANNEL_ID)
-        if channel is None:
-            try:
-                channel = await self.bot.fetch_channel(STEAM_CODES_CHANNEL_ID)
-            except Exception as e:
-                logger.error(f"Steam codes channel unavailable: {e}")
-                return None
+    async def _codes_channel(self, guild_id: int | None = None) -> discord.TextChannel | None:
+        gid = guild_id or SHADOW_MAIN_GUILD_ID
+        channel = await resolve_channel(self.bot, gid, "steam_codes")
         return channel if isinstance(channel, discord.TextChannel) else None
 
     # --------------------------------------------------------------------------
@@ -268,12 +294,13 @@ class SteamCodesCog(commands.Cog):
         start = page * PAGE_SIZE
         return entries[start:start + PAGE_SIZE]
 
-    def _page_for_code(self, code: str) -> int:
+    def _page_for_code(self, code: str, guild_id: int | None = None) -> int:
+        gid = guild_id or SHADOW_MAIN_GUILD_ID
         entries = _sorted_entries(self.data.get("entries", []))
         for idx, entry in enumerate(entries):
             if str(entry.get("code")) == str(code):
                 return idx // PAGE_SIZE
-        return self._clamp_page(self.data.get("current_page", 0))
+        return self._clamp_page(self._current_page(gid))
 
     def _column_block(self, items: list[dict]) -> str:
         if not items:
@@ -285,9 +312,10 @@ class SteamCodesCog(commands.Cog):
             lines.append(f"**{name}**\n`{code}`")
         return "\n\n".join(lines)
 
-    def build_panel_embed(self, page: int | None = None) -> discord.Embed:
+    def build_panel_embed(self, page: int | None = None, *, guild_id: int | None = None) -> discord.Embed:
+        gid = guild_id or SHADOW_MAIN_GUILD_ID
         if page is None:
-            page = self.data.get("current_page", 0)
+            page = self._current_page(gid)
         page = self._clamp_page(page)
 
         entries = self.data.get("entries", [])
@@ -346,25 +374,30 @@ class SteamCodesCog(commands.Cog):
         channel: discord.abc.Messageable | None = None,
         *,
         page: int | None = None,
+        guild_id: int | None = None,
     ):
-        if page is not None:
-            self.data["current_page"] = self._clamp_page(page)
-        else:
-            self.data["current_page"] = self._clamp_page(self.data.get("current_page", 0))
+        if channel is not None and getattr(channel, "guild", None):
+            guild_id = channel.guild.id
+        gid = guild_id or SHADOW_MAIN_GUILD_ID
 
-        panel_id = self.data.get("panel_message_id")
+        if page is not None:
+            self._set_current_page(gid, self._clamp_page(page))
+        else:
+            self._set_current_page(gid, self._clamp_page(self._current_page(gid)))
+
+        panel_id = self._panel_id(gid)
         if not panel_id:
             return
 
         if channel is None:
-            channel = await self._codes_channel()
+            channel = await self._codes_channel(gid)
         if channel is None:
             return
 
-        page_num = self.data["current_page"]
+        page_num = self._current_page(gid)
         total_pages = self._page_count()
         view = SteamCodesPanelView(page_num, total_pages)
-        embed = self.build_panel_embed(page_num)
+        embed = self.build_panel_embed(page_num, guild_id=gid)
 
         try:
             msg = await channel.fetch_message(int(panel_id))
@@ -372,22 +405,23 @@ class SteamCodesCog(commands.Cog):
             self.bot.add_view(view)
             self._save()
         except discord.NotFound:
-            logger.warning(f"Panel message {panel_id} not found.")
+            logger.warning(f"Panel message {panel_id} not found for guild {gid}.")
         except Exception as e:
             logger.error(f"Failed to refresh steam codes panel: {e}")
 
     async def _deploy_panel(self, channel: discord.TextChannel):
-        page = self._clamp_page(self.data.get("current_page", 0))
+        gid = channel.guild.id if channel.guild else SHADOW_MAIN_GUILD_ID
+        page = self._clamp_page(self._current_page(gid))
         total_pages = self._page_count()
         view = SteamCodesPanelView(page, total_pages)
-        embed = self.build_panel_embed(page)
+        embed = self.build_panel_embed(page, guild_id=gid)
 
         panel_msg = await channel.send(embed=embed, view=view)
         self.bot.add_view(view)
-        self.data["panel_message_id"] = panel_msg.id
-        self.data["current_page"] = page
+        self._set_panel_id(gid, panel_msg.id)
+        self._set_current_page(gid, page)
         self._save()
-        logger.info(f"Steam codes panel deployed ({panel_msg.id}).")
+        logger.info(f"Steam codes panel deployed for guild {gid} ({panel_msg.id}).")
 
     # --------------------------------------------------------------------------
     # PERSISTENT VIEWS
@@ -414,20 +448,22 @@ class SteamCodesCog(commands.Cog):
             return
 
         if custom_id == PREV_BUTTON_ID:
-            new_page = self._clamp_page(self.data.get("current_page", 0) - 1)
+            gid = interaction.guild.id if interaction.guild else SHADOW_MAIN_GUILD_ID
+            new_page = self._clamp_page(self._current_page(gid) - 1)
             try:
                 await interaction.response.defer()
-                self.data["current_page"] = new_page
+                self._set_current_page(gid, new_page)
                 await self._refresh_panel_message(interaction.channel, page=new_page)
             except Exception as e:
                 logger.error(f"Steam codes prev page failed: {e}")
             return
 
         if custom_id == NEXT_BUTTON_ID:
-            new_page = self._clamp_page(self.data.get("current_page", 0) + 1)
+            gid = interaction.guild.id if interaction.guild else SHADOW_MAIN_GUILD_ID
+            new_page = self._clamp_page(self._current_page(gid) + 1)
             try:
                 await interaction.response.defer()
-                self.data["current_page"] = new_page
+                self._set_current_page(gid, new_page)
                 await self._refresh_panel_message(interaction.channel, page=new_page)
             except Exception as e:
                 logger.error(f"Steam codes next page failed: {e}")
@@ -478,10 +514,10 @@ class SteamCodesCog(commands.Cog):
             self._save()
         return added
 
-    async def _purge_channel(self, channel: discord.TextChannel) -> int:
+    async def _purge_channel(self, channel: discord.TextChannel, guild_id: int) -> int:
         """Delete all messages with rate-limit backoff (Discord 429 safe)."""
         deleted = 0
-        panel_id = self.data.get("panel_message_id")
+        panel_id = self._panel_id(guild_id)
         try:
             while True:
                 batch = [msg async for msg in channel.history(limit=100)]
@@ -560,10 +596,9 @@ class SteamCodesCog(commands.Cog):
     @discord.slash_command(
         name="steam_codes_deploy",
         description="Import existing posts, wipe channel, deploy the Steam codes hub.",
-        guild_ids=[TARGET_GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
         default_member_permissions=discord.Permissions(administrator=True),
     )
-    @commands.has_role(ROLE_ADMIN_ID)
     async def steam_codes_deploy(
         self,
         ctx: discord.ApplicationContext,
@@ -573,9 +608,15 @@ class SteamCodesCog(commands.Cog):
             default=True,
         ),
     ):
+        if not ctx.guild or not is_registered_guild(ctx.guild.id):
+            return await safe_reply(ctx, "⛔ Unregistered guild.", ephemeral=True)
+        admin_rid = role_id(ctx.guild.id, "admin_shadow")
+        if admin_rid is None or not any(r.id == admin_rid for r in ctx.author.roles):
+            return await safe_reply(ctx, "🚫 Admin clearance required.", ephemeral=True)
+
         await safe_reply(ctx, "🛠️ Deploying Steam codes hub...", ephemeral=True)
 
-        channel = await self._codes_channel()
+        channel = await self._codes_channel(ctx.guild.id)
         if channel is None:
             return await safe_reply(ctx, "❌ Steam codes channel unavailable.", ephemeral=True)
 
@@ -592,36 +633,35 @@ class SteamCodesCog(commands.Cog):
         if not perm_ok:
             return await safe_reply(ctx, f"❌ Could not lock channel: {perm_status}", ephemeral=True)
 
-        purged = await self._purge_channel(channel)
+        purged = await self._purge_channel(channel, ctx.guild.id)
 
-        old_panel_id = self.data.get("panel_message_id")
-        self.data["panel_message_id"] = None
+        old_panel_id = self._panel_id(ctx.guild.id)
+        self.data.setdefault("panels", {}).pop(str(ctx.guild.id), None)
 
         try:
             await self._deploy_panel(channel)
         except Exception as e:
             logger.error(f"Steam codes panel deploy failed: {e}")
-            self.data["panel_message_id"] = old_panel_id
+            if old_panel_id:
+                self._set_panel_id(ctx.guild.id, old_panel_id)
             return await safe_reply(ctx, f"❌ Panel deploy failed: {e}", ephemeral=True)
 
         total = len(self.data.get("entries", []))
+        panel_id = self._panel_id(ctx.guild.id)
         await safe_reply(
             ctx,
             f"✅ Steam codes hub live in {channel.mention}.\n"
             f"• Imported **{imported}** code(s) from history\n"
             f"• Purged **{purged}** old message(s)\n"
             f"• {perm_status}\n"
-            f"• **{total}** total entries · Panel `{self.data['panel_message_id']}`",
+            f"• **{total}** total entries · Panel `{panel_id}`",
             ephemeral=True,
         )
 
     @steam_codes_deploy.error
     async def steam_codes_deploy_error(self, ctx: discord.ApplicationContext, error: discord.DiscordException):
-        if isinstance(error, (commands.MissingRole, commands.CheckFailure)):
-            await safe_reply(ctx, "🚫 Admin clearance required.", ephemeral=True)
-        else:
-            logger.error(f"steam_codes_deploy error: {error}")
-            await safe_reply(ctx, f"⚠️ Error: {error}", ephemeral=True)
+        logger.error(f"steam_codes_deploy error: {error}")
+        await safe_reply(ctx, f"⚠️ Error: {error}", ephemeral=True)
 
 
 def setup(bot: discord.Bot):

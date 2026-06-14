@@ -8,11 +8,11 @@ from discord import Option, ButtonStyle, SelectOption, Interaction
 from discord.ui import View, Button, Modal, TextInput, Select
 from discord.ext import commands
 
+from cogs.guild_registry import REGISTERED_GUILD_IDS, ch_id, resolve_channel, role_id
+
 # --- CONSTANTS ---
-THEME_COMBAT = 0xE67E22 
-THEME_GOLD = 0xFFD700 
-WAR_THREAD_ID = 1475981718904242309
-WAR_ROLE_ID = 955600320287887400
+THEME_COMBAT = 0xE67E22
+THEME_GOLD = 0xFFD700
 MASTER_ADMIN_ID = 482463400929263627
 
 QUINFALL_CLASSES = [
@@ -61,8 +61,12 @@ def _atomic_write(file_path: Path, data):
 def _save_wars(): _atomic_write(WAR_STORE, war_db)
 
 def is_war_role(user):
-    if not isinstance(user, discord.Member): return False
-    return any(r.id == WAR_ROLE_ID for r in user.roles)
+    if not isinstance(user, discord.Member):
+        return False
+    rid = role_id(user.guild.id, "member")
+    if rid is None:
+        return False
+    return any(r.id == rid for r in user.roles)
 
 async def safe_reply(ctx_or_inter, *args, **kwargs):
     try:
@@ -451,13 +455,18 @@ class WarCog(commands.Cog):
         else: war_db = {}
         if "profiles" not in war_db: war_db["profiles"] = {}
 
-    @discord.slash_command(name="create_war", description="Create a Quinfall War Roster (requires War Role)")
+    @discord.slash_command(
+        name="create_war",
+        description="Create a Quinfall War Roster (requires War Role)",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     async def create_war(self, ctx, title: Option(str, description="Title of the war"), hammer_time: Option(str, description="Paste timestamp from HammerTime")):
         if not is_war_role(ctx.author):
             return await safe_reply(ctx, "⛔ Restricted. You must have the required role.", ephemeral=True)
-            
-        target_channel = self.bot.get_channel(WAR_THREAD_ID) or await self.bot.fetch_channel(WAR_THREAD_ID)
-        if not target_channel: return await safe_reply(ctx, "❌ War channel thread not found.", ephemeral=True)
+
+        target_channel = await resolve_channel(self.bot, ctx.guild.id, "war")
+        if not target_channel:
+            return await safe_reply(ctx, "❌ War channel thread not found.", ephemeral=True)
             
         war_data = {"title": title, "time": hammer_time, "roster": {}, "not_attending": []}
         embed = generate_war_embed(war_data); view = WarRosterView()
@@ -467,16 +476,23 @@ class WarCog(commands.Cog):
         
         await safe_reply(ctx, f"✅ War roster created in {target_channel.mention}", ephemeral=True)
 
-    @discord.slash_command(name="refresh_war", description="Admin: Restores a broken/ghosted war message without losing data")
+    @discord.slash_command(
+        name="refresh_war",
+        description="Admin: Restores a broken/ghosted war message without losing data",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     async def refresh_war(self, ctx, message_id: Option(str, description="The ID of the broken roster message")):
-        if not is_war_role(ctx.author): return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
-        if message_id not in war_db: return await safe_reply(ctx, "❌ That message ID is not in the active database.", ephemeral=True)
-            
+        if not is_war_role(ctx.author):
+            return await safe_reply(ctx, "⛔ Restricted.", ephemeral=True)
+        if message_id not in war_db:
+            return await safe_reply(ctx, "❌ That message ID is not in the active database.", ephemeral=True)
+
         await ctx.defer(ephemeral=True)
         war_data = war_db[message_id]
-        
-        target_channel = self.bot.get_channel(WAR_THREAD_ID) or await self.bot.fetch_channel(WAR_THREAD_ID)
-        if not target_channel: return await ctx.followup.send("❌ War channel thread not found.")
+
+        target_channel = await resolve_channel(self.bot, ctx.guild.id, "war")
+        if not target_channel:
+            return await ctx.followup.send("❌ War channel thread not found.")
         
         embed = generate_war_embed(war_data); view = WarRosterView()
         new_msg = await target_channel.send(content="🔄 **Roster Refreshed** (Fixing Interaction Error)", embed=embed, view=view)

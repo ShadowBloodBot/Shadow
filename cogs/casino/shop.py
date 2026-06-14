@@ -10,7 +10,6 @@ from .constants import (
     REDEEM_MAX_PER_MONTH,
     SHOP_MIN_COINS,
     SHOP_TIERS,
-    STEAM_REDEEM_CHANNEL_ID,
     THEME_GOLD,
     THEME_PRIMARY,
     THEME_WARNING,
@@ -23,7 +22,7 @@ from .economy import (
     redeem_cooldown_remaining,
     resolve_redemption,
 )
-from .helpers import coins_to_usd, format_wallet
+from .helpers import coins_to_usd, format_wallet, resolve_casino_channel
 
 
 def _tenure_ok(member: discord.Member) -> tuple[bool, str]:
@@ -115,7 +114,7 @@ class SteamIdModal(Modal):
         )
         admin_view = RedemptionAdminView(request["id"], member.id, cost)
 
-        channel = interaction.client.get_channel(STEAM_REDEEM_CHANNEL_ID)
+        channel = await resolve_casino_channel(interaction.client, member.guild.id)
         if channel:
             try:
                 await channel.send(embed=admin_embed, view=admin_view)

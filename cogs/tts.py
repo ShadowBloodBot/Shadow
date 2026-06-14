@@ -12,10 +12,10 @@ from discord import Option, OptionChoice
 import edge_tts
 from deep_translator import GoogleTranslator
 
+from cogs.guild_registry import REGISTERED_GUILD_IDS, ch_id, resolve_channel, role_id
+
 # --- CONSTANTS ---
 THEME_PRIMARY      = 0x2B0B35
-TTS_ROLE_ID        = 955600320287887400
-TTS_HISTORY_THREAD_ID = 1400048671973703690
 MAX_TEXT_LENGTH    = 250   # Protects against mega-spam timeouts
 AUTO_LEAVE_TIMEOUT = 120   # Leaves VC after 2 minutes of silence
 VOICE_SETTLE_MAX   = 0.5   # Max wait after fresh connect (Railway); exits early when stable
@@ -66,8 +66,12 @@ EDGE_VOICES = {
 }
 
 def has_tts_role(user):
-    if not isinstance(user, discord.Member): return False
-    return any(r.id == TTS_ROLE_ID for r in user.roles)
+    if not isinstance(user, discord.Member):
+        return False
+    rid = role_id(user.guild.id, "member")
+    if rid is None:
+        return False
+    return any(r.id == rid for r in user.roles)
 
 
 class TTSCog(commands.Cog):
@@ -116,9 +120,12 @@ class TTSCog(commands.Cog):
         lang_name: str,
     ):
         try:
-            thread = self.bot.get_channel(TTS_HISTORY_THREAD_ID)
+            gid = author.guild.id if author.guild else None
+            if gid is None:
+                return
+            thread = await resolve_channel(self.bot, gid, "tts_history")
             if thread is None:
-                thread = await self.bot.fetch_channel(TTS_HISTORY_THREAD_ID)
+                return
 
             embed = discord.Embed(
                 title="🗣️ /speak Request",
@@ -207,7 +214,11 @@ class TTSCog(commands.Cog):
     # -------------------------------------------------------------------------
     # /speak
     # -------------------------------------------------------------------------
-    @discord.slash_command(name="speak", description="Make the bot say something in your Voice Channel")
+    @discord.slash_command(
+        name="speak",
+        description="Make the bot say something in your Voice Channel",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     async def speak(
         self,
         ctx,

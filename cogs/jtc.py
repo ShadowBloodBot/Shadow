@@ -11,13 +11,13 @@ from discord.ui import View, Button, Modal, TextInput, Select
 from discord.ext import commands
 from discord.utils import get
 
+from cogs.guild_registry import ch_id, is_registered_guild
+
 # --- CONSTANTS ---
 THEME_PRIMARY             = 0x2B0B35
 ROLE_ADMIN_ID             = 1214794734770323466
 MASTER_OWNERS             = [132451058961219584, 482463400929263627]
 ADMIN_ROLE_NAME           = "SHADOW"
-JOIN_TO_CREATE_CHANNEL_ID = 1398618132788281364
-VC_CATEGORY_ID            = 908659586536468542
 VC_DEFAULT_BITRATE        = 64000
 
 # --- PERSISTENCE ---
@@ -366,10 +366,15 @@ class JTCCog(commands.Cog):
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         guild = member.guild
+        if not is_registered_guild(guild.id):
+            return
 
-        if after.channel and after.channel.id == JOIN_TO_CREATE_CHANNEL_ID:
+        jtc_id = ch_id(guild.id, "jtc")
+        vc_cat_id = ch_id(guild.id, "vc_category")
+
+        if after.channel and jtc_id and after.channel.id == jtc_id:
             try:
-                cat    = get(guild.categories, id=VC_CATEGORY_ID) or after.channel.category
+                cat    = get(guild.categories, id=vc_cat_id) or after.channel.category
                 new_vc = await guild.create_voice_channel(
                     name=_limit_channel_name(_to_sans_bold_italic(f"{member.display_name}'s Room")),
                     category=cat,

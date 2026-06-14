@@ -11,13 +11,18 @@ from pathlib import Path
 import discord
 from discord.ext import commands, tasks
 
+from cogs.guild_registry import (
+    REGISTERED_GUILD_IDS,
+    SHADOW_BACKUP_GUILD_ID,
+    SHADOW_MAIN_GUILD_ID,
+    role_id,
+)
+
 logger = logging.getLogger("ShadowSyn.MemberBackup")
 
 THEME_PRIMARY = 0x2B0B35
-TARGET_GUILD_ID = 908659586536468540
 OWNER_ID = 482463400929263627
-MINION_ROLE_ID = 955600021502431233
-MEMBER_ROLE_ID = 955600320287887400
+SYNC_GUILD_ID = SHADOW_MAIN_GUILD_ID
 
 PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve()
 try:
@@ -31,7 +36,7 @@ DM_PROBE_DELAY = 1.2
 
 _DB_DEFAULTS = {
     "schema_version": SCHEMA_VERSION,
-    "source_guild_id": str(TARGET_GUILD_ID),
+    "source_guild_id": str(SYNC_GUILD_ID),
     "last_full_sync": None,
     "members": {},
 }
@@ -66,9 +71,11 @@ def _admin_line(entry: dict) -> str:
 def _target_role_labels(member: discord.Member) -> list[str]:
     role_ids = {role.id for role in member.roles}
     labels: list[str] = []
-    if MINION_ROLE_ID in role_ids:
+    minion_rid = role_id(SYNC_GUILD_ID, "minion")
+    member_rid = role_id(SYNC_GUILD_ID, "member")
+    if minion_rid and minion_rid in role_ids:
         labels.append("minion")
-    if MEMBER_ROLE_ID in role_ids:
+    if member_rid and member_rid in role_ids:
         labels.append("member")
     return labels
 
@@ -116,7 +123,7 @@ class MemberBackupCog(commands.Cog):
     def _save(self) -> None:
         payload = {
             "schema_version": SCHEMA_VERSION,
-            "source_guild_id": str(self.db.get("source_guild_id") or TARGET_GUILD_ID),
+            "source_guild_id": str(self.db.get("source_guild_id") or SYNC_GUILD_ID),
             "last_full_sync": self.db.get("last_full_sync"),
             "members": self.db.get("members") or {},
         }
@@ -351,7 +358,7 @@ class MemberBackupCog(commands.Cog):
     @tasks.loop(hours=24)
     async def daily_reconcile(self):
         await self.bot.wait_until_ready()
-        guild = self.bot.get_guild(TARGET_GUILD_ID)
+        guild = self.bot.get_guild(SYNC_GUILD_ID)
         if guild is None:
             return
         try:
@@ -371,7 +378,7 @@ class MemberBackupCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
-        if after.guild.id != TARGET_GUILD_ID or after.bot:
+        if after.guild.id != SYNC_GUILD_ID or after.bot:
             return
 
         before_roles = set(_target_role_labels(before))
@@ -389,7 +396,7 @@ class MemberBackupCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
-        if member.guild.id != TARGET_GUILD_ID or member.bot:
+        if member.guild.id != SYNC_GUILD_ID or member.bot:
             return
         roles = _target_role_labels(member)
         entry = self._get_entry(member.id)
@@ -402,14 +409,20 @@ class MemberBackupCog(commands.Cog):
     @discord.slash_command(
         name="backupmembers",
         description="Force a full Minion/Member roster backup sync.",
-        guild_ids=[TARGET_GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
         default_member_permissions=discord.Permissions(administrator=True),
     )
     async def backupmembers(self, ctx: discord.ApplicationContext):
         if not await self._require_owner(ctx):
             return
         await ctx.defer(ephemeral=True)
-        stats = await self._full_reconcile(ctx.guild)
+        main_guild = self.bot.get_guild(SYNC_GUILD_ID)
+        if main_guild is None:
+            return await ctx.followup.send(
+                "❌ ShadowMain is not available for roster sync.",
+                ephemeral=True,
+            )
+        stats = await self._full_reconcile(main_guild)
         embed = discord.Embed(title="Member Roster Backup", color=THEME_PRIMARY)
         embed.add_field(name="Total with roles", value=str(stats["total_with_roles"]), inline=True)
         embed.add_field(name="Invite eligible", value=str(stats["invite_eligible"]), inline=True)
@@ -425,7 +438,7 @@ class MemberBackupCog(commands.Cog):
     @discord.slash_command(
         name="memberbackupstats",
         description="Show saved Minion/Member roster stats.",
-        guild_ids=[TARGET_GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
         default_member_permissions=discord.Permissions(administrator=True),
     )
     async def memberbackupstats(self, ctx: discord.ApplicationContext):
@@ -448,7 +461,7 @@ class MemberBackupCog(commands.Cog):
     @discord.slash_command(
         name="validateroster",
         description="Probe DM reachability for roster members (no invite links).",
-        guild_ids=[TARGET_GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
         default_member_permissions=discord.Permissions(administrator=True),
     )
     async def validateroster(
@@ -521,7 +534,7 @@ class MemberBackupCog(commands.Cog):
     @discord.slash_command(
         name="inviteoldmembers",
         description="DM saved roster members an invite to rejoin (disaster recovery).",
-        guild_ids=[TARGET_GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
         default_member_permissions=discord.Permissions(administrator=True),
     )
     async def inviteoldmembers(
@@ -569,7 +582,25 @@ class MemberBackupCog(commands.Cog):
             invite_kwargs["max_uses"] = max_uses
 
         try:
-            invite = await ctx.channel.create_invite(**invite_kwargs)
+            invite_guild = ctx.guild
+            if invite_guild is None or invite_guild.id != SHADOW_BACKUP_GUILD_ID:
+                backup = self.bot.get_guild(SHADOW_BACKUP_GUILD_ID)
+                if backup is None:
+                    return await ctx.followup.send(
+                        "❌ ShadowBackup not available — run this from the backup guild.",
+                        ephemeral=True,
+                    )
+                invite_guild = backup
+            welcome = invite_guild.system_channel or next(
+                (c for c in invite_guild.text_channels if c.permissions_for(invite_guild.me).create_instant_invite),
+                None,
+            )
+            if welcome is None:
+                return await ctx.followup.send(
+                    "❌ No channel available to create a backup invite.",
+                    ephemeral=True,
+                )
+            invite = await welcome.create_invite(**invite_kwargs)
         except Exception as exc:
             return await ctx.followup.send(f"Could not create invite: {exc}", ephemeral=True)
 

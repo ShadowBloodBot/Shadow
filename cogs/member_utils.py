@@ -14,6 +14,8 @@ from discord import ButtonStyle, Interaction, Option, OptionChoice
 from discord.ext import commands
 from discord.ui import View, Button
 
+from cogs.guild_registry import REGISTERED_GUILD_IDS, role_id
+
 # ==============================================================================
 # TELEMETRY
 # ==============================================================================
@@ -30,8 +32,6 @@ logger = logging.getLogger("ShadowSyn.MemberUtils")
 THEME_PRIMARY = 0x2B0B35
 THEME_GOLD = 0xFFD700
 THEME_SUCCESS = 0x57F287
-MEMBER_ROLE_ID = 955600320287887400
-TARGET_GUILD_ID = 908659586536468540
 GUILD_TZ = ZoneInfo("Australia/Sydney")
 
 MAX_REMINDERS_PER_USER = 5
@@ -100,11 +100,18 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
         return None
 
 
+def _has_member_role(member: discord.Member) -> bool:
+    rid = role_id(member.guild.id, "member")
+    if rid is None:
+        return False
+    return any(r.id == rid for r in member.roles)
+
+
 def member_only():
     def predicate(ctx):
         if not isinstance(ctx.author, discord.Member):
             return False
-        return any(r.id == MEMBER_ROLE_ID for r in ctx.author.roles)
+        return _has_member_role(ctx.author)
 
     return commands.check(predicate)
 
@@ -343,7 +350,7 @@ class MemberUtilsCog(commands.Cog):
 
         if not isinstance(interaction.user, discord.Member):
             return await safe_reply(interaction, "❌ Members only.", ephemeral=True)
-        if not any(r.id == MEMBER_ROLE_ID for r in interaction.user.roles):
+        if not _has_member_role(interaction.user):
             return await safe_reply(
                 interaction,
                 "❌ Members only — grab Minion in the Hub first.",
@@ -644,7 +651,7 @@ class MemberUtilsCog(commands.Cog):
     @discord.slash_command(
         name="poll",
         description="Create a live button poll with results.",
-        guild_ids=[TARGET_GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
     )
     @member_only()
     async def poll(
@@ -696,6 +703,7 @@ class MemberUtilsCog(commands.Cog):
         await safe_reply(ctx, "📊 Posting poll...", ephemeral=True)
 
         poll_data = {
+            "guild_id": str(ctx.guild_id),
             "channel_id": str(ctx.channel_id),
             "creator_id": str(ctx.author.id),
             "question": question,
@@ -746,7 +754,7 @@ class MemberUtilsCog(commands.Cog):
     @discord.slash_command(
         name="remindme",
         description="Set a personal reminder.",
-        guild_ids=[TARGET_GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
     )
     @member_only()
     async def remindme(
@@ -796,6 +804,7 @@ class MemberUtilsCog(commands.Cog):
         reminder_id = str(uuid.uuid4())
         self.data.setdefault("reminders", {})[reminder_id] = {
             "user_id": uid,
+            "guild_id": str(ctx.guild_id),
             "channel_id": str(ctx.channel_id),
             "note": note,
             "fire_at": _iso(fire_dt),
@@ -829,7 +838,7 @@ class MemberUtilsCog(commands.Cog):
     @discord.slash_command(
         name="countdown",
         description="Post a live countdown for an event.",
-        guild_ids=[TARGET_GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
     )
     @member_only()
     async def countdown(
@@ -852,6 +861,7 @@ class MemberUtilsCog(commands.Cog):
         await safe_reply(ctx, "⏳ Posting countdown...", ephemeral=True)
 
         cd_data = {
+            "guild_id": str(ctx.guild_id),
             "channel_id": str(ctx.channel_id),
             "creator_id": str(ctx.author.id),
             "title": title,

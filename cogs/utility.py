@@ -9,9 +9,10 @@ from discord.ext import commands
 from discord import Option, Interaction
 from discord.ui import Modal, TextInput, View, Button
 
+from cogs.guild_registry import REGISTERED_GUILD_IDS, role_id
+
 # --- CONSTANTS & IDS ---
 THEME_PRIMARY = 0x2B0B35
-ROLE_ADMIN_ID = 1214794734770323466 
 OWNER_ID = 482463400929263627
 
 # --- PERSISTENCE ---
@@ -47,8 +48,16 @@ def _atomic_write(file_path: Path, data):
 # --- HELPERS ---
 def admin_only():
     def predicate(ctx):
-        if not isinstance(ctx.author, discord.Member): return False
-        return any(r.id == ROLE_ADMIN_ID for r in ctx.author.roles)
+        if not isinstance(ctx.author, discord.Member):
+            return False
+        if ctx.author.id == OWNER_ID:
+            return True
+        if not ctx.guild:
+            return False
+        admin_rid = role_id(ctx.guild.id, "admin_shadow")
+        if admin_rid is None:
+            return False
+        return any(r.id == admin_rid for r in ctx.author.roles)
     return commands.check(predicate)
 
 def owner_only():
@@ -136,7 +145,11 @@ class UtilityCog(commands.Cog):
                 except Exception as e:
                     await safe_reply(interaction, f"⚠️ Error: {e}", ephemeral=True)
 
-    @discord.slash_command(name="role_button", description="Deploy a persistent button for users to claim a role")
+    @discord.slash_command(
+        name="role_button",
+        description="Deploy a persistent button for users to claim a role",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     @admin_only()
     async def role_button(self, ctx, role: Option(discord.Role, description="Select the role to attach to the button")):
         embed = discord.Embed(
@@ -147,13 +160,21 @@ class UtilityCog(commands.Cog):
         await safe_reply(ctx, "✅ Deploying role button...", ephemeral=True)
         await ctx.channel.send(embed=embed, view=PersistentRoleView(role))
 
-    @discord.slash_command(name="send_custom", description="Send a clean embed message")
+    @discord.slash_command(
+        name="send_custom",
+        description="Send a clean embed message",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     @admin_only()
     async def send_custom(self, ctx, channel: Option(discord.TextChannel, required=False)):
         target = channel or ctx.channel
         await ctx.send_modal(EasyEmbedModal(target))
 
-    @discord.slash_command(name="edit_custom", description="Edit an existing bot embed")
+    @discord.slash_command(
+        name="edit_custom",
+        description="Edit an existing bot embed",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     @admin_only()
     async def edit_custom(self, ctx, message_id: str, channel: Option(discord.TextChannel, required=False)):
         target_channel = channel or ctx.channel
@@ -163,12 +184,20 @@ class UtilityCog(commands.Cog):
             await ctx.send_modal(EasyEmbedModal(target_channel, edit_msg=msg))
         except Exception as e: await ctx.respond(f"❌ Error finding message: {e}", ephemeral=True)
 
-    @discord.slash_command(name="haste", description="Random Haste Fact")
+    @discord.slash_command(
+        name="haste",
+        description="Random Haste Fact",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     async def haste(self, ctx):
         if not self.active_haste_facts: return await safe_reply(ctx, "No facts yet.")
         await safe_reply(ctx, f"🍌 **Fact:** {random.choice(self.active_haste_facts)}")
 
-    @discord.slash_command(name="morehaste", description="Add Haste Fact")
+    @discord.slash_command(
+        name="morehaste",
+        description="Add Haste Fact",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     @admin_only()
     async def morehaste(self, ctx, fact: str):
         self.active_haste_facts.append(fact)

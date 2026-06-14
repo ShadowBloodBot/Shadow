@@ -3,11 +3,11 @@
 import discord
 from discord.ui import Modal, TextInput
 
+from cogs.guild_registry import ch_id, resolve_channel, role_id, REGISTERED_GUILD_IDS
+
 from .constants import (
     COINS_PER_CENT,
     COINS_PER_USD,
-    CASINO_CHANNEL_ID,
-    GAMBLER_ROLE_ID,
     MAX_BET,
     MIN_BET,
     QUICK_BETS,
@@ -16,21 +16,40 @@ from .constants import (
 from .economy import get_balance
 
 
-CASINO_CHANNEL_MENTION = f"<#{CASINO_CHANNEL_ID}>"
+def casino_channel_id(guild_id: int | None) -> int | None:
+    if guild_id is None:
+        return None
+    return ch_id(guild_id, "casino")
 
 
-def in_casino_channel(channel_id: int | None) -> bool:
-    return channel_id == CASINO_CHANNEL_ID
+async def resolve_casino_channel(bot, guild_id: int | None):
+    if guild_id is None:
+        return None
+    channel = await resolve_channel(bot, guild_id, "casino")
+    return channel
+
+
+def casino_channel_mention(guild_id: int | None) -> str:
+    cid = casino_channel_id(guild_id)
+    return f"<#{cid}>" if cid else "#casino"
+
+
+def in_casino_channel(guild_id: int | None, channel_id: int | None) -> bool:
+    expected = casino_channel_id(guild_id)
+    return expected is not None and channel_id == expected
 
 
 async def deny_if_wrong_channel(ctx_or_inter) -> bool:
     channel_id = getattr(ctx_or_inter, "channel_id", None)
+    guild_id = getattr(ctx_or_inter, "guild_id", None)
     if channel_id is None and hasattr(ctx_or_inter, "channel"):
         channel_id = ctx_or_inter.channel.id
-    if in_casino_channel(channel_id):
+    if guild_id is None and hasattr(ctx_or_inter, "guild") and ctx_or_inter.guild:
+        guild_id = ctx_or_inter.guild.id
+    if in_casino_channel(guild_id, channel_id):
         return False
 
-    msg = f"❌ All gambling commands are restricted to {CASINO_CHANNEL_MENTION}."
+    msg = f"❌ All gambling commands are restricted to {casino_channel_mention(guild_id)}."
     if hasattr(ctx_or_inter, "respond"):
         await safe_reply(ctx_or_inter, msg, ephemeral=True)
     elif hasattr(ctx_or_inter, "response"):
@@ -41,10 +60,16 @@ async def deny_if_wrong_channel(ctx_or_inter) -> bool:
     return True
 
 
-def is_gambler(user) -> bool:
+def is_gambler(user, guild_id: int | None = None) -> bool:
     if not isinstance(user, discord.Member):
         return False
-    return any(role.id == GAMBLER_ROLE_ID for role in user.roles)
+    gid = guild_id or (user.guild.id if user.guild else None)
+    if gid is None:
+        return False
+    rid = role_id(gid, "member")
+    if rid is None:
+        return False
+    return any(role.id == rid for role in user.roles)
 
 
 async def safe_reply(ctx_or_inter, *args, **kwargs):
@@ -93,7 +118,6 @@ def format_countdown(seconds: int) -> str:
 
 
 def format_wager_label(coins: int) -> str:
-    """Human label for quick-bet buttons (cent-first for grinders)."""
     if coins < COINS_PER_USD:
         cents = coins // COINS_PER_CENT
         return f"{cents}¢"
@@ -101,7 +125,6 @@ def format_wager_label(coins: int) -> str:
 
 
 def parse_wager(raw: str, balance: int) -> tuple[int | None, str | None]:
-    """Parse wager text; amounts must be whole-cent increments."""
     text = raw.lower().strip()
     if text == "all":
         amount = balance - (balance % COINS_PER_CENT)
@@ -145,8 +168,6 @@ class BetAmountModal(Modal):
 
 
 class WagerPickerView(discord.ui.View):
-    """Quick cent wagers + custom amount modal."""
-
     def __init__(self, balance: int, title: str, on_amount):
         super().__init__(timeout=120)
         self.balance = balance
@@ -176,7 +197,8 @@ class WagerPickerView(discord.ui.View):
 
 
 def gambler_gate(interaction: discord.Interaction) -> bool:
-    return is_gambler(interaction.user)
+    gid = interaction.guild.id if interaction.guild else None
+    return is_gambler(interaction.user, gid)
 
 
 async def deny_if_not_gambler(interaction: discord.Interaction) -> bool:

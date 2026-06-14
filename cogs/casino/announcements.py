@@ -2,14 +2,15 @@
 
 import discord
 
+from cogs.guild_registry import REGISTERED_GUILD_IDS
+
 from .constants import (
     BIG_WIN_MIN_PROFIT,
-    CASINO_CHANNEL_ID,
     JACKPOT_MIN_PROFIT,
     THEME_GOLD,
     THEME_WIN,
 )
-from .helpers import coins_to_usd, format_coins
+from .helpers import coins_to_usd, format_coins, resolve_casino_channel
 
 
 def classify_win(profit: int, wager: int, flags: dict | None = None) -> str | None:
@@ -48,13 +49,13 @@ async def maybe_announce_win(
     if not tier:
         return
 
-    channel = bot.get_channel(CASINO_CHANNEL_ID)
+    guild_id = user.guild.id if isinstance(user, discord.Member) and user.guild else None
+    if guild_id is None:
+        guild_id = REGISTERED_GUILD_IDS[0]
+
+    channel = await resolve_casino_channel(bot, guild_id)
     if channel is None:
-        try:
-            channel = await bot.fetch_channel(CASINO_CHANNEL_ID)
-        except Exception as exc:
-            print(f"⚠️ Casino win announce — channel fetch failed: {exc}")
-            return
+        return
 
     if tier == "jackpot":
         title = f"🎰 JACKPOT — {game}"

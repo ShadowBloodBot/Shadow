@@ -4,7 +4,9 @@ import discord
 from discord import ApplicationContext
 from discord.ext import commands
 
-from .constants import GAMBLER_ROLE_ID, OWNER_ID, TARGET_GUILD_ID, THEME_GOLD
+from cogs.guild_registry import REGISTERED_GUILD_IDS
+
+from .constants import OWNER_ID, THEME_GOLD
 from .economy import (
     load_scoins,
     pending_buyins,
@@ -49,15 +51,14 @@ class CasinoCog(commands.Cog):
     @discord.slash_command(
         name="gamble",
         description="VIP Casino Hub — games, daily claim, buy-in & Steam redeem",
-        guild_ids=[TARGET_GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
         default_member_permissions=discord.Permissions.none(),
     )
-    @commands.has_role(GAMBLER_ROLE_ID)
     async def gamble(self, ctx: ApplicationContext):
         if await deny_if_wrong_channel(ctx):
             return
-        if not is_gambler(ctx.author):
-            return await safe_reply(ctx, "🚫 Access denied.", ephemeral=True)
+        if not is_gambler(ctx.author, ctx.guild.id if ctx.guild else None):
+            return await safe_reply(ctx, "🚫 **Access Denied** — Member clearance required.", ephemeral=True)
 
         await safe_reply(
             ctx,
@@ -66,19 +67,10 @@ class CasinoCog(commands.Cog):
             ephemeral=True,
         )
 
-    @gamble.error
-    async def gamble_error(self, ctx: ApplicationContext, error: discord.DiscordException):
-        if isinstance(error, commands.MissingRole):
-            await safe_reply(
-                ctx,
-                "🚫 **Access Denied** — Member clearance required.",
-                ephemeral=True,
-            )
-
     @discord.slash_command(
         name="redemptions",
         description="Owner: view pending Steam & buy-in queues",
-        guild_ids=[TARGET_GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
         default_member_permissions=discord.Permissions.none(),
     )
     @owner_only()
@@ -121,7 +113,7 @@ class CasinoCog(commands.Cog):
     @discord.slash_command(
         name="give_coins",
         description="Owner: grant Coins to a member",
-        guild_ids=[TARGET_GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
         default_member_permissions=discord.Permissions.none(),
     )
     @owner_only()

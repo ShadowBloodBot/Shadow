@@ -57,7 +57,7 @@ When delivering new or rewritten Python files:
 
 ## Project Context
 
-This is **Shadow**, a Discord bot for a single private gaming community (Quinfall MMO guild).
+This is **Shadow**, a Discord bot for a private gaming community (Quinfall MMO guild), deployed **active-active** on **ShadowMain** and **ShadowBackup**. See `.cursor/rules/shadow-dual-guild.mdc` — Backup must identically mirror Main for all Discord and bot work.
 
 **Stack:** py-cord (git branch), Python 3.11, deployed to Railway with Docker. State persists to a `/data` volume via JSON files using atomic writes (write to `.tmp` then rename). There is a Railway-specific IPv4 socket patch in `bot.py` for voice gateway stability.
 
@@ -79,8 +79,8 @@ This is **Shadow**, a Discord bot for a single private gaming community (Quinfal
 
 - All slash commands (no prefix commands)
 - Persistent Views re-registered on `on_ready` for button components
-- Hardcoded channel/role/owner IDs as constants at the top of each cog
-- Single server only — never design for multi-guild
+- Channel/role routing via `cogs/guild_registry.py` logical keys — not per-guild hardcoded IDs in cogs
+- Dual guild: ShadowMain + ShadowBackup — every feature, panel, and Discord change must mirror both (see `shadow-dual-guild.mdc`)
 
 When given a cog to work on, read the whole file before touching anything.
 

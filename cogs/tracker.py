@@ -22,11 +22,18 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
+from cogs.guild_registry import (
+    REGISTERED_GUILD_IDS,
+    SHADOW_MAIN_GUILD_ID,
+    ch_id,
+    is_registered_guild,
+    resolve_channel,
+)
+
 # --- CONSTANTS ---
 THEME_PRIMARY        = 0x2B0B35
 THEME_WIN            = 0x43B581
 THEME_LOSS           = 0xF04747
-ALLOWED_STATS_THREAD = 1408314132473843734
 OWNER_ID             = 482463400929263627
 ALERT_AFTER_FAILURES = 5   # consecutive poll failures before a Discord alert fires (~3.75 min)
 
@@ -40,6 +47,7 @@ except Exception:
 TRACKER_STORE = PERSIST_ROOT / "kill_tracker_api.json"
 
 _DB_DEFAULTS = {
+    "target_threads":   {},
     "target_thread_id": None,
     "session_cookie":   None,
     "tracked_players":  [],
@@ -108,6 +116,16 @@ class TrackerCog(commands.Cog):
         # processed_kills: list on disk → set in memory for O(1) dedup lookups
         self.db["processed_kills"] = set(self.db["processed_kills"])
 
+        threads = self.db.get("target_threads")
+        if not isinstance(threads, dict):
+            threads = {}
+        legacy = self.db.get("target_thread_id")
+        if legacy and not threads:
+            threads[str(SHADOW_MAIN_GUILD_ID)] = int(legacy)
+        self.db["target_threads"] = {
+            str(k): int(v) for k, v in threads.items() if v is not None
+        }
+
         # Sanitize players: back-fill player_id from profile_url if missing
         sanitized = []
         patched   = False
@@ -127,7 +145,31 @@ class TrackerCog(commands.Cog):
         """Serialise in-memory state to disk. Converts processed_kills set → list."""
         payload = dict(self.db)
         payload["processed_kills"] = list(self.db["processed_kills"])
+        payload["target_threads"] = self.db.get("target_threads") or {}
         _atomic_write(TRACKER_STORE, payload)
+
+    def _configured_feed_channels(self) -> list[int]:
+        threads = self.db.get("target_threads") or {}
+        ids: list[int] = []
+        seen: set[int] = set()
+        for raw in threads.values():
+            try:
+                cid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if cid not in seen:
+                seen.add(cid)
+                ids.append(cid)
+        return ids
+
+    async def _resolve_feed_channel(self, channel_id: int):
+        channel = self.bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(channel_id)
+            except Exception:
+                return None
+        return channel
 
     # -----------------------------------------------------------------------
     # AUTOCOMPLETE
@@ -168,7 +210,7 @@ class TrackerCog(commands.Cog):
 
     @tasks.loop(seconds=45)
     async def feed_monitor(self):
-        if not self.db.get("target_thread_id"):
+        if not self._configured_feed_channels():
             return
 
         new_events    = []
@@ -279,31 +321,27 @@ class TrackerCog(commands.Cog):
         await self.bot.wait_until_ready()
 
     async def _send_feed_alert(self, message: str):
-        """Post a plain-text alert to the configured kill-feed channel."""
-        channel_id = self.db.get("target_thread_id")
-        if not channel_id:
-            return
-        try:
-            channel = self.bot.get_channel(int(channel_id)) or await self.bot.fetch_channel(int(channel_id))
-            await channel.send(message)
-        except Exception:
-            pass
+        """Post a plain-text alert to all configured kill-feed channels."""
+        for channel_id in self._configured_feed_channels():
+            try:
+                channel = await self._resolve_feed_channel(channel_id)
+                if channel:
+                    await channel.send(message)
+            except Exception:
+                pass
 
     # -----------------------------------------------------------------------
     # BROADCAST
     # -----------------------------------------------------------------------
 
     async def broadcast_kills(self, events, tracked_ids, tracked_names):
-        channel_id = self.db.get("target_thread_id")
-        if not channel_id:
+        channels: list = []
+        for channel_id in self._configured_feed_channels():
+            channel = await self._resolve_feed_channel(channel_id)
+            if channel:
+                channels.append(channel)
+        if not channels:
             return
-
-        channel = self.bot.get_channel(int(channel_id))
-        if not channel:
-            try:
-                channel = await self.bot.fetch_channel(int(channel_id))
-            except Exception:
-                return
 
         for event in events:
             killer_id   = event.get("killerId")
@@ -340,27 +378,34 @@ class TrackerCog(commands.Cog):
             embed.set_footer(text="FTA.gg API Telemetry")
 
             try:
-                await channel.send(embed=embed)
+                for channel in channels:
+                    try:
+                        await channel.send(embed=embed)
+                    except discord.Forbidden:
+                        logger.error("Broadcast halted: missing channel permissions for %s.", channel.id)
+                        continue
+                    except Exception as e:
+                        logger.error(f"Broadcast failed for kill on {channel.id}: {e}")
                 await asyncio.sleep(1.2)
-            except discord.Forbidden:
-                # Fatal: bot lost permissions — no point continuing the broadcast
-                logger.error("Broadcast halted: missing channel permissions.")
-                break
             except Exception as e:
-                # Transient error — log it, skip this kill, keep going
-                logger.error(f"Broadcast failed for kill: {e}")
+                logger.error(f"Broadcast loop failed: {e}")
                 continue
 
     # -----------------------------------------------------------------------
     # SLASH COMMANDS
     # -----------------------------------------------------------------------
 
-    @discord.slash_command(name="stats", description="View the overall combat record of a tracked player")
+    @discord.slash_command(
+        name="stats",
+        description="View the overall combat record of a tracked player",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     async def stats(self, ctx, player_name: Option(str, "Select a tracked player", autocomplete=autocomplete_tracked_players)):
-        if ctx.channel.id != ALLOWED_STATS_THREAD:
+        allowed = ch_id(ctx.guild.id, "arma_stats") if ctx.guild else None
+        if not allowed or ctx.channel.id != allowed:
             return await ctx.respond(
-                f"❌ Security Protocol: This command can only be executed inside the <#{ALLOWED_STATS_THREAD}> thread.",
-                ephemeral=True
+                f"❌ Security Protocol: This command can only be executed inside the <#{allowed}> thread.",
+                ephemeral=True,
             )
 
         await ctx.defer()
@@ -428,7 +473,11 @@ class TrackerCog(commands.Cog):
             logger.error(f"Stats fetch error: {e}")
             await ctx.respond(f"💥 **Data Extraction Error:**\n```\n{e}\n```")
 
-    @discord.slash_command(name="track_player", description="Add a player to the live API watch list")
+    @discord.slash_command(
+        name="track_player",
+        description="Add a player to the live API watch list",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     async def track_player(self, ctx,
                            player_name: Option(str, "Exact in-game name (e.g., warcrimes)"),
                            profile_url: Option(str, "Required: Paste fta.gg profile link here")):
@@ -455,7 +504,11 @@ class TrackerCog(commands.Cog):
         self._save()
         await ctx.respond(f"✅ Telemetry locked onto: **{player_name}**", ephemeral=True)
 
-    @discord.slash_command(name="untrack_player", description="Stop monitoring a player by name")
+    @discord.slash_command(
+        name="untrack_player",
+        description="Stop monitoring a player by name",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     async def untrack_player(self, ctx, player_name: Option(str, "Name of the player to remove", autocomplete=autocomplete_tracked_players)):
         if not is_admin(ctx.author):
             return await ctx.respond("⛔ Restricted.", ephemeral=True)
@@ -472,12 +525,19 @@ class TrackerCog(commands.Cog):
         else:
             await ctx.respond(f"❓ Player **{player_name}** not found in database.", ephemeral=True)
 
-    @discord.slash_command(name="tracker_config", description="Set THIS thread/channel for live API broadcasts")
+    @discord.slash_command(
+        name="tracker_config",
+        description="Set THIS thread/channel for live API broadcasts",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     async def tracker_config(self, ctx):
         if not is_admin(ctx.author):
             return await ctx.respond("⛔ Restricted.", ephemeral=True)
+        if not ctx.guild or not is_registered_guild(ctx.guild.id):
+            return await ctx.respond("⛔ Unregistered guild.", ephemeral=True)
 
-        self.db["target_thread_id"] = ctx.channel.id
+        threads = self.db.setdefault("target_threads", {})
+        threads[str(ctx.guild.id)] = ctx.channel.id
         self._save()
         await ctx.respond("🎯 Output synchronized.", ephemeral=True)
         try:
@@ -488,7 +548,11 @@ class TrackerCog(commands.Cog):
                 ephemeral=True
             )
 
-    @discord.slash_command(name="tracker_list", description="List all monitored API profiles")
+    @discord.slash_command(
+        name="tracker_list",
+        description="List all monitored API profiles",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     async def tracker_list(self, ctx):
         players = [p for p in self.db["tracked_players"] if isinstance(p, dict) and "name" in p]
         if not players:
@@ -498,7 +562,11 @@ class TrackerCog(commands.Cog):
         embed = discord.Embed(title="📑 Active API Watch List", description=desc, color=THEME_PRIMARY)
         await ctx.respond(embed=embed, ephemeral=True)
 
-    @discord.slash_command(name="tracker_diagnostics", description="Run a deep network test to see why the API is failing")
+    @discord.slash_command(
+        name="tracker_diagnostics",
+        description="Run a deep network test to see why the API is failing",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     async def tracker_diagnostics(self, ctx):
         await ctx.defer()
         if not self.db["tracked_players"]:

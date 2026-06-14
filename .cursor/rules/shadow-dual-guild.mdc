@@ -1,0 +1,62 @@
+---
+description: ShadowMain / ShadowBackup identical mirror — mandatory for all Discord and bot work
+alwaysApply: true
+---
+
+# ShadowMain / ShadowBackup — identical mirror
+
+ShadowSyn runs **active-active** on two Discord guilds. **ShadowBackup must identically mirror ShadowMain** in structure, behavior, and user-facing content. This applies to **all Discord server work and all ShadowSyn bot work** — code, channels, threads, roles, embeds, hub panels, deploy commands, scripts, and ops.
+
+| Name | Guild ID | Role |
+|------|----------|------|
+| **ShadowMain** | `908659586536468540` | Primary production community |
+| **ShadowBackup** | `1514838718119411832` | Identical mirrored failover (shdwbackup) |
+
+## Mirror mandate (non-negotiable)
+
+When anything changes on **ShadowMain**, **ShadowBackup must receive the same change** unless Joseph explicitly opts out for a specific item.
+
+This includes:
+
+- **Bot code** — one code path; both guilds via `REGISTERED_GUILD_IDS` and `guild_registry` keys
+- **Discord structure** — new/renamed channels, categories, threads, roles on Main → replicate on Backup, then re-run `scripts/guild_registry_seed.py`
+- **Panels & hubs** — clips, steam codes, casino, welcome hub, war posts, etc. → deploy on **both** guilds
+- **Embeds & copy** — same titles, descriptions, colors (`#2B0B35`), buttons; no Main-only messaging
+- **Slash commands & bindings** — `/clips_deploy`, `/steam_codes_deploy`, `/steam register_thread`, `/tracker_config`, hub deploy, etc. on **both**
+- **Scripts & Cursor ops** — ShadowAdmin audits, deploy helpers, and one-off fixes must consider both guilds
+
+**Never** ship a Main-only feature, panel, thread binding, or Discord layout change without a Backup mirror step in the same task or immediate follow-up.
+
+## Code conventions
+
+- Import guild IDs and helpers from [`cogs/guild_registry.py`](cogs/guild_registry.py):
+  - `SHADOW_MAIN_GUILD_ID`, `SHADOW_BACKUP_GUILD_ID`, `REGISTERED_GUILD_IDS`
+  - `is_registered_guild()`, `ch_id()`, `role_id()`, `resolve_channel()`, `channel_url()`
+- **Never** hardcode a single guild ID for listeners or slash commands — use `REGISTERED_GUILD_IDS`.
+- **Never** hardcode channel/role IDs for bot routing — use logical keys in `guild_registry.json` (`clips`, `lobby`, `minion`, etc.).
+- Channel and role **Discord IDs differ per guild**; only logical keys and content are shared.
+
+## Persistence
+
+| Data | Scope |
+|------|--------|
+| `scoins.json`, steam code entries, member roster | **Shared** across both guilds |
+| Panel message IDs, steam thread targets, JTC state, tracker feed threads | **Per-guild** (same behavior, separate Discord IDs) |
+
+Member roster **sync source** remains ShadowMain; Backup admin commands stay available for disaster re-invites.
+
+## Change checklist (every task)
+
+1. Code uses registry + both guild IDs (no Main-only paths).
+2. If Discord layout changed on Main → mirror on Backup → `python scripts/guild_registry_seed.py`.
+3. Run deploy/bind commands on **both** guilds (or `python scripts/backup_deploy_panels.py`).
+4. Verify Backup matches Main (panels live, threads bound, embeds equivalent).
+
+## Bots
+
+- **ShadowSyn** (`1401788343825727618`) — production bot, both guilds.
+- **ShadowAdmin** (`1513810670569656390`) — Cursor ops; use for audits and deploy scripts on **both** guilds.
+
+## Registry file
+
+Live map: `{PERSIST_PATH}/guild_registry.json` (Railway `/data`). Template: `data/guild_registry.json`.

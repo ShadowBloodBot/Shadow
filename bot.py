@@ -57,7 +57,14 @@ class ShadowBot(discord.Bot):
 
 bot = ShadowBot(intents=intents)
 
-TARGET_GUILD_ID = 908659586536468540
+from cogs.guild_registry import (  # noqa: E402
+    REGISTERED_GUILD_IDS,
+    SHADOW_BACKUP_GUILD_ID,
+    SHADOW_MAIN_GUILD_ID,
+    load_registry,
+)
+
+TARGET_GUILD_ID = SHADOW_MAIN_GUILD_ID
 
 # ==========================================
 # MODULE INTEGRATION (COGS)
@@ -97,6 +104,15 @@ async def on_ready():
     logger.info(f"Master Bot is online! Logged in as {bot.user}")
     logger.info(f"Connected to {len(bot.guilds)} guild(s).")
 
+    load_registry(force=True)
+    connected = {g.id for g in bot.guilds}
+    for gid, label in (
+        (SHADOW_MAIN_GUILD_ID, "ShadowMain"),
+        (SHADOW_BACKUP_GUILD_ID, "ShadowBackup"),
+    ):
+        status = "online" if gid in connected else "MISSING"
+        logger.info("Guild %s (%s): %s", label, gid, status)
+
     for cmd in bot.pending_application_commands:
         subs = [getattr(s, "name", "?") for s in (getattr(cmd, "subcommands", None) or [])]
         if subs:
@@ -105,8 +121,8 @@ async def on_ready():
             logger.info(f"App command: /{cmd.name}")
 
     try:
-        await bot.sync_commands(guild_ids=[TARGET_GUILD_ID])
-        logger.info(f"Guild slash sync complete for {TARGET_GUILD_ID}")
+        await bot.sync_commands(guild_ids=REGISTERED_GUILD_IDS)
+        logger.info("Guild slash sync complete for ShadowMain + ShadowBackup")
     except discord.errors.Forbidden:
         logger.error(
             "403 during guild slash sync — re-invite bot with applications.commands scope"

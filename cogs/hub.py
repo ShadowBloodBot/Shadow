@@ -6,6 +6,15 @@ from discord import ButtonStyle
 from discord.ui import View, Button
 from discord.ext import commands
 
+from cogs.guild_registry import (
+    REGISTERED_GUILD_IDS,
+    ch_id,
+    channel_url,
+    is_registered_guild,
+    resolve_channel,
+    resolve_role,
+)
+
 # ==============================================================================
 # TELEMETRY
 # ==============================================================================
@@ -17,36 +26,30 @@ logging.basicConfig(
 logger = logging.getLogger("ShadowSyn.Hub")
 
 # ==============================================================================
-# CONSTANTS & IDS
+# CONSTANTS
 # ==============================================================================
 THEME_PRIMARY = 0x2B0B35
-OWNER_ID = 482463400929263627
-ROLE_ADMIN_ID = 1214794734770323466
-TARGET_GUILD_ID = 908659586536468540
-
-LOBBY_CHANNEL_ID = 974113723188912218
-GENERAL_OPEN_CHANNEL_ID = 956725685014134785
-STEAM_CODES_CHANNEL_ID = 961870662006345798
-WELCOME_CHANNEL_ID = 1166874144395247757
-CLIPS_CHANNEL_ID = 955609588470808657
-JTC_CHANNEL_ID = 1398618132788281364
-ARMA_STATS_CHANNEL_ID = 1408314132473843734
-
-MINION_ROLE_ID = 955600021502431233
-ARRIVALS_THREAD_ID = 959629903186259978
-
 MINION_BUTTON_ID = "hub_minion_grab"
-
 HUB_TITLE = "Welcome -ShadowSyn-"
-HUB_DESCRIPTION = (
-    f"Grab your Starter role **[ Minion ]** so you can see\n"
-    f"<#{GENERAL_OPEN_CHANNEL_ID}> & Share your <#{STEAM_CODES_CHANNEL_ID}>\n"
-    f"Check out <#{WELCOME_CHANNEL_ID}> for anything else"
-)
 
 
-def _channel_url(channel_id: int) -> str:
-    return f"https://discord.com/channels/{TARGET_GUILD_ID}/{channel_id}"
+def _hub_description(guild_id: int) -> str:
+    general = ch_id(guild_id, "general_open")
+    steam = ch_id(guild_id, "steam_codes")
+    welcome = ch_id(guild_id, "welcome")
+    return (
+        f"Grab your Starter role **[ Minion ]** so you can see\n"
+        f"<#{general}> & Share your <#{steam}>\n"
+        f"Check out <#{welcome}> for anything else"
+    )
+
+
+def _build_hub_embed(guild_id: int) -> discord.Embed:
+    return discord.Embed(
+        title=HUB_TITLE,
+        description=_hub_description(guild_id),
+        color=THEME_PRIMARY,
+    )
 
 
 # ==============================================================================
@@ -64,22 +67,15 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
         return None
 
 
-def _build_hub_embed() -> discord.Embed:
-    return discord.Embed(
-        title=HUB_TITLE,
-        description=HUB_DESCRIPTION,
-        color=THEME_PRIMARY,
-    )
-
-
 # ==============================================================================
 # UI COMPONENTS
 # ==============================================================================
 class HubPanelView(View):
     """Persistent hub panel — Minion grab handled statelessly in on_interaction."""
 
-    def __init__(self):
+    def __init__(self, guild_id: int):
         super().__init__(timeout=None)
+        self.guild_id = guild_id
         self.add_item(Button(
             label="Minion",
             style=ButtonStyle.primary,
@@ -90,19 +86,19 @@ class HubPanelView(View):
             label="General-Open",
             style=ButtonStyle.link,
             emoji="💬",
-            url=_channel_url(GENERAL_OPEN_CHANNEL_ID),
+            url=channel_url(guild_id, "general_open"),
         ))
         self.add_item(Button(
             label="Steam-Codes",
             style=ButtonStyle.link,
             emoji="📥",
-            url=_channel_url(STEAM_CODES_CHANNEL_ID),
+            url=channel_url(guild_id, "steam_codes"),
         ))
         self.add_item(Button(
             label="Welcome",
             style=ButtonStyle.link,
             emoji="👋",
-            url=_channel_url(WELCOME_CHANNEL_ID),
+            url=channel_url(guild_id, "welcome"),
         ))
 
 
@@ -113,33 +109,15 @@ class HubCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
 
-    # --------------------------------------------------------------------------
-    # CHANNEL RESOLUTION
-    # --------------------------------------------------------------------------
-    async def _resolve_channel(self, channel_id: int):
-        channel = self.bot.get_channel(channel_id)
-        if channel is None:
-            try:
-                channel = await self.bot.fetch_channel(channel_id)
-            except Exception as e:
-                logger.error(f"Hub channel {channel_id} unavailable: {e}")
-                return None
-        return channel
-
-    # --------------------------------------------------------------------------
-    # PERSISTENT VIEWS
-    # --------------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_ready(self):
         try:
-            self.bot.add_view(HubPanelView())
-            logger.info("Hub persistent view restored.")
+            for gid in REGISTERED_GUILD_IDS:
+                self.bot.add_view(HubPanelView(gid))
+            logger.info("Hub persistent views restored for ShadowMain + ShadowBackup.")
         except Exception as e:
-            logger.error(f"Failed to restore hub view on_ready: {e}")
+            logger.error(f"Failed to restore hub views on_ready: {e}")
 
-    # --------------------------------------------------------------------------
-    # MINION GRANT (stateless component handler)
-    # --------------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
         if interaction.type != discord.InteractionType.component:
@@ -152,10 +130,12 @@ class HubCog(commands.Cog):
         guild = interaction.guild
         if guild is None or not isinstance(member, discord.Member):
             return await safe_reply(interaction, "❌ Use this inside the server.", ephemeral=True)
+        if not is_registered_guild(guild.id):
+            return
 
-        role = guild.get_role(MINION_ROLE_ID)
+        role = resolve_role(guild, "minion")
         if role is None:
-            logger.error(f"Minion role {MINION_ROLE_ID} not found in guild {guild.id}.")
+            logger.error("Minion role not found in guild %s.", guild.id)
             return await safe_reply(interaction, "❌ Starter role is missing. Tell an admin.", ephemeral=True)
 
         if role in member.roles:
@@ -178,16 +158,16 @@ class HubCog(commands.Cog):
             logger.error(f"Minion grant failed for {member.id}: {e}")
             return await safe_reply(interaction, "⚠️ Something broke. Try again.", ephemeral=True)
 
+        general = ch_id(guild.id, "general_open")
         await safe_reply(
             interaction,
-            f"👻 You're in. Start with <#{GENERAL_OPEN_CHANNEL_ID}>.",
+            f"👻 You're in. Start with <#{general}>.",
             ephemeral=True,
         )
         await self._notify_arrivals(member)
 
     async def _notify_arrivals(self, member: discord.Member):
-        """Mirror self-serve grants into the hidden arrivals thread for revoke power."""
-        thread = await self._resolve_channel(ARRIVALS_THREAD_ID)
+        thread = await resolve_channel(self.bot, member.guild.id, "arrivals")
         if thread is None:
             return
         try:
@@ -210,44 +190,36 @@ class HubCog(commands.Cog):
         except Exception as e:
             logger.warning(f"Failed to post hub grant notice to arrivals: {e}")
 
-    # --------------------------------------------------------------------------
-    # NEW MEMBER PING
-    # --------------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        if member.bot or member.guild.id != TARGET_GUILD_ID:
+        if member.bot or not is_registered_guild(member.guild.id):
             return
-        lobby = await self._resolve_channel(LOBBY_CHANNEL_ID)
+        lobby = await resolve_channel(self.bot, member.guild.id, "lobby")
         if lobby is None:
             return
         try:
             await lobby.send(
                 content=member.mention,
-                embed=_build_hub_embed(),
-                view=HubPanelView(),
+                embed=_build_hub_embed(member.guild.id),
+                view=HubPanelView(member.guild.id),
                 allowed_mentions=discord.AllowedMentions(users=True),
             )
-            logger.info(f"Hub welcome ping posted for {member.id}.")
+            logger.info(f"Hub welcome ping posted for {member.id} in guild {member.guild.id}.")
         except Exception as e:
             logger.error(f"Failed to post hub welcome ping for {member.id}: {e}")
 
-    # --------------------------------------------------------------------------
-    # HELP
-    # --------------------------------------------------------------------------
     @discord.slash_command(
         name="help",
         description="What ShadowSyn can do for you.",
-        guild_ids=[TARGET_GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
     )
     async def help_command(self, ctx: discord.ApplicationContext):
-        embed = discord.Embed(
-            title="👻 ShadowSyn",
-            color=THEME_PRIMARY,
-        )
+        gid = ctx.guild.id if ctx.guild else REGISTERED_GUILD_IDS[0]
+        embed = discord.Embed(title="👻 ShadowSyn", color=THEME_PRIMARY)
         embed.add_field(
             name="🔊 Voice",
             value=(
-                f"Join <#{JTC_CHANNEL_ID}> to spawn your own room with a control panel "
+                f"Join <#{ch_id(gid, 'jtc')}> to spawn your own room with a control panel "
                 "— lock, rename, kick, bitrate, user limit."
             ),
             inline=False,
@@ -264,7 +236,7 @@ class HubCog(commands.Cog):
         embed.add_field(
             name="🏆 Clips",
             value=(
-                f"Hit **Submit Clip** in <#{CLIPS_CHANNEL_ID}> — Medal/YouTube link or file upload. "
+                f"Hit **Submit Clip** in <#{ch_id(gid, 'clips')}> — Medal/YouTube link or file upload. "
                 "Drop a 🔥 on the ones that deserve it."
             ),
             inline=False,
@@ -272,7 +244,7 @@ class HubCog(commands.Cog):
         embed.add_field(
             name="🎮 Steam Codes",
             value=(
-                f"Open <#{STEAM_CODES_CHANNEL_ID}> and hit **Add Steam Code** — "
+                f"Open <#{ch_id(gid, 'steam_codes')}> and hit **Add Steam Code** — "
                 "your friend code joins the guild directory (multiple alts allowed)."
             ),
             inline=False,
@@ -286,11 +258,19 @@ class HubCog(commands.Cog):
             inline=False,
         )
         embed.add_field(
+            name="🎰 Casino",
+            value=(
+                f"`/gamble` in <#{ch_id(gid, 'casino')}> — Blackjack, Roulette, Vault Heist. "
+                "Shared wallet across ShadowMain and ShadowBackup."
+            ),
+            inline=False,
+        )
+        embed.add_field(
             name="🤖 Commands",
             value=(
                 "`/speak` — bot speaks your text in VC, any language\n"
                 "`/haste` — random Haste fact\n"
-                f"`/stats` — Arma combat record (in <#{ARMA_STATS_CHANNEL_ID}>)"
+                f"`/stats` — Arma combat record (in <#{ch_id(gid, 'arma_stats')}>)"
             ),
             inline=False,
         )
@@ -304,7 +284,12 @@ class HubCog(commands.Cog):
             inline=False,
         )
         member = ctx.author
-        if isinstance(member, discord.Member) and any(r.id == ROLE_ADMIN_ID for r in member.roles):
+        admin_role = resolve_role(ctx.guild, "admin_shadow") if ctx.guild else None
+        if (
+            isinstance(member, discord.Member)
+            and admin_role
+            and admin_role in member.roles
+        ):
             embed.add_field(
                 name="🛠️ Admin",
                 value=(

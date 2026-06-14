@@ -16,12 +16,11 @@ from .query_engine import (
     wiki_footer,
 )
 
+from cogs.guild_registry import REGISTERED_GUILD_IDS, ch_id, role_id
+
 logger = logging.getLogger("ShadowSyn.SAND")
 
 THEME_PRIMARY = 0x2B0B35
-SAND_THREAD_ID = 1514542049997623436
-SAND_ROLE_ID = 955600320287887400
-TARGET_GUILD_ID = 908659586536468540
 OWNER_ID = 482463400929263627
 
 EXAMPLE_QUESTIONS = [
@@ -38,7 +37,10 @@ EXAMPLE_QUESTIONS = [
 def is_sand_member(user) -> bool:
     if not isinstance(user, discord.Member):
         return False
-    return any(role.id == SAND_ROLE_ID for role in user.roles)
+    rid = role_id(user.guild.id, "member")
+    if rid is None:
+        return False
+    return any(role.id == rid for role in user.roles)
 
 
 async def safe_reply(ctx_or_inter, *args, **kwargs):
@@ -55,11 +57,12 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
 
 
 async def deny_wrong_thread(ctx: discord.ApplicationContext) -> bool:
-    if ctx.channel_id == SAND_THREAD_ID:
+    sand_id = ch_id(ctx.guild.id, "sand_general") if ctx.guild else None
+    if sand_id and ctx.channel_id == sand_id:
         return False
     await safe_reply(
         ctx,
-        f"🏜️ SAND commands live in <#{SAND_THREAD_ID}> only.\n"
+        f"🏜️ SAND commands live in <#{sand_id}> only.\n"
         f"Head there and try again — e.g. `/sand query how do i get pristine cannons`",
         ephemeral=True,
     )
@@ -189,6 +192,7 @@ class SandGuideCog(commands.Cog):
     sand = discord.SlashCommandGroup(
         "sand",
         "SAND: Raiders of Sophie — loot, craft & acquisition guide",
+        guild_ids=REGISTERED_GUILD_IDS,
     )
 
     @sand.command(

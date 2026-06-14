@@ -11,6 +11,8 @@ from discord import Option, SelectOption
 from discord.ext import commands
 from discord.ui import View, Button, Select
 
+from cogs.guild_registry import REGISTERED_GUILD_IDS, role_id
+
 # ==============================================================================
 # TELEMETRY
 # ==============================================================================
@@ -20,7 +22,6 @@ logger = logging.getLogger("ShadowSyn.Music")
 # CONSTANTS
 # ==============================================================================
 THEME_PRIMARY = 0x2B0B35
-MUSIC_ROLE_ID = 955600320287887400
 AUTO_LEAVE_TIMEOUT = 120
 VOICE_SETTLE_MAX = 0.5
 SEARCH_RESULTS = 5
@@ -87,7 +88,10 @@ class GuildPlayer:
 def has_music_role(user) -> bool:
     if not isinstance(user, discord.Member):
         return False
-    return any(r.id == MUSIC_ROLE_ID for r in user.roles)
+    rid = role_id(user.guild.id, "member")
+    if rid is None:
+        return False
+    return any(r.id == rid for r in user.roles)
 
 
 def _format_duration(seconds: Optional[int]) -> str:
@@ -564,6 +568,7 @@ class MusicCog(commands.Cog):
     @discord.slash_command(
         name="play",
         description="Play a song — search by name or paste a YouTube/Spotify link",
+        guild_ids=REGISTERED_GUILD_IDS,
     )
     async def play(
         self,
@@ -613,7 +618,11 @@ class MusicCog(commands.Cog):
     # -------------------------------------------------------------------------
     # /pause · /resume · /skip · /stop · /queue
     # -------------------------------------------------------------------------
-    @discord.slash_command(name="pause", description="Pause the current song")
+    @discord.slash_command(
+        name="pause",
+        description="Pause the current song",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     async def pause(self, ctx: discord.ApplicationContext):
         if not has_music_role(ctx.author):
             return await ctx.respond("⛔ Restricted.", ephemeral=True)
@@ -623,7 +632,11 @@ class MusicCog(commands.Cog):
         vc.pause()
         await ctx.respond("⏸️ Paused.", ephemeral=True)
 
-    @discord.slash_command(name="resume", description="Resume playback")
+    @discord.slash_command(
+        name="resume",
+        description="Resume playback",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     async def resume(self, ctx: discord.ApplicationContext):
         if not has_music_role(ctx.author):
             return await ctx.respond("⛔ Restricted.", ephemeral=True)
@@ -633,7 +646,11 @@ class MusicCog(commands.Cog):
         vc.resume()
         await ctx.respond("▶️ Resumed.", ephemeral=True)
 
-    @discord.slash_command(name="skip", description="Skip the current song")
+    @discord.slash_command(
+        name="skip",
+        description="Skip the current song",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     async def skip(self, ctx: discord.ApplicationContext):
         if not has_music_role(ctx.author):
             return await ctx.respond("⛔ Restricted.", ephemeral=True)
@@ -646,7 +663,11 @@ class MusicCog(commands.Cog):
         vc.stop()
         await ctx.respond(f"⏭️ Skipped **{skipped}**", ephemeral=True)
 
-    @discord.slash_command(name="stop", description="Stop playback and clear the queue")
+    @discord.slash_command(
+        name="stop",
+        description="Stop playback and clear the queue",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     async def stop(self, ctx: discord.ApplicationContext):
         if not has_music_role(ctx.author):
             return await ctx.respond("⛔ Restricted.", ephemeral=True)
@@ -671,7 +692,11 @@ class MusicCog(commands.Cog):
 
         await ctx.respond("⏹️ Stopped — queue cleared, disconnected.", ephemeral=True)
 
-    @discord.slash_command(name="queue", description="Show the music queue")
+    @discord.slash_command(
+        name="queue",
+        description="Show the music queue",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     async def queue_cmd(self, ctx: discord.ApplicationContext):
         if not has_music_role(ctx.author):
             return await ctx.respond("⛔ Restricted.", ephemeral=True)
@@ -680,7 +705,11 @@ class MusicCog(commands.Cog):
             return await ctx.respond("📭 Queue is empty.", ephemeral=True)
         await ctx.respond(embed=embed, ephemeral=True)
 
-    @discord.slash_command(name="nowplaying", description="Show the current song")
+    @discord.slash_command(
+        name="nowplaying",
+        description="Show the current song",
+        guild_ids=REGISTERED_GUILD_IDS,
+    )
     async def nowplaying(self, ctx: discord.ApplicationContext):
         if not has_music_role(ctx.author):
             return await ctx.respond("⛔ Restricted.", ephemeral=True)

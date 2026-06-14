@@ -8,7 +8,6 @@ from .buyin import BuyInTierSelect, paypal_tier_url
 from .constants import (
     BUYIN_PAYMENT_URL,
     BUYIN_TIERS,
-    CASINO_CHANNEL_ID,
     DAILY_CLAIM_AMOUNT,
     MEMBER_TENURE_DAYS,
     REDEEM_MAX_PER_MONTH,
@@ -23,8 +22,8 @@ from .games.blackjack import BlackjackView
 from .games.roulette import RouletteLobbyView
 from .games.vault_heist import VaultHeistSetupView
 from .helpers import (
-    CASINO_CHANNEL_MENTION,
     WagerPickerView,
+    casino_channel_mention,
     coins_to_usd,
     deny_if_not_gambler,
     format_countdown,
@@ -35,10 +34,18 @@ from .helpers import (
 from .shop import RedeemTierSelect
 
 
+def _guild_id_for_user(user: discord.User) -> int | None:
+    if isinstance(user, discord.Member) and user.guild:
+        return user.guild.id
+    return None
+
+
 def build_gamble_hub_embed(user: discord.User) -> discord.Embed:
     user_id = str(user.id)
     balance = get_balance(user_id)
     can_claim, remaining = claim_status(user_id)
+    gid = _guild_id_for_user(user)
+    casino_mention = casino_channel_mention(gid)
     claim_line = (
         f"✅ **Daily Claim** ready — +{DAILY_CLAIM_AMOUNT:,} Coins ({coins_to_usd(DAILY_CLAIM_AMOUNT)})"
         if can_claim
@@ -66,7 +73,7 @@ def build_gamble_hub_embed(user: discord.User) -> discord.Embed:
         description=(
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "**Season 1** · 10,000 Coins = $10 · All actions below\n"
-            f"📍 {CASINO_CHANNEL_MENTION} only\n"
+            f"📍 {casino_mention} only\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=THEME_PRIMARY,
@@ -116,9 +123,10 @@ class GambleHubView(View):
         self.add_item(RedeemTierSelect(balance, row=2))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if not in_casino_channel(interaction.channel_id):
+        gid = interaction.guild.id if interaction.guild else None
+        if not in_casino_channel(gid, interaction.channel_id):
             await interaction.response.send_message(
-                f"❌ All gambling is restricted to {CASINO_CHANNEL_MENTION}.",
+                f"❌ All gambling is restricted to {casino_channel_mention(gid)}.",
                 ephemeral=True,
             )
             return False

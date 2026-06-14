@@ -15,10 +15,11 @@ import aiohttp
 import discord
 from discord.ext import commands
 
+from cogs.guild_registry import is_registered_guild
+
 logger = logging.getLogger("ShadowSyn.SAND.GuidesFunnel")
 
 THEME_PRIMARY = 0x2B0B35
-TARGET_GUILD_ID = 908659586536468540
 GUIDES_CHANNEL_ID = 1514799420602978324
 # Back-compat alias used in logs
 GUIDES_THREAD_ID = GUIDES_CHANNEL_ID
@@ -333,7 +334,7 @@ class SandGuidesFunnelCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.guild is None or message.guild.id != TARGET_GUILD_ID:
+        if message.guild is None or not is_registered_guild(message.guild.id):
             return
         if not message.webhook_id:
             return

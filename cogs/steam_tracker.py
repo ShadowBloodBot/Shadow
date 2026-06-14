@@ -6,6 +6,8 @@ import aiohttp
 import discord
 from discord.ext import commands, tasks
 
+from cogs.guild_registry import REGISTERED_GUILD_IDS, is_registered_guild
+
 # ==============================================================================
 # TELEMETRY & ENVIRONMENT CONFIGURATION
 # ==============================================================================
@@ -299,6 +301,7 @@ class SteamReleasesTracker(discord.Cog):
     steam_admin = discord.SlashCommandGroup(
         "steam", 
         "ShadowSyn administrative commands for Steam integrations",
+        guild_ids=REGISTERED_GUILD_IDS,
         default_member_permissions=discord.Permissions(administrator=True)
     )
 

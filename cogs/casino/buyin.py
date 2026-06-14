@@ -12,7 +12,6 @@ from .constants import (
     BUYIN_TIERS,
     COINS_PER_USD,
     OWNER_ID,
-    STEAM_REDEEM_CHANNEL_ID,
     THEME_GOLD,
     THEME_INFO,
     THEME_PRIMARY,
@@ -25,7 +24,7 @@ from .economy import (
     get_pending_buyin,
     resolve_buyin,
 )
-from .helpers import format_wallet
+from .helpers import format_wallet, resolve_casino_channel
 
 
 def paypal_tier_url(usd: int) -> str:
@@ -106,7 +105,7 @@ class BuyInProofModal(Modal):
         )
         admin_view = BuyInAdminView(request["id"], member.id, self.tier["coins"])
 
-        channel = interaction.client.get_channel(STEAM_REDEEM_CHANNEL_ID)
+        channel = await resolve_casino_channel(interaction.client, member.guild.id)
         if channel:
             try:
                 await channel.send(embed=admin_embed, view=admin_view)
