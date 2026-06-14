@@ -9,7 +9,7 @@ from discord.ext import commands
 from discord import Option, Interaction
 from discord.ui import Modal, TextInput, View, Button
 
-from cogs.guild_registry import REGISTERED_GUILD_IDS, role_id
+from cogs.guild_registry import REGISTERED_GUILD_IDS, is_owner, role_id
 
 # --- CONSTANTS & IDS ---
 THEME_PRIMARY = 0x2B0B35
@@ -48,11 +48,9 @@ def _atomic_write(file_path: Path, data):
 # --- HELPERS ---
 def admin_only():
     def predicate(ctx):
-        if not isinstance(ctx.author, discord.Member):
-            return False
-        if ctx.author.id == OWNER_ID:
+        if is_owner(getattr(ctx, "author", None)):
             return True
-        if not ctx.guild:
+        if not isinstance(ctx.author, discord.Member):
             return False
         admin_rid = role_id(ctx.guild.id, "admin_shadow")
         if admin_rid is None:

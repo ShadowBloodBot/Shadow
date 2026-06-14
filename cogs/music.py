@@ -11,7 +11,7 @@ from discord import Option, SelectOption
 from discord.ext import commands
 from discord.ui import View, Button, Select
 
-from cogs.guild_registry import REGISTERED_GUILD_IDS, role_id
+from cogs.guild_registry import REGISTERED_GUILD_IDS, is_owner, role_id
 
 # ==============================================================================
 # TELEMETRY
@@ -86,6 +86,8 @@ class GuildPlayer:
 
 
 def has_music_role(user) -> bool:
+    if is_owner(user):
+        return True
     if not isinstance(user, discord.Member):
         return False
     rid = role_id(user.guild.id, "member")

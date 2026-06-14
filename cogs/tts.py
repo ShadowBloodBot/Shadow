@@ -12,7 +12,7 @@ from discord import Option, OptionChoice
 import edge_tts
 from deep_translator import GoogleTranslator
 
-from cogs.guild_registry import REGISTERED_GUILD_IDS, ch_id, resolve_channel, role_id
+from cogs.guild_registry import REGISTERED_GUILD_IDS, ch_id, is_owner, resolve_channel, role_id
 
 # --- CONSTANTS ---
 THEME_PRIMARY      = 0x2B0B35
@@ -66,6 +66,8 @@ EDGE_VOICES = {
 }
 
 def has_tts_role(user):
+    if is_owner(user):
+        return True
     if not isinstance(user, discord.Member):
         return False
     rid = role_id(user.guild.id, "member")

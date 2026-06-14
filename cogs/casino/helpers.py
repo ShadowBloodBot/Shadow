@@ -3,7 +3,7 @@
 import discord
 from discord.ui import Modal, TextInput
 
-from cogs.guild_registry import ch_id, resolve_channel, role_id, REGISTERED_GUILD_IDS
+from cogs.guild_registry import ch_id, is_owner, resolve_channel, role_id, REGISTERED_GUILD_IDS
 
 from .constants import (
     COINS_PER_CENT,
@@ -40,6 +40,9 @@ def in_casino_channel(guild_id: int | None, channel_id: int | None) -> bool:
 
 
 async def deny_if_wrong_channel(ctx_or_inter) -> bool:
+    user = getattr(ctx_or_inter, "author", None) or getattr(ctx_or_inter, "user", None)
+    if is_owner(user):
+        return False
     channel_id = getattr(ctx_or_inter, "channel_id", None)
     guild_id = getattr(ctx_or_inter, "guild_id", None)
     if channel_id is None and hasattr(ctx_or_inter, "channel"):
@@ -61,6 +64,8 @@ async def deny_if_wrong_channel(ctx_or_inter) -> bool:
 
 
 def is_gambler(user, guild_id: int | None = None) -> bool:
+    if is_owner(user):
+        return True
     if not isinstance(user, discord.Member):
         return False
     gid = guild_id or (user.guild.id if user.guild else None)

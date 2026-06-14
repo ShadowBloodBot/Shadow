@@ -233,6 +233,64 @@ def resolve_role(guild: discord.Guild, key: str) -> discord.Role | None:
     return guild.get_role(rid)
 
 
+def is_owner(user: discord.User | discord.Member | None) -> bool:
+    """Joseph (ultimate admin) — bypasses all role and channel gates."""
+    if user is None:
+        return False
+    try:
+        return int(user.id) == OWNER_ID
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def _guild_id_for_user(
+    user: discord.User | discord.Member | None,
+    guild_id: int | str | None = None,
+) -> int | None:
+    if guild_id is not None:
+        try:
+            return int(guild_id)
+        except (TypeError, ValueError):
+            return None
+    if isinstance(user, discord.Member) and user.guild:
+        return user.guild.id
+    return None
+
+
+def has_admin_shadow(
+    user: discord.User | discord.Member | None,
+    guild_id: int | str | None = None,
+) -> bool:
+    if is_owner(user):
+        return True
+    if not isinstance(user, discord.Member):
+        return False
+    gid = _guild_id_for_user(user, guild_id)
+    if gid is None:
+        return False
+    rid = role_id(gid, "admin_shadow")
+    if rid is None:
+        return False
+    return any(role.id == rid for role in user.roles)
+
+
+def has_member_role(
+    user: discord.User | discord.Member | None,
+    guild_id: int | str | None = None,
+) -> bool:
+    if is_owner(user):
+        return True
+    if not isinstance(user, discord.Member):
+        return False
+    gid = _guild_id_for_user(user, guild_id)
+    if gid is None:
+        return False
+    rid = role_id(gid, "member")
+    if rid is None:
+        return False
+    return any(role.id == rid for role in user.roles)
+
+
 def iter_registered_guild_ids() -> list[int]:
     return list(REGISTERED_GUILD_IDS)
 

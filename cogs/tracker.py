@@ -26,6 +26,7 @@ from cogs.guild_registry import (
     REGISTERED_GUILD_IDS,
     SHADOW_MAIN_GUILD_ID,
     ch_id,
+    is_owner,
     is_registered_guild,
     resolve_channel,
 )
@@ -74,7 +75,7 @@ def extract_player_id(url: str):
     return match.group(1) if match else None
 
 def is_admin(user: discord.Member) -> bool:
-    return user.id == OWNER_ID
+    return is_owner(user)
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +403,7 @@ class TrackerCog(commands.Cog):
     )
     async def stats(self, ctx, player_name: Option(str, "Select a tracked player", autocomplete=autocomplete_tracked_players)):
         allowed = ch_id(ctx.guild.id, "arma_stats") if ctx.guild else None
-        if not allowed or ctx.channel.id != allowed:
+        if not is_owner(ctx.author) and (not allowed or ctx.channel.id != allowed):
             return await ctx.respond(
                 f"❌ Security Protocol: This command can only be executed inside the <#{allowed}> thread.",
                 ephemeral=True,

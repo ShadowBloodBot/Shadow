@@ -8,7 +8,7 @@ from discord import Option, ButtonStyle, SelectOption, Interaction
 from discord.ui import View, Button, Modal, TextInput, Select
 from discord.ext import commands
 
-from cogs.guild_registry import REGISTERED_GUILD_IDS, ch_id, resolve_channel, role_id
+from cogs.guild_registry import REGISTERED_GUILD_IDS, ch_id, is_owner, resolve_channel, role_id
 
 # --- CONSTANTS ---
 THEME_COMBAT = 0xE67E22
@@ -61,6 +61,8 @@ def _atomic_write(file_path: Path, data):
 def _save_wars(): _atomic_write(WAR_STORE, war_db)
 
 def is_war_role(user):
+    if is_owner(user):
+        return True
     if not isinstance(user, discord.Member):
         return False
     rid = role_id(user.guild.id, "member")

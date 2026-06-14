@@ -30,6 +30,7 @@ from cogs.guild_registry import (
     REGISTERED_GUILD_IDS,
     SHADOW_MAIN_GUILD_ID,
     ch_id,
+    has_admin_shadow,
     is_registered_guild,
     resolve_channel,
     resolve_role,
@@ -1119,8 +1120,7 @@ class ClipsCog(commands.Cog):
         default_member_permissions=discord.Permissions(administrator=True),
     )
     async def clips_deploy(self, ctx: discord.ApplicationContext):
-        admin_rid = role_id(ctx.guild.id, "admin_shadow") if ctx.guild else None
-        if admin_rid and not any(r.id == admin_rid for r in ctx.author.roles):
+        if not has_admin_shadow(ctx.author, ctx.guild.id if ctx.guild else None):
             return await safe_reply(ctx, "🚫 Admin clearance required.", ephemeral=True)
 
         await safe_reply(ctx, "🛠️ Deploying clips system...", ephemeral=True)

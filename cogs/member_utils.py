@@ -14,7 +14,7 @@ from discord import ButtonStyle, Interaction, Option, OptionChoice
 from discord.ext import commands
 from discord.ui import View, Button
 
-from cogs.guild_registry import REGISTERED_GUILD_IDS, role_id
+from cogs.guild_registry import REGISTERED_GUILD_IDS, is_owner, role_id
 
 # ==============================================================================
 # TELEMETRY
@@ -101,6 +101,8 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
 
 
 def _has_member_role(member: discord.Member) -> bool:
+    if is_owner(member):
+        return True
     rid = role_id(member.guild.id, "member")
     if rid is None:
         return False

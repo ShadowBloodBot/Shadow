@@ -16,7 +16,7 @@ from .query_engine import (
     wiki_footer,
 )
 
-from cogs.guild_registry import REGISTERED_GUILD_IDS, ch_id, role_id
+from cogs.guild_registry import REGISTERED_GUILD_IDS, ch_id, is_owner, role_id
 
 logger = logging.getLogger("ShadowSyn.SAND")
 
@@ -35,6 +35,8 @@ EXAMPLE_QUESTIONS = [
 
 
 def is_sand_member(user) -> bool:
+    if is_owner(user):
+        return True
     if not isinstance(user, discord.Member):
         return False
     rid = role_id(user.guild.id, "member")
@@ -57,6 +59,8 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
 
 
 async def deny_wrong_thread(ctx: discord.ApplicationContext) -> bool:
+    if is_owner(ctx.author):
+        return False
     sand_id = ch_id(ctx.guild.id, "sand_general") if ctx.guild else None
     if sand_id and ctx.channel_id == sand_id:
         return False

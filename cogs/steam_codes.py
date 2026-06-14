@@ -16,6 +16,7 @@ from cogs.guild_registry import (
     REGISTERED_GUILD_IDS,
     SHADOW_MAIN_GUILD_ID,
     ch_id,
+    has_admin_shadow,
     is_registered_guild,
     resolve_channel,
     role_id,
@@ -610,8 +611,7 @@ class SteamCodesCog(commands.Cog):
     ):
         if not ctx.guild or not is_registered_guild(ctx.guild.id):
             return await safe_reply(ctx, "⛔ Unregistered guild.", ephemeral=True)
-        admin_rid = role_id(ctx.guild.id, "admin_shadow")
-        if admin_rid is None or not any(r.id == admin_rid for r in ctx.author.roles):
+        if not has_admin_shadow(ctx.author, ctx.guild.id if ctx.guild else None):
             return await safe_reply(ctx, "🚫 Admin clearance required.", ephemeral=True)
 
         await safe_reply(ctx, "🛠️ Deploying Steam codes hub...", ephemeral=True)
