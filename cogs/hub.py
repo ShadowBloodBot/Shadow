@@ -10,6 +10,7 @@ from cogs.guild_registry import (
     REGISTERED_GUILD_IDS,
     ch_id,
     channel_url,
+    has_admin_shadow,
     is_registered_guild,
     resolve_channel,
     resolve_role,
@@ -209,6 +210,38 @@ class HubCog(commands.Cog):
             logger.error(f"Failed to post hub welcome ping for {member.id}: {e}")
 
     @discord.slash_command(
+        name="hub_deploy",
+        description="Post the Welcome hub panel to this guild's lobby channel.",
+        guild_ids=REGISTERED_GUILD_IDS,
+        default_member_permissions=discord.Permissions(administrator=True),
+    )
+    async def hub_deploy(self, ctx: discord.ApplicationContext):
+        if not ctx.guild or not is_registered_guild(ctx.guild.id):
+            return await safe_reply(ctx, "⛔ Unregistered guild.", ephemeral=True)
+        if not has_admin_shadow(ctx.author, ctx.guild.id):
+            return await safe_reply(ctx, "🚫 Admin clearance required.", ephemeral=True)
+
+        lobby = await resolve_channel(self.bot, ctx.guild.id, "lobby")
+        if lobby is None:
+            return await safe_reply(ctx, "❌ Lobby channel not found in registry.", ephemeral=True)
+
+        await safe_reply(ctx, f"🛠️ Deploying hub panel to {lobby.mention}...", ephemeral=True)
+        try:
+            msg = await lobby.send(
+                embed=_build_hub_embed(ctx.guild.id),
+                view=HubPanelView(ctx.guild.id),
+            )
+            self.bot.add_view(HubPanelView(ctx.guild.id))
+            await safe_reply(
+                ctx,
+                f"✅ Hub panel live in {lobby.mention} · message `{msg.id}`",
+                ephemeral=True,
+            )
+        except Exception as e:
+            logger.error(f"hub_deploy failed: {e}")
+            await safe_reply(ctx, f"❌ Deploy failed: {e}", ephemeral=True)
+
+    @discord.slash_command(
         name="help",
         description="What ShadowSyn can do for you.",
         guild_ids=REGISTERED_GUILD_IDS,
@@ -284,16 +317,11 @@ class HubCog(commands.Cog):
             inline=False,
         )
         member = ctx.author
-        admin_role = resolve_role(ctx.guild, "admin_shadow") if ctx.guild else None
-        if (
-            isinstance(member, discord.Member)
-            and admin_role
-            and admin_role in member.roles
-        ):
+        if ctx.guild and has_admin_shadow(member, ctx.guild.id):
             embed.add_field(
                 name="🛠️ Admin",
                 value=(
-                    "`/clips_deploy` · `/steam_codes_deploy` · `/role_button` · "
+                    "`/hub_deploy` · `/clips_deploy` · `/steam_codes_deploy` · `/role_button` · "
                     "`/send_custom` · `/edit_custom` · `/morehaste` · `/steam`"
                 ),
                 inline=False,
