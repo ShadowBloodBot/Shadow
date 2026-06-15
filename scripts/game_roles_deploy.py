@@ -23,7 +23,9 @@ GAME_ROLES_CHANNEL_ID = "1516222122211672084"
 SHADOW_MAIN_GUILD_ID = 908659586536468540
 CHANNEL_DISPLAY_NAME = "『🎮』 𝙜𝙖𝙢𝙚-𝙧𝙤𝙡𝙚𝙨"
 THEME_PRIMARY = 0x2B0B35
-OPEN_BUTTON_ID = f"game_roles_open:{SHADOW_MAIN_GUILD_ID}"
+OPEN_BUTTON_ID = f"game_roles_manage:{SHADOW_MAIN_GUILD_ID}"
+PANEL_PREV_ID = "game_roles_panel_prev"
+PANEL_NEXT_ID = "game_roles_panel_next"
 PANEL_TITLE = "🎮 Game Roles"
 
 
@@ -112,36 +114,45 @@ async def api(session, token, method, path, payload=None):
 
 
 def panel_payload(role_count: int = 0) -> dict:
-    footer = (
-        f"ShadowSyn • {role_count} game{'s' if role_count != 1 else ''} available"
-        if role_count
-        else "ShadowSyn • Pick every game you play"
+    blurb = (
+        "Toggle the games you play — your Discord roles **update instantly**.\n\n"
+        "Click **Manage My Games** to add or remove roles. "
+        "Browse the full list with **Prev / Next** below.\n\n"
+        "Staff roles (**Member**, **Silhouette**, **Shadow**, etc.) are assigned manually."
     )
+    games_value = "*Catalog empty — admin runs `/game_roles_seed`.*"
+    if role_count:
+        games_value = f"**{role_count}** games in catalog · sorted A → Z"
     return {
         "embeds": [{
             "title": PANEL_TITLE,
-            "description": (
-                "Pick every game you play — your Discord roles **sync instantly**.\n\n"
-                "**How it works**\n"
-                "1. Click **Choose Games** below\n"
-                "2. Select all games you want (pre-filled with your current picks)\n"
-                "3. Submit — added and removed automatically\n\n"
-                "Staff roles (**Member**, **Silhouette**, **Shadow**, etc.) are assigned "
-                "manually by admins and are not listed here."
-            ),
+            "description": blurb,
             "color": THEME_PRIMARY,
-            "footer": {"text": footer},
+            "fields": [
+                {"name": "📋 Games", "value": games_value, "inline": False},
+                {"name": "\u200b", "value": "**Page 1** of **1**", "inline": False},
+            ],
+            "footer": {"text": "Sorted A → Z · Click Manage My Games to toggle yours"},
         }],
-        "components": [{
-            "type": 1,
-            "components": [{
-                "type": 2,
-                "style": 1,
-                "label": "Choose Games",
-                "emoji": {"name": "🎮"},
-                "custom_id": OPEN_BUTTON_ID,
-            }],
-        }],
+        "components": [
+            {
+                "type": 1,
+                "components": [{
+                    "type": 2,
+                    "style": 1,
+                    "label": "Manage My Games",
+                    "emoji": {"name": "🎮"},
+                    "custom_id": OPEN_BUTTON_ID,
+                }],
+            },
+            {
+                "type": 1,
+                "components": [
+                    {"type": 2, "style": 2, "label": "Prev", "emoji": {"name": "◀"}, "custom_id": PANEL_PREV_ID, "disabled": True},
+                    {"type": 2, "style": 2, "label": "Next", "emoji": {"name": "▶"}, "custom_id": PANEL_NEXT_ID, "disabled": True},
+                ],
+            },
+        ],
     }
 
 
