@@ -25,10 +25,12 @@ SCOINS_STORE = PERSIST_ROOT / "scoins.json"
 META_STORE = PERSIST_ROOT / "economy_meta.json"
 REDEMPTIONS_STORE = PERSIST_ROOT / "redemptions.json"
 BUYINS_STORE = PERSIST_ROOT / "buyins.json"
+CASINO_PANELS_STORE = PERSIST_ROOT / "casino_panels.json"
 
 scoins_db: dict = {}
 redemptions_db: dict = {"requests": []}
 buyins_db: dict = {"requests": []}
+panels_db: dict = {"panels": {}}
 
 
 def _atomic_write(file_path: Path, data) -> None:
@@ -107,6 +109,7 @@ def migrate_economy() -> None:
 def load_scoins() -> None:
     global scoins_db, redemptions_db, buyins_db
     migrate_economy()
+    _load_panels()
     if SCOINS_STORE.exists():
         try:
             scoins_db = json.loads(SCOINS_STORE.read_text(encoding="utf-8"))
@@ -147,7 +150,99 @@ def record_stat(user_id: str, key: str, amount: int = 1) -> None:
     row = _ensure_user(user_id)
     stats = row.setdefault("stats", {})
     stats[key] = stats.get(key, 0) + amount
+    if key == "total_won" and amount > stats.get("best_win", 0):
+        stats["best_win"] = amount
     _save_scoins()
+
+
+def _load_panels() -> None:
+    global panels_db
+    if CASINO_PANELS_STORE.exists():
+        try:
+            loaded = json.loads(CASINO_PANELS_STORE.read_text(encoding="utf-8"))
+            panels_db = loaded if isinstance(loaded, dict) else {"panels": {}}
+        except Exception:
+            panels_db = {"panels": {}}
+    else:
+        panels_db = {"panels": {}}
+    panels_db.setdefault("panels", {})
+
+
+def _save_panels() -> None:
+    _atomic_write(CASINO_PANELS_STORE, panels_db)
+
+
+def get_panel_id(guild_id: int | str) -> int | None:
+    raw = panels_db.get("panels", {}).get(str(guild_id))
+    try:
+        return int(raw) if raw else None
+    except (TypeError, ValueError):
+        return None
+
+
+def set_panel_id(guild_id: int | str, message_id: int) -> None:
+    panels_db.setdefault("panels", {})[str(guild_id)] = message_id
+    _save_panels()
+
+
+def clear_panel_id(guild_id: int | str) -> None:
+    panels_db.get("panels", {}).pop(str(guild_id), None)
+    _save_panels()
+
+
+def player_stats(user_id: str) -> dict:
+    row = _ensure_user(user_id)
+    stats = row.get("stats", {})
+    total_won = int(stats.get("total_won", 0))
+    total_lost = int(stats.get("total_lost", 0))
+    blackjack = int(stats.get("blackjack_hands", 0))
+    roulette = int(stats.get("roulette_spins", 0))
+    vault = int(stats.get("vault_heists", 0))
+    return {
+        "balance": int(row.get("balance", 0)),
+        "total_won": total_won,
+        "total_lost": total_lost,
+        "net": total_won - total_lost,
+        "blackjack_hands": blackjack,
+        "roulette_spins": roulette,
+        "vault_heists": vault,
+        "games_played": blackjack + roulette + vault,
+        "best_win": int(stats.get("best_win", 0)),
+    }
+
+
+def _metric_score(data: dict, metric: str) -> int:
+    stats = data.get("stats", {})
+    if metric == "balance":
+        return int(data.get("balance", 0))
+    if metric == "total_won":
+        return int(stats.get("total_won", 0))
+    if metric == "net_profit":
+        return int(stats.get("total_won", 0)) - int(stats.get("total_lost", 0))
+    if metric == "activity":
+        return (
+            int(stats.get("blackjack_hands", 0))
+            + int(stats.get("roulette_spins", 0))
+            + int(stats.get("vault_heists", 0))
+        )
+    return 0
+
+
+def top_by_metric(metric: str, limit: int = 10) -> list[tuple[str, int]]:
+    ranked = sorted(
+        scoins_db.items(),
+        key=lambda item: _metric_score(item[1], metric),
+        reverse=True,
+    )
+    out: list[tuple[str, int]] = []
+    for uid, data in ranked:
+        val = _metric_score(data, metric)
+        if val <= 0 and metric != "balance":
+            continue
+        out.append((uid, val))
+        if len(out) >= limit:
+            break
+    return out
 
 
 def claim_status(user_id: str) -> tuple[bool, int]:

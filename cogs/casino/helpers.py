@@ -214,3 +214,19 @@ async def deny_if_not_gambler(interaction: discord.Interaction) -> bool:
         )
         return True
     return False
+
+
+async def open_gamble_hub(interaction: discord.Interaction) -> bool:
+    """Open ephemeral gamble hub. Returns True if denied."""
+    if await deny_if_wrong_channel(interaction):
+        return True
+    if await deny_if_not_gambler(interaction):
+        return True
+    from .views import GambleHubView, build_gamble_hub_embed
+
+    await interaction.response.send_message(
+        embed=build_gamble_hub_embed(interaction.user),
+        view=GambleHubView(interaction.user),
+        ephemeral=True,
+    )
+    return False

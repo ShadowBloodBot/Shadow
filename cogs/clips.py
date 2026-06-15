@@ -52,6 +52,7 @@ HOF_THREAD_NAME = "🏛️ Hall of Fame"
 MEDAL_API_KEY = os.getenv("MEDAL_API_KEY")
 
 UA_HEADERS = {"User-Agent": "ShadowSyn/1.0 (+https://medal.tv)"}
+METADATA_TIMEOUT = aiohttp.ClientTimeout(total=8)
 
 MEDAL_HOST_RE = re.compile(r"^https?://(?:www\.)?medal\.tv/", re.I)
 MEDAL_CLIP_PATH_RE = re.compile(
@@ -412,17 +413,6 @@ class ClipUrlModal(Modal):
         await self.cog.publish_clip(interaction, url)
 
 
-class ClipVoteView(View):
-    def __init__(self, message_id: int, count: int = 0):
-        super().__init__(timeout=None)
-        self.add_item(Button(
-            label=str(count) if count else "\u200b",
-            emoji="🔥",
-            style=ButtonStyle.secondary,
-            custom_id=f"clip_fire_{message_id}",
-        ))
-
-
 # ==============================================================================
 # CORE COG
 # ==============================================================================
@@ -609,14 +599,7 @@ class ClipsCog(commands.Cog):
     async def on_ready(self):
         try:
             self.bot.add_view(SubmitClipPanelView())
-            restored = 0
-            for mid, info in self.data.get("clips", {}).items():
-                try:
-                    self.bot.add_view(ClipVoteView(int(mid), len(info.get("voters", []))))
-                    restored += 1
-                except Exception as e:
-                    logger.error(f"Failed to restore vote view for clip {mid}: {e}")
-            logger.info(f"Clips persistent views restored (panel + {restored} vote views).")
+            logger.info("Clips persistent views restored (submit panel).")
         except Exception as e:
             logger.error(f"Failed to restore clip views on_ready: {e}")
 
@@ -637,10 +620,6 @@ class ClipsCog(commands.Cog):
                 logger.error(f"Failed to open submit flow: {e}")
             return
 
-        if custom_id.startswith("clip_fire_"):
-            mid = custom_id.replace("clip_fire_", "")
-            await self._handle_vote(interaction, mid)
-
     # --------------------------------------------------------------------------
     # METADATA
     # --------------------------------------------------------------------------
@@ -652,7 +631,7 @@ class ClipsCog(commands.Cog):
         session = await self._get_session()
         try:
             oembed = f"https://www.youtube.com/oembed?url={quote(url, safe='')}&format=json"
-            async with session.get(oembed, headers=UA_HEADERS, timeout=15) as resp:
+            async with session.get(oembed, headers=UA_HEADERS, timeout=METADATA_TIMEOUT) as resp:
                 if resp.status == 200:
                     data = await resp.json(content_type=None)
                     title = data.get("title")
@@ -666,12 +645,34 @@ class ClipsCog(commands.Cog):
         session = await self._get_session()
         try:
             api_url = f"https://medal.tv/api/content/{content_id}"
-            async with session.get(api_url, headers=UA_HEADERS, timeout=15) as resp:
+            async with session.get(api_url, headers=UA_HEADERS, timeout=METADATA_TIMEOUT) as resp:
                 if resp.status == 200:
                     return await resp.json(content_type=None)
         except Exception as e:
             logger.warning(f"Medal API fetch failed ({content_id}): {e}")
         return None
+
+    def _clean_medal_title(self, title: str | None) -> str | None:
+        if not title:
+            return None
+        cleaned = re.sub(
+            r"\s*[-|]\s*(Clipped\s+.+?\s+with\s+)?Medal\.tv\s*$", "", title, flags=re.I
+        ).strip()
+        cleaned = re.sub(r"&amp;", "&", cleaned)
+        if any(marker in cleaned.lower() for marker in GENERIC_MEDAL_TITLE_MARKERS):
+            return None
+        return cleaned or None
+
+    async def _fetch_medal_link_metadata(self, url: str) -> tuple[str, str | None]:
+        """Fast Medal lookup for link posts — API only, no HTML scrape."""
+        content_id = _medal_content_id(_normalize_clip_url(url))
+        if not content_id:
+            return "Medal Clip", None
+        api_data = await self._fetch_medal_api(content_id)
+        if not api_data:
+            return "Medal Clip", None
+        title, thumbnail, _ = _parse_medal_api_payload(api_data)
+        return self._clean_medal_title(title) or "Medal Clip", thumbnail
 
     async def _fetch_medal_metadata(self, url: str) -> tuple[str, str | None, list[str]]:
         """Returns (title, thumbnail, video_url_candidates). API-first using the clip id in the URL."""
@@ -729,12 +730,26 @@ class ClipsCog(commands.Cog):
                 logger.warning(f"Medal developer search fallback failed: {e}")
 
         if title:
-            title = re.sub(r"\s*[-|]\s*(Clipped\s+.+?\s+with\s+)?Medal\.tv\s*$", "", title, flags=re.I).strip()
-            title = re.sub(r"&amp;", "&", title)
-            if any(marker in title.lower() for marker in GENERIC_MEDAL_TITLE_MARKERS):
-                title = None
+            title = self._clean_medal_title(title)
 
         return title or "Untitled Clip", thumbnail, video_urls
+
+    async def _create_banter_thread(
+        self,
+        msg: discord.Message,
+        author: discord.User | discord.Member,
+        title: str,
+    ) -> None:
+        try:
+            await msg.create_thread(
+                name=_thread_name(author, title),
+                auto_archive_duration=10080,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to create banter thread for clip {msg.id}: {e}")
+
+    def _schedule_ingest_panel_bump(self, channel: discord.TextChannel) -> None:
+        asyncio.create_task(self._refresh_ingest_panel(channel))
 
     # --------------------------------------------------------------------------
     # GALLERY POST
@@ -797,26 +812,9 @@ class ClipsCog(commands.Cog):
                     pass
             return None
 
-        vote_view = ClipVoteView(msg.id, 0)
-        try:
-            # Let Discord attach the native link preview before we edit on components.
-            if content and embed is None and file is None:
-                await asyncio.sleep(0.75)
-            await msg.edit(view=vote_view)
-            self.bot.add_view(vote_view)
-        except Exception as e:
-            logger.error(f"Failed to attach vote view to clip {msg.id}: {e}")
-
-        try:
-            await msg.create_thread(
-                name=_thread_name(author, title),
-                auto_archive_duration=10080,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to create banter thread for clip {msg.id}: {e}")
+        asyncio.create_task(self._create_banter_thread(msg, author, title))
 
         self.data["clips"][str(msg.id)] = {
-            "voters": [],
             "title": title,
             "url": url,
             "author_id": author.id,
@@ -825,19 +823,26 @@ class ClipsCog(commands.Cog):
         }
         self._save()
 
-        try:
-            await self._refresh_ingest_panel(channel)
-        except Exception as e:
-            logger.warning(f"Ingest panel refresh after clip post failed: {e}")
+        self._schedule_ingest_panel_bump(channel)
 
         await self._flow_cleanup(
             author.id,
             dm_channel=reply_channel if isinstance(reply_channel, discord.DMChannel) else None,
             user_message=cleanup_user_message,
         )
+        if reply_interaction:
+            try:
+                await reply_interaction.followup.send(
+                    f"✅ Posted to {channel.mention}",
+                    ephemeral=True,
+                    delete_after=8,
+                )
+            except Exception:
+                pass
         return msg
 
     async def publish_clip(self, interaction: discord.Interaction, url: str):
+        user = interaction.user
         gid = user.guild.id if isinstance(user, discord.Member) and user.guild else SHADOW_MAIN_GUILD_ID
         channel = await self._clips_channel(guild_id=gid)
         if channel is None:
@@ -861,7 +866,7 @@ class ClipsCog(commands.Cog):
             )
             return
 
-        title, thumbnail, _video_urls = await self._fetch_medal_metadata(url)
+        title, thumbnail = await self._fetch_medal_link_metadata(url)
         # URL only — custom embeds block Discord's native Medal/YouTube video unfurl.
         await self._finalize_clip_post(
             channel,
@@ -882,7 +887,7 @@ class ClipsCog(commands.Cog):
         *,
         user_message: discord.Message | None = None,
     ):
-        gid = user.guild.id if isinstance(user, discord.Member) and user.guild else SHADOW_MAIN_GUILD_ID
+        gid = author.guild.id if isinstance(author, discord.Member) and author.guild else SHADOW_MAIN_GUILD_ID
         channel = await self._clips_channel(guild_id=gid)
         if channel is None:
             await reply_channel.send("❌ Clips channel is unavailable. Tell an admin.")
@@ -960,45 +965,6 @@ class ClipsCog(commands.Cog):
         except Exception as e:
             logger.error(f"Clip upload failed for {message.author.id}: {e}")
             await message.channel.send("❌ Upload failed.", delete_after=8)
-
-    # --------------------------------------------------------------------------
-    # VOTING
-    # --------------------------------------------------------------------------
-    async def _handle_vote(self, interaction: discord.Interaction, mid: str):
-        try:
-            await interaction.response.defer(ephemeral=True)
-        except Exception:
-            pass
-
-        clip = self.data["clips"].get(mid)
-        if clip is None:
-            clip = {
-                "voters": [],
-                "title": None,
-                "url": None,
-                "author_id": None,
-                "thumbnail": None,
-            }
-            self.data["clips"][mid] = clip
-
-        voters = clip.setdefault("voters", [])
-        uid = interaction.user.id
-        if uid in voters:
-            voters.remove(uid)
-        else:
-            voters.append(uid)
-        count = len(voters)
-        self._save()
-
-        try:
-            await interaction.message.edit(view=ClipVoteView(int(mid), count))
-        except Exception as e:
-            logger.error(f"Failed to update vote view for clip {mid}: {e}")
-
-        try:
-            await interaction.followup.send(f"🔥 {count}", ephemeral=True, delete_after=2)
-        except Exception:
-            pass
 
     # --------------------------------------------------------------------------
     # INGEST PANEL

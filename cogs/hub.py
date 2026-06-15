@@ -293,8 +293,8 @@ class HubCog(commands.Cog):
         embed.add_field(
             name="🎰 Casino",
             value=(
-                f"`/gamble` in <#{ch_id(gid, 'casino')}> — Blackjack, Roulette, Vault Heist. "
-                "Shared wallet across ShadowMain and ShadowBackup."
+                f"`/gamble` or the pinned floor panel in <#{ch_id(gid, 'casino')}> — "
+                "Blackjack, Roulette, Vault Heist. Shared wallet across ShadowMain and ShadowBackup."
             ),
             inline=False,
         )
@@ -321,8 +321,8 @@ class HubCog(commands.Cog):
             embed.add_field(
                 name="🛠️ Admin",
                 value=(
-                    "`/hub_deploy` · `/clips_deploy` · `/steam_codes_deploy` · `/role_button` · "
-                    "`/send_custom` · `/edit_custom` · `/morehaste` · `/steam`"
+                    "`/hub_deploy` · `/clips_deploy` · `/steam_codes_deploy` · `/casino_deploy` · "
+                    "`/role_button` · `/send_custom` · `/edit_custom` · `/morehaste` · `/steam`"
                 ),
                 inline=False,
             )

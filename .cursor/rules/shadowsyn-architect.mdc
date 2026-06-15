@@ -57,7 +57,9 @@ When delivering new or rewritten Python files:
 
 ## Project Context
 
-This is **Shadow**, a Discord bot for a private gaming community (Quinfall MMO guild), deployed **active-active** on **ShadowMain** and **ShadowBackup**. See `.cursor/rules/shadow-dual-guild.mdc` — Backup must identically mirror Main for all Discord and bot work.
+This is **Shadow**, a Discord bot for **ShadowSyn** — a private **multi-game** gaming community (not a single-game guild brand), deployed **active-active** on **ShadowMain** and **ShadowBackup**. See `.cursor/rules/shadow-dual-guild.mdc` — Backup must identically mirror Main for all Discord and bot work.
+
+**Community identity:** ShadowSyn plays many games over time (Arma, SAND, Rust, WoW, Dune, etc.). Quinfall-specific features (war signup, kill tracker) exist because the group played Quinfall — **Quinfall is not the server brand**. User-facing copy must not describe ShadowSyn as "a Quinfall guild" unless the text is explicitly about a Quinfall feature.
 
 **Stack:** py-cord (git branch), Python 3.11, deployed to Railway with Docker. State persists to a `/data` volume via JSON files using atomic writes (write to `.tmp` then rename). There is a Railway-specific IPv4 socket patch in `bot.py` for voice gateway stability.
 

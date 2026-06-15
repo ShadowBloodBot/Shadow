@@ -2,13 +2,16 @@
 
 import discord
 from discord import ButtonStyle
-from discord.ui import View
+from discord.ui import Button, Select, View
 
 from .buyin import BuyInTierSelect, paypal_tier_url
 from .constants import (
     BUYIN_PAYMENT_URL,
     BUYIN_TIERS,
+    CASINO_FLOOR_TITLE,
+    CASINO_OPEN_HUB_ID,
     DAILY_CLAIM_AMOUNT,
+    LEADERBOARD_METRICS,
     MEMBER_TENURE_DAYS,
     REDEEM_MAX_PER_MONTH,
     SHOP_MIN_COINS,
@@ -17,7 +20,13 @@ from .constants import (
     THEME_PRIMARY,
     THEME_WIN,
 )
-from .economy import claim_status, get_balance, process_daily_claim, top_balances
+from .economy import (
+    claim_status,
+    get_balance,
+    player_stats,
+    process_daily_claim,
+    top_by_metric,
+)
 from .games.blackjack import BlackjackView
 from .games.roulette import RouletteLobbyView
 from .games.vault_heist import VaultHeistSetupView
@@ -107,9 +116,138 @@ def build_gamble_hub_embed(user: discord.User) -> discord.Embed:
         ),
         inline=True,
     )
-    embed.set_footer(text="/gamble opens this hub · Refresh updates balance")
+    embed.set_footer(
+        text="/gamble or the pinned floor panel · Refresh updates balance"
+    )
     embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
     return embed
+
+
+def build_casino_floor_embed(guild_id: int | None = None) -> discord.Embed:
+    casino_mention = casino_channel_mention(guild_id)
+    embed = discord.Embed(
+        title=CASINO_FLOOR_TITLE,
+        description=(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "**Season 1 VIP Casino** · Shared wallet across ShadowMain & ShadowBackup\n"
+            f"📍 {casino_mention}\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🃏 **Blackjack** · 🎡 **Roulette** · 🏦 **Vault Heist**\n"
+            "Daily stipend · PayPal buy-in · Steam redeem shop\n\n"
+            "Hit **Open Hub** for your private casino panel — games, wallet, stats & leaderboard."
+        ),
+        color=THEME_PRIMARY,
+    )
+    embed.set_footer(text="ShadowSyn VIP Casino · Member clearance required")
+    return embed
+
+
+def build_player_stats_embed(user: discord.User) -> discord.Embed:
+    stats = player_stats(str(user.id))
+    net = stats["net"]
+    net_line = (
+        f"**+{net:,}** 🪙 ({coins_to_usd(net)}) profit"
+        if net > 0
+        else f"**{net:,}** 🪙 ({coins_to_usd(abs(net))}) loss"
+        if net < 0
+        else "**Even** — break even"
+    )
+    best = stats["best_win"]
+    best_line = (
+        f"**{best:,}** 🪙 ({coins_to_usd(best)})"
+        if best > 0
+        else "_No recorded wins yet_"
+    )
+    embed = discord.Embed(
+        title="📊 My Casino Stats",
+        description=(
+            f"Balance: {format_wallet(stats['balance'])}\n"
+            f"Net P/L: {net_line}\n\n"
+            f"🃏 Blackjack hands: **{stats['blackjack_hands']:,}**\n"
+            f"🎡 Roulette spins: **{stats['roulette_spins']:,}**\n"
+            f"🏦 Vault heists: **{stats['vault_heists']:,}**\n"
+            f"🎲 Total games: **{stats['games_played']:,}**\n\n"
+            f"🏆 Biggest win: {best_line}\n\n"
+            f"{progress_to_shop(stats['balance'])}"
+        ),
+        color=THEME_GOLD,
+    )
+    embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+    return embed
+
+
+def _format_leaderboard_value(metric: str, value: int) -> str:
+    if metric == "balance":
+        return f"{value:,} 🪙 ({coins_to_usd(value)})"
+    if metric in ("total_won", "net_profit"):
+        sign = "+" if value > 0 else ""
+        return f"{sign}{value:,} 🪙 ({coins_to_usd(abs(value))})"
+    return f"{value:,} games"
+
+
+def build_leaderboard_embed(metric: str = "balance") -> discord.Embed:
+    label = LEADERBOARD_METRICS.get(metric, "Leaderboard")
+    rows = top_by_metric(metric, 10)
+    if not rows:
+        desc = "No stats recorded yet."
+    else:
+        lines = [
+            f"**{i}.** <@{uid}> — {_format_leaderboard_value(metric, val)}"
+            for i, (uid, val) in enumerate(rows, 1)
+        ]
+        desc = "\n".join(lines)
+    embed = discord.Embed(
+        title=f"🏆 {label}",
+        description=desc,
+        color=THEME_GOLD,
+    )
+    embed.set_footer(text="Use the menu below to switch ranking")
+    return embed
+
+
+class LeaderboardMetricSelect(Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label=label, value=key, default=(key == "balance"))
+            for key, label in LEADERBOARD_METRICS.items()
+        ]
+        super().__init__(
+            placeholder="Switch leaderboard…",
+            options=options,
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        metric = self.values[0]
+        for opt in self.options:
+            opt.default = opt.value == metric
+        await interaction.response.edit_message(
+            embed=build_leaderboard_embed(metric),
+            view=LeaderboardView(metric),
+        )
+
+
+class LeaderboardView(View):
+    def __init__(self, metric: str = "balance"):
+        super().__init__(timeout=120)
+        self.metric = metric
+        self.add_item(LeaderboardMetricSelect())
+
+
+class CasinoFloorView(View):
+    """Persistent floor panel — Open Hub handled in CasinoCog.on_interaction."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(
+            Button(
+                label="Open Hub",
+                style=ButtonStyle.primary,
+                emoji="🎰",
+                custom_id=CASINO_OPEN_HUB_ID,
+            )
+        )
 
 
 class GambleHubView(View):
@@ -241,23 +379,20 @@ class GambleHubView(View):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @discord.ui.button(label="My Stats", style=ButtonStyle.secondary, emoji="📊", row=3)
+    async def my_stats(self, button, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            embed=build_player_stats_embed(interaction.user),
+            ephemeral=True,
+        )
+
     @discord.ui.button(label="Leaderboard", style=ButtonStyle.secondary, emoji="🏆", row=3)
     async def leaderboard(self, button, interaction: discord.Interaction):
-        rows = top_balances(10)
-        if not rows:
-            desc = "No wagers recorded yet."
-        else:
-            lines = [
-                f"**{i}.** <@{uid}> — {bal:,} 🪙 ({coins_to_usd(bal)})"
-                for i, (uid, bal) in enumerate(rows, 1)
-            ]
-            desc = "\n".join(lines)
-        embed = discord.Embed(
-            title="🏆 High-Roller Leaderboard",
-            description=desc,
-            color=THEME_GOLD,
+        await interaction.response.send_message(
+            embed=build_leaderboard_embed("balance"),
+            view=LeaderboardView("balance"),
+            ephemeral=True,
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="Refresh", style=ButtonStyle.secondary, emoji="🔄", row=3)
     async def refresh(self, button, interaction: discord.Interaction):

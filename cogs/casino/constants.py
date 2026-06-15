@@ -63,3 +63,14 @@ SUITS = ["♠", "♥", "♦", "♣"]
 RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
 
 ROULETTE_RED = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
+
+# ── Casino floor panel ──
+CASINO_FLOOR_TITLE = "ShadowSyn VIP Casino Floor"
+CASINO_OPEN_HUB_ID = "casino_open_hub"
+
+LEADERBOARD_METRICS = {
+    "balance": "High Rollers (Balance)",
+    "total_won": "Biggest Winners",
+    "net_profit": "Net Profit",
+    "activity": "Most Active",
+}
