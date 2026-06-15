@@ -41,6 +41,7 @@ CHANNEL_KEYS = (
     "steam_adventure_coop",
     "vc_category",
     "tts_history",
+    "game_roles",
 )
 
 ROLE_KEYS = ("minion", "member", "admin_shadow")
@@ -63,6 +64,7 @@ _SHADOW_MAIN_CHANNELS: dict[str, int] = {
     "steam_adventure_coop": 1511892213775204393,
     "vc_category": 908659586536468542,
     "tts_history": 1400048671973703690,
+    "game_roles": 1516222122211672084,
 }
 
 _SHADOW_MAIN_ROLES: dict[str, int] = {

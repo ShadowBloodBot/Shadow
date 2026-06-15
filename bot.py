@@ -86,6 +86,7 @@ cogs_list = [
     "cogs.admin_secure",
     "cogs.member_backup",
     "cogs.hub",
+    "cogs.game_roles",
     "cogs.sand",
 ]
 
