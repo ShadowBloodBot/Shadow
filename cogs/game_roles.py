@@ -1,5 +1,6 @@
 # cogs/game_roles.py — persistent gaming role self-serve hub (Steam Codes UX)
 
+import asyncio
 import json
 import logging
 import os
@@ -26,6 +27,7 @@ logger = logging.getLogger("ShadowSyn.GameRoles")
 
 THEME_PRIMARY = 0x2B0B35
 PAGE_SIZE = 10
+FLASH_SECONDS = 1.0
 
 PANEL_TITLE = "🎮 Game Roles"
 PANEL_BLURB = (
@@ -111,6 +113,25 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
             return await ctx_or_inter.followup.send(*args, **kwargs)
     except Exception:
         return None
+
+
+async def ephemeral_flash(
+    interaction: discord.Interaction,
+    content: str,
+    *,
+    seconds: float = FLASH_SECONDS,
+) -> None:
+    """Brief ephemeral toast — auto-deletes so the picker stays uncluttered."""
+    try:
+        msg = await interaction.followup.send(content, ephemeral=True, wait=True)
+    except Exception as exc:
+        logger.warning("Ephemeral flash send failed: %s", exc)
+        return
+    try:
+        await asyncio.sleep(seconds)
+        await msg.delete()
+    except Exception:
+        pass
 
 
 def _sorted_catalog(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -482,7 +503,7 @@ class GameRolesCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         member = guild.get_member(member.id) or member
         await self._refresh_manage(interaction, page)
-        await interaction.followup.send(f"✅ {action}", ephemeral=True)
+        await ephemeral_flash(interaction, f"✅ {action}")
 
     async def _refresh_panel_message(
         self,
