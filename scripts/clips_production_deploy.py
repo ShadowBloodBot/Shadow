@@ -16,6 +16,13 @@ import aiohttp
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from cogs.clips import (  # noqa: E402
+    INGEST_PANEL_DESCRIPTION,
+    INGEST_PANEL_TITLE,
+    THEME_PRIMARY,
+    _cached_top_contributor_names,
+    _ingest_panel_footer,
+)
 from cogs.guild_registry import (  # noqa: E402
     SHADOW_BACKUP_GUILD_ID,
     SHADOW_MAIN_GUILD_ID,
@@ -27,13 +34,6 @@ ENV_FILE = ROOT / ".env.railway"
 PROJECT_ID = "b147a1c2-7073-4ba9-be34-14f30b200bb4"
 SERVICE_NAME = "Shadow"
 SHADOW_BOT_ID = "1401788343825727618"
-THEME_PRIMARY = 0x2B0B35
-INGEST_PANEL_TITLE = "🎬 Clips"
-INGEST_PANEL_DESCRIPTION = (
-    "Hit **Submit Clip** — paste a Medal / YouTube link or upload a file.\n"
-    "Each clip gets its own thread."
-)
-INGEST_PANEL_FOOTER_PREFIX = "ShadowSyn Clips · "
 PERSIST_LOCAL = ROOT / "data" / "clips_repo.json"
 HOF_THREAD_NAME = "🏛️ Hall of Fame"
 
@@ -233,12 +233,16 @@ async def deploy_panel(session: aiohttp.ClientSession, token: str, channel_id: i
             clips_data = json.loads(PERSIST_LOCAL.read_text(encoding="utf-8"))
         except Exception:
             clips_data = {}
-    total = len(clips_data.get("clips") or {})
     panel_embed = {
         "title": INGEST_PANEL_TITLE,
         "description": INGEST_PANEL_DESCRIPTION,
         "color": THEME_PRIMARY,
-        "footer": {"text": f"{INGEST_PANEL_FOOTER_PREFIX}{total:,} clips shared"},
+        "footer": {
+            "text": _ingest_panel_footer(
+                clips_data,
+                _cached_top_contributor_names(clips_data) or None,
+            )
+        },
     }
     components = [{
         "type": 1,

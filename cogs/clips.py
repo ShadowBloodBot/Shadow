@@ -127,12 +127,73 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
         return None
 
 
+_CONTRIBUTOR_NAME_MAX = 24
+
+
 def _total_clips(clips_data: dict) -> int:
     return len(clips_data.get("clips") or {})
 
 
-def _ingest_panel_footer(clips_data: dict) -> str:
-    return f"{INGEST_PANEL_FOOTER_PREFIX}{_total_clips(clips_data):,} clips shared"
+def _contributor_counts(clips_data: dict) -> dict[int, int]:
+    counts: dict[int, int] = {}
+    for clip in (clips_data.get("clips") or {}).values():
+        raw_id = clip.get("author_id")
+        if raw_id is None:
+            continue
+        try:
+            author_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        counts[author_id] = counts.get(author_id, 0) + 1
+    return counts
+
+
+def _top_contributor_ids(clips_data: dict) -> list[int]:
+    counts = _contributor_counts(clips_data)
+    if not counts:
+        return []
+    max_count = max(counts.values())
+    return sorted(author_id for author_id, count in counts.items() if count == max_count)
+
+
+def _author_name_from_clips(clips_data: dict, author_id: int) -> str | None:
+    for clip in (clips_data.get("clips") or {}).values():
+        try:
+            if int(clip.get("author_id", 0)) != author_id:
+                continue
+        except (TypeError, ValueError):
+            continue
+        name = clip.get("author_name")
+        if name:
+            return str(name)
+    return None
+
+
+def _truncate_contributor_name(name: str) -> str:
+    name = name.strip()
+    if len(name) <= _CONTRIBUTOR_NAME_MAX:
+        return name
+    return name[: _CONTRIBUTOR_NAME_MAX - 1].rstrip() + "…"
+
+
+def _cached_top_contributor_names(clips_data: dict) -> list[str]:
+    names: list[str] = []
+    for author_id in _top_contributor_ids(clips_data):
+        name = _author_name_from_clips(clips_data, author_id)
+        if name:
+            names.append(_truncate_contributor_name(name))
+    return sorted(names, key=str.casefold)
+
+
+def _ingest_panel_footer(clips_data: dict, contributor_names: list[str] | None = None) -> str:
+    total = _total_clips(clips_data)
+    text = f"{INGEST_PANEL_FOOTER_PREFIX}{total:,} clips shared"
+    if total <= 0 or not contributor_names:
+        return text
+    if len(contributor_names) == 1:
+        return f"{text} [Top Contributor: {contributor_names[0]}]"
+    joined = ", ".join(contributor_names)
+    return f"{text} [Top Contributors: {joined}]"
 
 
 def _medal_path(url: str) -> str:
@@ -827,6 +888,7 @@ class ClipsCog(commands.Cog):
             "title": title,
             "url": url,
             "author_id": author.id,
+            "author_name": getattr(author, "display_name", None) or str(author),
             "thumbnail": thumbnail,
             "source": source,
         }
@@ -978,13 +1040,33 @@ class ClipsCog(commands.Cog):
     # --------------------------------------------------------------------------
     # INGEST PANEL
     # --------------------------------------------------------------------------
-    def _build_ingest_panel_embed(self) -> discord.Embed:
+    async def _resolve_contributor_name(self, author_id: int) -> str:
+        name = _author_name_from_clips(self.data, author_id)
+        if name:
+            return _truncate_contributor_name(name)
+        try:
+            user = await self.bot.fetch_user(author_id)
+            return _truncate_contributor_name(user.display_name or user.name)
+        except Exception:
+            return "Unknown"
+
+    async def _build_ingest_panel_embed(self) -> discord.Embed:
+        contributor_names: list[str] = []
+        for author_id in _top_contributor_ids(self.data):
+            contributor_names.append(await self._resolve_contributor_name(author_id))
+        contributor_names.sort(key=str.casefold)
+
         embed = discord.Embed(
             title=INGEST_PANEL_TITLE,
             description=INGEST_PANEL_DESCRIPTION,
             color=THEME_PRIMARY,
         )
-        embed.set_footer(text=_ingest_panel_footer(self.data))
+        embed.set_footer(
+            text=_ingest_panel_footer(
+                self.data,
+                contributor_names if _total_clips(self.data) > 0 else None,
+            )
+        )
         return embed
 
     async def _delete_ingest_panel(self, channel: discord.TextChannel, message_id: int | str | None):
@@ -1042,7 +1124,7 @@ class ClipsCog(commands.Cog):
 
         view = SubmitClipPanelView()
         try:
-            panel_msg = await channel.send(embed=self._build_ingest_panel_embed(), view=view)
+            panel_msg = await channel.send(embed=await self._build_ingest_panel_embed(), view=view)
             self.bot.add_view(view)
             self._set_panel_id(gid, panel_msg.id)
             self._save()
