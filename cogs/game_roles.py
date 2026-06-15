@@ -413,6 +413,36 @@ class GameRolesCog(commands.Cog):
             return f"**{role.name}** is at or above Minion tier."
         return None
 
+    async def _find_existing_panel(self, channel: discord.abc.Messageable) -> discord.Message | None:
+        """Reuse pinned panel if store has no message id yet."""
+        fetch_channel = channel
+        if hasattr(channel, "pins"):
+            try:
+                pins = await channel.pins()
+                for msg in pins:
+                    if not msg.author or msg.author.id != self.bot.user.id:
+                        continue
+                    for row in msg.components:
+                        for comp in row.children:
+                            cid = getattr(comp, "custom_id", "") or ""
+                            if cid.startswith(OPEN_PREFIX):
+                                return msg
+            except Exception as exc:
+                logger.warning("Could not scan pins for game roles panel: %s", exc)
+        try:
+            if hasattr(fetch_channel, "history"):
+                async for msg in fetch_channel.history(limit=25):
+                    if not msg.author or msg.author.id != self.bot.user.id:
+                        continue
+                    for row in msg.components:
+                        for comp in row.children:
+                            cid = getattr(comp, "custom_id", "") or ""
+                            if cid.startswith(OPEN_PREFIX):
+                                return msg
+        except Exception as exc:
+            logger.warning("Could not scan history for game roles panel: %s", exc)
+        return None
+
     async def _deploy_panel(self, guild: discord.Guild) -> discord.Message:
         channel = await resolve_channel(self.bot, guild.id, "game_roles")
         if channel is None:
@@ -429,11 +459,14 @@ class GameRolesCog(commands.Cog):
         if existing_id:
             try:
                 msg = await channel.fetch_message(int(existing_id))
-                await msg.edit(embed=embed, view=view)
             except Exception:
                 msg = None
-
         if msg is None:
+            msg = await self._find_existing_panel(channel)
+
+        if msg is not None:
+            await msg.edit(embed=embed, view=view)
+        else:
             msg = await channel.send(embed=embed, view=view)
             try:
                 await msg.pin()
