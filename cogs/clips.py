@@ -991,8 +991,42 @@ class ClipsCog(commands.Cog):
         except Exception as e:
             logger.warning(f"Could not delete ingest panel {message_id}: {e}")
 
+    async def _purge_ingest_panels(self, channel: discord.TextChannel) -> None:
+        """Remove every ingest panel in channel (pinned or not)."""
+        removed: set[int] = set()
+        try:
+            pinned = await channel.pins()
+            for msg in pinned:
+                if not msg.embeds or msg.embeds[0].title != INGEST_PANEL_TITLE:
+                    continue
+                if msg.id in removed:
+                    continue
+                try:
+                    await msg.unpin()
+                except Exception:
+                    pass
+                await msg.delete()
+                removed.add(msg.id)
+        except Exception as e:
+            logger.warning(f"Could not scan pins for ingest panels: {e}")
+
+        try:
+            async for msg in channel.history(limit=100):
+                if msg.id in removed:
+                    continue
+                if not msg.embeds or msg.embeds[0].title != INGEST_PANEL_TITLE:
+                    continue
+                try:
+                    await msg.delete()
+                    removed.add(msg.id)
+                except Exception as e:
+                    logger.warning(f"Could not delete ingest panel {msg.id}: {e}")
+        except Exception as e:
+            logger.warning(f"Could not scan history for ingest panels: {e}")
+
     async def _refresh_ingest_panel(self, channel: discord.TextChannel):
         gid = channel.guild.id if channel.guild else SHADOW_MAIN_GUILD_ID
+        await self._purge_ingest_panels(channel)
         await self._delete_ingest_panel(channel, self._panel_id(gid))
 
         view = SubmitClipPanelView()
