@@ -33,6 +33,8 @@ INGEST_PANEL_DESCRIPTION = (
     "Hit **Submit Clip** — paste a Medal / YouTube link or upload a file.\n"
     "Each clip gets its own thread."
 )
+INGEST_PANEL_FOOTER_PREFIX = "ShadowSyn Clips · "
+PERSIST_LOCAL = ROOT / "data" / "clips_repo.json"
 HOF_THREAD_NAME = "🏛️ Hall of Fame"
 
 SEND_MESSAGES = 1 << 11
@@ -225,10 +227,18 @@ async def remove_old_panels(session: aiohttp.ClientSession, token: str, channel_
 
 
 async def deploy_panel(session: aiohttp.ClientSession, token: str, channel_id: int) -> str:
+    clips_data: dict = {}
+    if PERSIST_LOCAL.exists():
+        try:
+            clips_data = json.loads(PERSIST_LOCAL.read_text(encoding="utf-8"))
+        except Exception:
+            clips_data = {}
+    total = len(clips_data.get("clips") or {})
     panel_embed = {
         "title": INGEST_PANEL_TITLE,
         "description": INGEST_PANEL_DESCRIPTION,
         "color": THEME_PRIMARY,
+        "footer": {"text": f"{INGEST_PANEL_FOOTER_PREFIX}{total:,} clips shared"},
     }
     components = [{
         "type": 1,

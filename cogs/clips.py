@@ -47,6 +47,7 @@ INGEST_PANEL_DESCRIPTION = (
     "Hit **Submit Clip** — paste a Medal / YouTube link or upload a file.\n"
     "Each clip gets its own thread."
 )
+INGEST_PANEL_FOOTER_PREFIX = "ShadowSyn Clips · "
 HOF_THREAD_NAME = "🏛️ Hall of Fame"
 
 MEDAL_API_KEY = os.getenv("MEDAL_API_KEY")
@@ -124,6 +125,14 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
             return await ctx_or_inter.followup.send(*args, **kwargs)
     except Exception:
         return None
+
+
+def _total_clips(clips_data: dict) -> int:
+    return len(clips_data.get("clips") or {})
+
+
+def _ingest_panel_footer(clips_data: dict) -> str:
+    return f"{INGEST_PANEL_FOOTER_PREFIX}{_total_clips(clips_data):,} clips shared"
 
 
 def _medal_path(url: str) -> str:
@@ -970,11 +979,13 @@ class ClipsCog(commands.Cog):
     # INGEST PANEL
     # --------------------------------------------------------------------------
     def _build_ingest_panel_embed(self) -> discord.Embed:
-        return discord.Embed(
+        embed = discord.Embed(
             title=INGEST_PANEL_TITLE,
             description=INGEST_PANEL_DESCRIPTION,
             color=THEME_PRIMARY,
         )
+        embed.set_footer(text=_ingest_panel_footer(self.data))
+        return embed
 
     async def _delete_ingest_panel(self, channel: discord.TextChannel, message_id: int | str | None):
         if not message_id:
