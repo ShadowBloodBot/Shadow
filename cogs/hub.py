@@ -321,7 +321,7 @@ class HubCog(commands.Cog):
             embed.add_field(
                 name="🛠️ Admin",
                 value=(
-                    "`/hub_deploy` · `/clips_deploy` · `/steam_codes_deploy` · `/casino_deploy` · "
+                    "`/hub_deploy` · `/welcome_deploy` · `/clips_deploy` · `/steam_codes_deploy` · `/casino_deploy` · "
                     "`/role_button` · `/send_custom` · `/edit_custom` · `/morehaste` · `/steam`"
                 ),
                 inline=False,
