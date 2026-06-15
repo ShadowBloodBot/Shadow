@@ -35,12 +35,12 @@ HUB_TITLE = "Welcome -ShadowSyn-"
 
 
 def _hub_description(guild_id: int) -> str:
-    general = ch_id(guild_id, "general_open")
+    game_roles = ch_id(guild_id, "game_roles")
     steam = ch_id(guild_id, "steam_codes")
     welcome = ch_id(guild_id, "welcome")
     return (
         f"Grab your Starter role **[ Minion ]** so you can see\n"
-        f"<#{general}> & Share your <#{steam}>\n"
+        f"<#{game_roles}> & Share your <#{steam}>\n"
         f"Check out <#{welcome}> for anything else"
     )
 
@@ -84,10 +84,10 @@ class HubPanelView(View):
             custom_id=MINION_BUTTON_ID,
         ))
         self.add_item(Button(
-            label="General-Open",
+            label="Game-Roles",
             style=ButtonStyle.link,
-            emoji="💬",
-            url=channel_url(guild_id, "general_open"),
+            emoji="🎮",
+            url=channel_url(guild_id, "game_roles"),
         ))
         self.add_item(Button(
             label="Steam-Codes",
@@ -159,10 +159,10 @@ class HubCog(commands.Cog):
             logger.error(f"Minion grant failed for {member.id}: {e}")
             return await safe_reply(interaction, "⚠️ Something broke. Try again.", ephemeral=True)
 
-        general = ch_id(guild.id, "general_open")
+        game_roles = ch_id(guild.id, "game_roles")
         await safe_reply(
             interaction,
-            f"👻 You're in. Start with <#{general}>.",
+            f"👻 You're in. Pick your games in <#{game_roles}>.",
             ephemeral=True,
         )
         await self._notify_arrivals(member)
