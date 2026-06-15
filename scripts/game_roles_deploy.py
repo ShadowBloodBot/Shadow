@@ -115,14 +115,13 @@ async def api(session, token, method, path, payload=None):
 
 def panel_payload(role_count: int = 0) -> dict:
     blurb = (
-        "Toggle the games you play — your Discord roles **update instantly**.\n\n"
-        "Click **Manage My Games** to add or remove roles. "
-        "Browse the full list with **Prev / Next** below.\n\n"
-        "Staff roles (**Member**, **Silhouette**, **Shadow**, etc.) are assigned manually."
+        "This is where you grab your **game roles**.\n\n"
+        "Click **Manage My Games** to toggle what you play — "
+        "your roles update instantly. Use **Prev / Next** to browse the list."
     )
-    games_value = "*Catalog empty — admin runs `/game_roles_seed`.*"
+    games_value = "*Nothing here yet — check back soon.*"
     if role_count:
-        games_value = f"**{role_count}** games in catalog · sorted A → Z"
+        games_value = f"**{role_count}** games · sorted A → Z"
     return {
         "embeds": [{
             "title": PANEL_TITLE,
@@ -132,7 +131,7 @@ def panel_payload(role_count: int = 0) -> dict:
                 {"name": "📋 Games", "value": games_value, "inline": False},
                 {"name": "\u200b", "value": "**Page 1** of **1**", "inline": False},
             ],
-            "footer": {"text": "Sorted A → Z · Click Manage My Games to toggle yours"},
+            "footer": {"text": "Sorted A → Z · Manage My Games to set yours"},
         }],
         "components": [
             {

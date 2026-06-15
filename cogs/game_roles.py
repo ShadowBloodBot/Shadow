@@ -31,10 +31,9 @@ FLASH_SECONDS = 1.0
 
 PANEL_TITLE = "🎮 Game Roles"
 PANEL_BLURB = (
-    "Toggle the games you play — your Discord roles **update instantly**.\n\n"
-    "Click **Manage My Games** to add or remove roles. "
-    "Browse the full list with **Prev / Next** below.\n\n"
-    "Staff roles (**Member**, **Silhouette**, **Shadow**, etc.) are assigned manually."
+    "This is where you grab your **game roles**.\n\n"
+    "Click **Manage My Games** to toggle what you play — "
+    "your roles update instantly. Use **Prev / Next** to browse the list."
 )
 
 MANAGE_PREFIX = "game_roles_manage:"
@@ -71,6 +70,10 @@ DENYLIST_NAMES = frozenset({
     "server booster",
     "t&l leadership",
     "t&l temp",
+    "guest",
+    "high t",
+    "annoying",
+    "bloods cum slut",
 })
 
 DEFAULT_GUILD_CFG: dict[str, Any] = {
@@ -341,7 +344,7 @@ class GameRolesCog(commands.Cog):
         if total == 0:
             embed.add_field(
                 name="📋 Games",
-                value="*Catalog empty — admin runs `/game_roles_seed`.*",
+                value="*Nothing here yet — check back soon.*",
                 inline=False,
             )
         else:
@@ -361,7 +364,7 @@ class GameRolesCog(commands.Cog):
                 inline=False,
             )
 
-        embed.set_footer(text="Sorted A → Z · Click Manage My Games to toggle yours")
+        embed.set_footer(text="Sorted A → Z · Manage My Games to set yours")
         return embed
 
     def _can_manage_role(
@@ -411,7 +414,7 @@ class GameRolesCog(commands.Cog):
         if not catalog:
             return await safe_reply(
                 interaction,
-                "⚠️ Game catalog is empty. An admin needs to run `/game_roles_seed` first.",
+                "⚠️ No game roles are available right now. Check back later.",
                 ephemeral=True,
             )
 
