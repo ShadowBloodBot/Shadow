@@ -45,7 +45,7 @@ OWNER_ID = 482463400929263627
 INGEST_PANEL_TITLE = "🎬 Clips"
 INGEST_PANEL_DESCRIPTION = (
     "Hit **Submit Clip** — paste a Medal / YouTube link or upload a file.\n"
-    "Each clip gets a thread. Drop a 🔥 on the ones that deserve it."
+    "Each clip gets its own thread."
 )
 HOF_THREAD_NAME = "🏛️ Hall of Fame"
 
