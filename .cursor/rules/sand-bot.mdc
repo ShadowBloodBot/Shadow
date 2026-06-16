@@ -27,5 +27,6 @@ Composer may plan, triage, and explain — do not implement SAND edits in Compos
 
 ## Data
 
-- Pristine turrets are loot (Rare+ Weapon Crates / Forts); wiki has no Worn→Pristine craft recipe
-- Show ammo craft materials per calibre until in-game upgrade costs are verified and added to `sand_knowledge.json`
+- Pristine upgrade costs: `data/sand_pristine_recipes.json` (in-game workshop UI — not on wiki)
+- Wiki scrape: `data/sand_knowledge.json` via `scripts/scrape_sand_wiki.py`
+- Show full upgrade material list per calibre; requires matching **Worn** turret at **S&H Armaments Workshop**

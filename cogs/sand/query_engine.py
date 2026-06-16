@@ -9,6 +9,8 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
+from .pristine_data import merge_pristine_into_knowledge
+
 try:
     from rapidfuzz import fuzz, process
 
@@ -38,7 +40,8 @@ SUGGEST_THRESHOLD = 40
 def load_knowledge(path: Path | str | None = None) -> dict:
     p = Path(path) if path else DEFAULT_KNOWLEDGE_PATH
     with open(p, encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+    return merge_pristine_into_knowledge(data)
 
 
 def wiki_footer(knowledge: dict) -> str:
@@ -169,7 +172,14 @@ def detect_intent(query: str, knowledge: dict) -> str:
 
 
 def _find_recipe_for(name: str, knowledge: dict) -> dict | None:
-    target = _normalize(name)
+    raw_target = _normalize(name)
+
+    for recipe in knowledge.get("recipes", []):
+        out = recipe.get("output", "")
+        if _normalize(out) == raw_target or _normalize(_canonical_ingredient(out)) == raw_target:
+            return recipe
+
+    target = raw_target
     aliases = knowledge.get("item_aliases", {})
     for canonical, names in aliases.items():
         if target == _normalize(canonical) or any(target == _normalize(n) for n in names):
@@ -434,17 +444,10 @@ def format_materials_clean(rows: list[dict]) -> str:
 def _material_rows_for_item(name: str, knowledge: dict) -> list[dict]:
     recipe = _find_recipe_for(name, knowledge)
     if recipe and recipe.get("inputs"):
+        if recipe.get("source") == "in_game_ui":
+            return [{"item": inp["item"], "qty": inp["qty"]} for inp in recipe["inputs"]]
         totals = aggregate_craft_materials(name, knowledge)
         return [{"item": mat, "qty": qty} for mat, qty in sorted(totals.items())]
-
-    ammo = PRISTINE_AMMO.get(name)
-    if ammo:
-        ammo_recipe = _find_recipe_for(ammo, knowledge)
-        if ammo_recipe and ammo_recipe.get("inputs"):
-            return [
-                {"item": inp["item"], "qty": inp["qty"]}
-                for inp in ammo_recipe["inputs"]
-            ]
     return []
 
 
@@ -456,12 +459,12 @@ def format_pristine_single(item: dict, knowledge: dict) -> dict[str, Any]:
     material_rows = _material_rows_for_item(name, knowledge)
 
     if recipe and recipe.get("inputs"):
-        subtitle = f"Craft @ **{recipe.get('workbench', 'Workbench')}**"
+        wb = recipe.get("workbench", "S&H Armaments Workshop")
+        subtitle = f"Upgrade @ **{wb}** · requires matching **Worn** turret"
         materials_label = "Materials"
     else:
-        ammo = PRISTINE_AMMO.get(name, "")
         subtitle = f"**Obtain:** {obtain}"
-        materials_label = f"Ammo craft ({ammo})" if ammo else "Materials"
+        materials_label = "Materials"
 
     return {
         "ok": True,
@@ -486,7 +489,9 @@ def format_pristine_answer(knowledge: dict) -> dict[str, Any]:
         name = item.get("name", "")
         cards.append({
             "title": PRISTINE_SHORT_LABEL.get(name, name),
-            "obtain": item.get("where_to_obtain", "Rare+ Weapon Crates"),
+            "obtain": "S&H Armaments Workshop upgrade"
+            if _find_recipe_for(name, knowledge)
+            else item.get("where_to_obtain", "Rare+ Weapon Crates"),
             "material_rows": _material_rows_for_item(name, knowledge),
         })
 

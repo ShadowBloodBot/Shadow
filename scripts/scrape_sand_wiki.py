@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 _SAND_REPO = Path(r"C:\Users\josep\Desktop\Joe\Cursor\sand-raiders-of-sophie\scripts")
 if _SAND_REPO.exists():
     sys.path.insert(0, str(_SAND_REPO))
@@ -21,6 +22,8 @@ try:
     from sand_hardcoded_data import build_hardcoded_knowledge
 except ImportError:
     build_hardcoded_knowledge = None  # type: ignore
+
+from cogs.sand.pristine_data import merge_pristine_into_knowledge
 
 OUTPUT = ROOT / "data" / "sand_knowledge.json"
 WIKI_API = "https://sandgame.wiki/api.php"
@@ -426,6 +429,7 @@ def main() -> int:
     wiki_data = scrape_wiki(full=args.full)
     hardcoded = build_hardcoded_knowledge() if build_hardcoded_knowledge else None
     knowledge = merge_knowledge(wiki_data, hardcoded)
+    knowledge = merge_pristine_into_knowledge(knowledge)
 
     _atomic_write(OUTPUT, knowledge)
     print(f"Saved {OUTPUT}")

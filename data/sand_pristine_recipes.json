@@ -1,0 +1,24 @@
+{
+  "source": "in_game_ui",
+  "verified_at": "2026-06-10",
+  "workbench": "S&H Armaments Workshop",
+  "note": "Consumables from in-game MATERIALS NEEDED panel. Requires matching Worn turret in hangar.",
+  "shared_inputs": [
+    {"item": "Alloy Steel", "qty": 65},
+    {"item": "Fabric", "qty": 2350},
+    {"item": "Leviathan Skin", "qty": 710},
+    {"item": "Metal Rods", "qty": 600},
+    {"item": "Crate of Shells", "qty": 2},
+    {"item": "Threads", "qty": 150},
+    {"item": "Gunpowder", "qty": 1510},
+    {"item": "Black Box", "qty": 2},
+    {"item": "District Officer's Portable Safe", "qty": 2},
+    {"item": "Canned Sea Deer XL", "qty": 2},
+    {"item": "Fabric Scraps", "qty": 300}
+  ],
+  "outputs": [
+    "40mm Autocannon (Pristine)",
+    "80mm Naval Cannon (Pristine)",
+    "70mm Shotgun Cannon (Pristine)"
+  ]
+}
