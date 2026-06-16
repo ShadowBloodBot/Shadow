@@ -1,13 +1,13 @@
 {
   "meta": {
-    "version": 1,
-    "scraped_at": "2026-06-11T08:35:18.694711+00:00",
+    "version": 2,
+    "scraped_at": "2026-06-16T10:19:04.889931+00:00",
     "sources": [
       "sandgame.wiki",
       "build_sand_guide.py"
     ],
-    "pages_total": 52,
-    "pages_scraped": 42
+    "pages_total": 83,
+    "pages_scraped": 64
   },
   "items": [
     {
@@ -17,9 +17,10 @@
       "variant": "PPS-5",
       "rarity": "Common",
       "where_to_obtain": "Weapon Crates",
-      "craft_recipe_text": "25 Scrap Metal (any bench)",
+      "craft_recipe_text": "25 Scrap Metal",
       "action_plan": "Starter sidearm only",
-      "source": "build_sand_guide"
+      "source": "build_sand_guide",
+      "craft_workbench": "Workbench"
     },
     {
       "name": "Blitz Pistol 10R",
@@ -30,7 +31,8 @@
       "where_to_obtain": "Weapon Crates",
       "craft_recipe_text": "4 Weapon Parts + 4 Metal Rods",
       "action_plan": "CQC spray option",
-      "source": "build_sand_guide"
+      "source": "build_sand_guide",
+      "craft_workbench": "Any workbench"
     },
     {
       "name": "Blitz Pistol 15R",
@@ -45,25 +47,39 @@
     },
     {
       "name": "EB Revolver Zseb",
-      "category": "Handgun",
+      "category": "player_weapon",
       "weapon_family": "EB Revolver",
       "variant": "Zseb",
       "rarity": "Common",
       "where_to_obtain": "Weapon Crates",
       "craft_recipe_text": "25 Scrap Metal",
       "action_plan": "Backup only",
-      "source": "build_sand_guide"
+      "source": "sandgame.wiki",
+      "type": "Revolver",
+      "mag": "6",
+      "damage": "15",
+      "ammo": "{{Icon|8x21mm|3=8x21mm Ammo|4=right}}",
+      "value": "25",
+      "page": "EB Revolver",
+      "craft_workbench": "Any workbench"
     },
     {
       "name": "EB Revolver Bantam",
-      "category": "Handgun",
+      "category": "player_weapon",
       "weapon_family": "EB Revolver",
       "variant": "Bantam",
       "rarity": "Uncommon",
       "where_to_obtain": "Craft only",
-      "craft_recipe_text": "Zseb + 25 Scrap Metal",
+      "craft_recipe_text": "1 EB Revolver Zseb + 25 Scrap Metal",
       "action_plan": "Melee hybrid sidearm",
-      "source": "build_sand_guide"
+      "source": "sandgame.wiki",
+      "type": "Revolver",
+      "mag": "6",
+      "damage": "15",
+      "ammo": "{{Icon|8x21mm|3=8x21mm Ammo|4=right}}",
+      "value": "50",
+      "page": "EB Revolver",
+      "craft_workbench": "Any Workbench"
     },
     {
       "name": "866/9 Rifle Einzel",
@@ -102,7 +118,8 @@
       "damage": "60",
       "ammo": "{{Icon|9x42mm|3=9x42mm Ammo|4=right}}",
       "value": "50",
-      "page": "M82 Rifle"
+      "page": "M82 Rifle",
+      "craft_workbench": "Any workbench"
     },
     {
       "name": "M82 Rifle Aperture",
@@ -117,25 +134,37 @@
     },
     {
       "name": "1874 Petros",
-      "category": "Rifle",
+      "category": "player_weapon",
       "weapon_family": "1874 Petros",
       "variant": "Standard",
       "rarity": "Uncommon",
       "where_to_obtain": "Weapon Crates",
       "craft_recipe_text": null,
       "action_plan": "Base for upgrades",
-      "source": "build_sand_guide"
+      "source": "sandgame.wiki",
+      "type": "Single-Shot Rifle",
+      "mag": "1",
+      "damage": "60",
+      "ammo": "11x54mm Ammo",
+      "value": "50",
+      "page": "1874 Petros Rifle"
     },
     {
       "name": "1874 Petros Sniper",
-      "category": "Rifle",
+      "category": "player_weapon",
       "weapon_family": "1874 Petros",
       "variant": "Sniper",
       "rarity": "Noteworthy",
       "where_to_obtain": "Craft",
-      "craft_recipe_text": "Petros + 2 Optic Lenses + 2 Weapon Parts",
+      "craft_recipe_text": "1 1874 Petros + 2 Optic Lenses + 2 Weapon Parts",
       "action_plan": "Long-range pick",
-      "source": "build_sand_guide"
+      "source": "sandgame.wiki",
+      "type": "Single-Shot Rifle",
+      "mag": "1",
+      "damage": "60",
+      "ammo": "11x54mm Ammo",
+      "page": "1874 Petros Rifle",
+      "craft_workbench": "Any workbench"
     },
     {
       "name": "1874 Petros Silenced",
@@ -144,9 +173,10 @@
       "variant": "Silenced",
       "rarity": "Rare",
       "where_to_obtain": "Craft",
-      "craft_recipe_text": "Petros + 5 Metal Rods",
+      "craft_recipe_text": "1 1874 Petros + 5 Metal Rods",
       "action_plan": "Stealth kills",
-      "source": "build_sand_guide"
+      "source": "build_sand_guide",
+      "craft_workbench": "Any workbench"
     },
     {
       "name": "1874 Petros Sniper+Silenced",
@@ -155,20 +185,28 @@
       "variant": "Sniper+Silenced",
       "rarity": "Remarkable",
       "where_to_obtain": "Craft (Fort bench)",
-      "craft_recipe_text": "Sniper + 5 Rods OR Silenced + 2 Lenses",
+      "craft_recipe_text": "1 1874 Petros Sniper + 5 Metal Rods",
       "action_plan": "BEST rifle — craft ASAP",
-      "source": "build_sand_guide"
+      "source": "build_sand_guide",
+      "craft_workbench": "Advanced/Fort Workbench"
     },
     {
       "name": "Drobulet",
-      "category": "Shotgun",
+      "category": "player_weapon",
       "weapon_family": "Drobulet",
       "variant": "Standard",
       "rarity": "Common",
       "where_to_obtain": "Shop / Weapon Crates",
       "craft_recipe_text": "25 Scrap Metal",
       "action_plan": "Buy from orbital shop early",
-      "source": "build_sand_guide"
+      "source": "sandgame.wiki",
+      "type": "Shotgun",
+      "mag": "1",
+      "damage": "60",
+      "ammo": "{{Icon|12 GA Ammo|3=12-Gauge Ammo|4=right}}",
+      "value": "25",
+      "page": "Drobulet Shotgun",
+      "craft_workbench": "Any workbench"
     },
     {
       "name": "Drobulet Vertical Choke",
@@ -177,20 +215,28 @@
       "variant": "Vertical Choke",
       "rarity": "Uncommon",
       "where_to_obtain": "Craft only",
-      "craft_recipe_text": "Drobulet + 25 Scrap Metal",
+      "craft_recipe_text": "1 Drobulet + 25 Scrap Metal",
       "action_plan": "Niche upgrade",
-      "source": "build_sand_guide"
+      "source": "build_sand_guide",
+      "craft_workbench": "Any workbench"
     },
     {
       "name": "Pepper Mill",
-      "category": "Shotgun",
+      "category": "player_weapon",
       "weapon_family": "Pepper Mill",
       "variant": "Standard",
       "rarity": "Rare",
       "where_to_obtain": "Weapon Crates",
       "craft_recipe_text": "4 Fabric + 4 Metal Rods",
       "action_plan": "Solid rare shotgun",
-      "source": "build_sand_guide"
+      "source": "sandgame.wiki",
+      "type": "Shotgun",
+      "mag": "3",
+      "damage": "60",
+      "ammo": "{{Icon|12 GA Ammo|3=12-Gauge Ammo|4=right}}",
+      "value": "50",
+      "page": "Pepper Mill Shotgun",
+      "craft_workbench": "Any workbench"
     },
     {
       "name": "Pepper Mill Triplet",
@@ -276,9 +322,10 @@
       "variant": "—",
       "rarity": "Uncommon",
       "where_to_obtain": "Craft",
-      "craft_recipe_text": "2 Fabric + 2 Gunpowder (Fort bench)",
+      "craft_recipe_text": "2 Fabric + 2 Gunpowder",
       "action_plan": "Essential for Forts / locked areas",
-      "source": "build_sand_guide"
+      "source": "build_sand_guide",
+      "craft_workbench": "Advanced/Fort Workbench"
     },
     {
       "name": "40mm Autocannon (Rusty)",
@@ -413,30 +460,6 @@
       "source": "build_sand_guide"
     },
     {
-      "name": "1874e Petros Rifle",
-      "rarity": "Uncommon",
-      "type": "Single-Shot Rifle",
-      "mag": "1",
-      "damage": "60",
-      "ammo": "11x54mm Ammo",
-      "value": "50",
-      "source": "sandgame.wiki",
-      "page": "1874 Petros Rifle",
-      "category": "player_weapon"
-    },
-    {
-      "name": "1874S Petros Sniper Rifle",
-      "rarity": "Noteworthy",
-      "type": "Single-Shot Rifle",
-      "mag": "1",
-      "damage": "60",
-      "ammo": "11x54mm Ammo",
-      "value": null,
-      "source": "sandgame.wiki",
-      "page": "1874 Petros Rifle",
-      "category": "player_weapon"
-    },
-    {
       "name": "1874E/SD Petros Rifle (Silenced)",
       "rarity": "Rare",
       "type": "Single-Shot Rifle",
@@ -446,7 +469,9 @@
       "value": null,
       "source": "sandgame.wiki",
       "page": "1874 Petros Rifle",
-      "category": "player_weapon"
+      "category": "player_weapon",
+      "craft_recipe_text": "1 1874 Petros + 5 Metal Rods",
+      "craft_workbench": "Advanced/Fort Workbench"
     },
     {
       "name": "1874SC/SI Petros Rifle",
@@ -470,7 +495,9 @@
       "value": "25",
       "source": "sandgame.wiki",
       "page": "866/9 Rifle",
-      "category": "player_weapon"
+      "category": "player_weapon",
+      "craft_recipe_text": "25 Scrap Metal",
+      "craft_workbench": "Any Workbench"
     },
     {
       "name": "KF866/9R \"Mehrzel\" Repeater",
@@ -521,18 +548,6 @@
       "category": "player_weapon"
     },
     {
-      "name": "Drobulet Shotgun",
-      "rarity": "Common",
-      "type": "Shotgun",
-      "mag": "1",
-      "damage": "60",
-      "ammo": "{{Icon|12 GA Ammo|3=12-Gauge Ammo|4=right}}",
-      "value": "25",
-      "source": "sandgame.wiki",
-      "page": "Drobulet Shotgun",
-      "category": "player_weapon"
-    },
-    {
       "name": "Drobulet Shotgun Vertical Choke",
       "rarity": "Uncommon",
       "type": "Shotgun",
@@ -542,31 +557,9 @@
       "value": "50",
       "source": "sandgame.wiki",
       "page": "Drobulet Shotgun",
-      "category": "player_weapon"
-    },
-    {
-      "name": "EB \"Zseb\" Revolver",
-      "rarity": "Common",
-      "type": "Revolver",
-      "mag": "6",
-      "damage": "15",
-      "ammo": "{{Icon|8x21mm|3=8x21mm Ammo|4=right}}",
-      "value": "25",
-      "source": "sandgame.wiki",
-      "page": "EB Revolver",
-      "category": "player_weapon"
-    },
-    {
-      "name": "EB \"Bantam\" Revolver",
-      "rarity": "Uncommon",
-      "type": "Revolver",
-      "mag": "6",
-      "damage": "15",
-      "ammo": "{{Icon|8x21mm|3=8x21mm Ammo|4=right}}",
-      "value": "50",
-      "source": "sandgame.wiki",
-      "page": "EB Revolver",
-      "category": "player_weapon"
+      "category": "player_weapon",
+      "craft_recipe_text": "1 Drobulet + 25 Scrap Metal",
+      "craft_workbench": "Any Workbench"
     },
     {
       "name": "M82 \"Aperture\" Rifle",
@@ -578,18 +571,6 @@
       "value": "50",
       "source": "sandgame.wiki",
       "page": "M82 Rifle",
-      "category": "player_weapon"
-    },
-    {
-      "name": "Pepper Mill Shotgun",
-      "rarity": "Rare",
-      "type": "Shotgun",
-      "mag": "3",
-      "damage": "60",
-      "ammo": "{{Icon|12 GA Ammo|3=12-Gauge Ammo|4=right}}",
-      "value": "50",
-      "source": "sandgame.wiki",
-      "page": "Pepper Mill Shotgun",
       "category": "player_weapon"
     },
     {
@@ -777,6 +758,350 @@
         }
       ],
       "source": "build_sand_guide"
+    },
+    {
+      "output": "1874E/SD Petros Rifle (Silenced)",
+      "workbench": "Advanced/Fort Workbench",
+      "inputs": [
+        {
+          "item": "1874 Petros",
+          "qty": 1
+        },
+        {
+          "item": "Metal Rods",
+          "qty": 5
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "1874 Petros Rifle"
+    },
+    {
+      "output": "1874S/SD Petros Sniper Rifle (Silenced)",
+      "workbench": "Advanced/Fort Workbench",
+      "inputs": [
+        {
+          "item": "1874 Petros Sniper",
+          "qty": 1
+        },
+        {
+          "item": "Metal Rods",
+          "qty": 5
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "1874 Petros Rifle"
+    },
+    {
+      "output": "1874S/SD Petros Sniper Rifle (Silenced)",
+      "workbench": "Advanced/Fort Workbench",
+      "inputs": [
+        {
+          "item": "1874E/SD Petros Rifle (Silenced)",
+          "qty": 1
+        },
+        {
+          "item": "Optic Lenses",
+          "qty": 2
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "1874 Petros Rifle"
+    },
+    {
+      "output": "Blitz PPS-5 Pistol",
+      "workbench": "Any Workbench",
+      "inputs": [
+        {
+          "item": "Scrap Metal",
+          "qty": 25
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "Blitz Pistol"
+    },
+    {
+      "output": "Drobulet Shotgun (Vertical Choke)",
+      "workbench": "Any Workbench",
+      "inputs": [
+        {
+          "item": "Drobulet",
+          "qty": 1
+        },
+        {
+          "item": "Scrap Metal",
+          "qty": 25
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "Drobulet Shotgun"
+    },
+    {
+      "output": "EB Revolver Bantam",
+      "workbench": "Any Workbench",
+      "inputs": [
+        {
+          "item": "EB Revolver Zseb",
+          "qty": 1
+        },
+        {
+          "item": "Scrap Metal",
+          "qty": 25
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "EB Revolver"
+    },
+    {
+      "output": "8x21mm High-Velocity Ammo",
+      "workbench": "Advanced/Fort Workbench",
+      "inputs": [
+        {
+          "item": "8x21mm Ammo",
+          "qty": 20
+        },
+        {
+          "item": "Coral Dust",
+          "qty": 2
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "Coral Dust"
+    },
+    {
+      "output": "9x42mm High-Velocity Ammo",
+      "workbench": "Advanced/Fort Workbench",
+      "inputs": [
+        {
+          "item": "9x42mm Ammo",
+          "qty": 10
+        },
+        {
+          "item": "Coral Dust",
+          "qty": 2
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "Coral Dust"
+    },
+    {
+      "output": "Fabric",
+      "workbench": "Any Workbench",
+      "inputs": [
+        {
+          "item": "Fabric Scraps",
+          "qty": 5
+        },
+        {
+          "item": "Threads",
+          "qty": 15
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "Fabric"
+    },
+    {
+      "output": "Old Smuggler's Jacket",
+      "workbench": "Any Workbench",
+      "inputs": [
+        {
+          "item": "Fabric",
+          "qty": 2
+        },
+        {
+          "item": "Threads",
+          "qty": 10
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "Fabric"
+    },
+    {
+      "output": "Reinforced Jacket",
+      "workbench": "Any Workbench",
+      "inputs": [
+        {
+          "item": "Fabric",
+          "qty": 5
+        },
+        {
+          "item": "Threads",
+          "qty": 50
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "Fabric"
+    },
+    {
+      "output": "12-Gauge Ammo",
+      "workbench": "Any Workbench",
+      "inputs": [
+        {
+          "item": "Fabric Scraps",
+          "qty": 5
+        },
+        {
+          "item": "Scrapped Ammo",
+          "qty": 5
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "Fabric Scraps"
+    },
+    {
+      "output": "70mm Shell",
+      "workbench": "Any Workbench",
+      "inputs": [
+        {
+          "item": "Fabric Scraps",
+          "qty": 5
+        },
+        {
+          "item": "Scrapped Ammo",
+          "qty": 5
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "Fabric Scraps"
+    },
+    {
+      "output": "11x54mm Ammo",
+      "workbench": "Advanced/Fort Workbench",
+      "inputs": [
+        {
+          "item": "High-Grade Gunpowder",
+          "qty": 1
+        },
+        {
+          "item": "Scrap Metal",
+          "qty": 25
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "High-Grade Gunpowder"
+    },
+    {
+      "output": "8x21mm Ammo",
+      "workbench": "Any Workbench",
+      "inputs": [
+        {
+          "item": "Scrap Metal",
+          "qty": 5
+        },
+        {
+          "item": "Scrapped Ammo",
+          "qty": 5
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "Scrap Metal"
+    },
+    {
+      "output": "9x42mm Ammo",
+      "workbench": "Any Workbench",
+      "inputs": [
+        {
+          "item": "Scrap Metal",
+          "qty": 5
+        },
+        {
+          "item": "Scrapped Ammo",
+          "qty": 5
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "Scrap Metal"
+    },
+    {
+      "output": "40mm Shell",
+      "workbench": "Any Workbench",
+      "inputs": [
+        {
+          "item": "Scrap Metal",
+          "qty": 2
+        },
+        {
+          "item": "Scrapped Ammo",
+          "qty": 2
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "Scrap Metal"
+    },
+    {
+      "output": "80mm Shell",
+      "workbench": "Any Workbench",
+      "inputs": [
+        {
+          "item": "Scrap Metal",
+          "qty": 5
+        },
+        {
+          "item": "Scrapped Ammo",
+          "qty": 5
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "Scrap Metal"
+    },
+    {
+      "output": "M1866/9 \"Einzel\" Breechloader",
+      "workbench": "Any Workbench",
+      "inputs": [
+        {
+          "item": "Scrap Metal",
+          "qty": 25
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "Scrap Metal"
+    },
+    {
+      "output": "12-Gauge Slug",
+      "workbench": "Advanced/Fort Workbench",
+      "inputs": [
+        {
+          "item": "12-Gauge Ammo",
+          "qty": 10
+        },
+        {
+          "item": "Metal Rods",
+          "qty": 2
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "12-Gauge Ammo"
+    },
+    {
+      "output": "70mm Shell",
+      "workbench": "Any Workbench",
+      "inputs": [
+        {
+          "item": "Scrap Metal",
+          "qty": 5
+        },
+        {
+          "item": "Scrapped Ammo",
+          "qty": 5
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "70mm Shell"
+    },
+    {
+      "output": "8x21mm High-Velocity Ammo",
+      "workbench": "Advanced/Fort Workbench",
+      "inputs": [
+        {
+          "item": "8x21mm Ammo",
+          "qty": 10
+        },
+        {
+          "item": "Coral Dust",
+          "qty": 2
+        }
+      ],
+      "source": "sandgame.wiki",
+      "page": "8x21mm Ammo"
     }
   ],
   "landmarks": [
@@ -858,7 +1183,7 @@
       "access_requirements": "Final Extract event, sandstorm",
       "best_for": "Endgame BIS loot",
       "source": "sandgame.wiki",
-      "wiki_excerpt": "thumb|The Dreadnought prior to the final zone (above) compared to when it is uncovered (below).\nthumb|The Uncovered Dreadnought once the final storm has begun. \nThe Dreadnaught is a Landmark that can only be found in the game mode Storm Dive, and holds some of the best loot in the game.\n\n====Spawning====\nUnlike other landmarks, the dreadnaught does not spawn at the start of the game, instead it has a rare chance"
+      "wiki_excerpt": "thumb|The Dreadnought prior to the final zone (above) compared to when it is uncovered (below).\nthumb|The Uncovered Dreadnought once the final storm has begun. \nThe Dreadnaught is a Landmark that can only be found in the game mode Storm Dive, and holds some of the best loot in the game.\n\n====Spawning====\nUnlike ot"
     },
     {
       "name": "Sandworm Pit",
@@ -909,6 +1234,12 @@
       "name": "Stufeninsel",
       "type": "Landmark",
       "wiki_excerpt": "Category:Landmarks",
+      "source": "sandgame.wiki"
+    },
+    {
+      "name": "Crafting",
+      "type": "Landmark",
+      "wiki_excerpt": "Crafting comes in two varieties, Trampler crafting and Landmark crafting\n\nTrampler Crafting=\nTrampler crafting is achieved at crafting modules equipped on your Trampler, they come in 2 sizes/tiers, with the larger of the two being able to craft more advanced recipes.\nThe first tier S&H Compact Armaments Workshop is mainly used to craft [[:Category:Ammuni",
       "source": "sandgame.wiki"
     }
   ],

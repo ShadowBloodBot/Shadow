@@ -171,13 +171,25 @@ def detect_intent(query: str, knowledge: dict) -> str:
 
 def _find_recipe_for(name: str, knowledge: dict) -> dict | None:
     target = _normalize(name)
+    aliases = knowledge.get("item_aliases", {})
+    for canonical, names in aliases.items():
+        if target == _normalize(canonical) or any(target == _normalize(n) for n in names):
+            target = _normalize(canonical)
+            break
+
     for recipe in knowledge.get("recipes", []):
-        if _normalize(recipe.get("output", "")) == target:
+        out = recipe.get("output", "")
+        if _normalize(out) == target or _normalize(_canonical_ingredient(out)) == target:
             return recipe
+        if target in _normalize(out):
+            return recipe
+
     for item in knowledge.get("items", []):
         if _normalize(item.get("name", "")) == target and item.get("craft_recipe_text"):
             blob = f"{item['craft_recipe_text']} {item.get('where_to_obtain', '')}".lower()
             wb = "Advanced/Fort Workbench" if "fort" in blob else "Workbench"
+            if item.get("craft_workbench"):
+                wb = item["craft_workbench"]
             return {
                 "output": item["name"],
                 "workbench": wb,
@@ -189,17 +201,40 @@ def _find_recipe_for(name: str, knowledge: dict) -> dict | None:
 
 INGREDIENT_ALIASES = {
     "petros": "1874 Petros",
+    "1874e petros rifle": "1874 Petros",
+    "1874 petros rifle": "1874 Petros",
     "sniper": "1874 Petros Sniper",
+    "1874s petros sniper rifle": "1874 Petros Sniper",
     "silenced": "1874 Petros Silenced",
+    "1874e/sd petros rifle (silenced)": "1874 Petros Silenced",
+    "1874s/sd petros sniper rifle (silenced)": "1874 Petros Sniper Silenced",
     "rods": "Metal Rods",
     "metal rods": "Metal Rods",
     "lenses": "Optic Lenses",
     "optic lenses": "Optic Lenses",
     "weapon parts": "Weapon Parts",
     "scrap metal": "Scrap Metal",
+    "parts": "Scrap Metal",
     "fabric": "Fabric",
+    "fabric scraps": "Fabric Scraps",
     "gunpowder": "Gunpowder",
+    "hggunpowder": "High-Grade Gunpowder",
+    "high-grade gunpowder": "High-Grade Gunpowder",
+    "scrapped ammo": "Scrapped Ammo",
+    "ammo scraps": "Scrapped Ammo",
+    "zseb": "EB Revolver Zseb",
+    "eb zseb revolver": "EB Revolver Zseb",
+    "drobulet shotgun": "Drobulet",
+    "blitz pps-5 pistol": "Blitz Pistol PPS-5",
+    "blitz 10r pistol": "Blitz Pistol 10R",
 }
+
+FORT_PREP_ITEMS = [
+    "Time Bomb",
+    "40mm Shell",
+    "80mm Shell",
+    "70mm Shell",
+]
 
 
 def _canonical_ingredient(name: str) -> str:
@@ -498,36 +533,77 @@ def format_materials_answer(item_name: str, knowledge: dict) -> dict[str, Any]:
 def format_pristine_answer(knowledge: dict) -> dict[str, Any]:
     variants = list_pristine_variants(knowledge)
     steps: list[str] = []
+    material_rows: list[dict] = []
+    has_craft_recipe = False
+
     for item in variants:
         name = item.get("name", "Unknown")
         ammo = item.get("ammo", "")
-        obtain = item.get("where_to_obtain", "Rare+ Weapon Crates · Forts")
-        plan = item.get("action_plan", "")
-        line = f"**{name}**"
-        if ammo:
-            line += f" · {ammo}"
-        line += f"\n└ Loot: {obtain}"
-        if plan:
-            line += f"\n└ {plan}"
-        steps.append(line)
+        recipe = _find_recipe_for(name, knowledge)
+
+        if recipe and recipe.get("inputs"):
+            has_craft_recipe = True
+            totals = aggregate_craft_materials(name, knowledge)
+            mat_line = ", ".join(f"**{q}×** {n}" for n, q in sorted(totals.items()))
+            wb = recipe.get("workbench", "Workbench")
+            line = f"**{name}**"
+            if ammo:
+                line += f" · {ammo}"
+            line += f"\n└ Craft @ **{wb}**: {mat_line}"
+            steps.append(line)
+            for mat, qty in sorted(totals.items()):
+                material_rows.append({
+                    "item": f"{mat} ({name})",
+                    "qty": qty,
+                    "where": where_to_obtain(mat, knowledge),
+                })
+        else:
+            obtain = item.get("where_to_obtain", "Rare+ Weapon Crates · Forts")
+            plan = item.get("action_plan", "")
+            line = f"**{name}**"
+            if ammo:
+                line += f" · {ammo}"
+            line += f"\n└ Obtain: **{obtain}**"
+            if plan:
+                line += f"\n└ {plan}"
+            steps.append(line)
 
     if not steps:
-        steps = ["No Pristine variants in knowledge base — run wiki scrape."]
+        steps = ["No Pristine variants in knowledge base — run `python scripts/scrape_sand_wiki.py`."]
 
-    steps.append(
-        "**Note:** Pristine turrets are **not crafted** — extract from **Rare+ / Very Rare Weapon Crates** "
-        "(Fort armories are best). Mount in hangar before your next Voyage."
-    )
+    prep_lines: list[str] = []
+    for prep in FORT_PREP_ITEMS:
+        recipe = _find_recipe_for(prep, knowledge)
+        if not recipe or not recipe.get("inputs"):
+            continue
+        mats = ", ".join(f"**{i['qty']}×** {i['item']}" for i in recipe["inputs"])
+        prep_lines.append(f"**{prep}** — {mats} @ {recipe.get('workbench', 'Workbench')}")
+        for inp in recipe["inputs"]:
+            material_rows.append({
+                "item": f"{inp['item']} (for {prep})",
+                "qty": inp["qty"],
+                "where": where_to_obtain(inp["item"], knowledge),
+            })
+
+    if prep_lines:
+        steps.append("**Fort raid prep — craft before hunting Pristine crates:**")
+        steps.extend(prep_lines)
+
+    subtitle = f"{len(variants)} Pristine turret variants"
+    if has_craft_recipe:
+        subtitle += " · craft recipes on Trampler workshop"
+    else:
+        subtitle += " · loot Rare+ Weapon Crates (Fort armories best)"
 
     return {
         "ok": True,
         "title": "Pristine turret variants",
-        "subtitle": f"{len(variants)} variants · loot only (no craft recipe)",
+        "subtitle": subtitle,
         "steps": steps,
         "intent": "pristine_list",
         "intent_label": "Pristine variants",
         "matched_item": None,
-        "material_rows": [],
+        "material_rows": material_rows,
         "craft_chain": [],
         "summary": "",
         "pristine_variants": variants,
@@ -556,13 +632,26 @@ def format_craft_answer(item_query: str, knowledge: dict) -> dict[str, Any]:
     display_name = resolved["matched_name"]
     item = resolved["record"] if resolved["kind"] == "item" else {}
     tier = item.get("tier") or item.get("rarity") or ""
-    if tier == "Pristine" or "(Pristine)" in display_name:
-        pristine = format_pristine_answer(knowledge)
-        pristine["subtitle"] = f"Matched **{display_name}** — loot only"
-        pristine["matched_item"] = display_name
-        return pristine
 
     recipe = _find_recipe_for(display_name, knowledge)
+    if (tier == "Pristine" or "(Pristine)" in display_name) and not (recipe and recipe.get("inputs")):
+        if _is_pristine_lookup(item_query, knowledge):
+            return format_pristine_answer(knowledge)
+        obtain = item.get("where_to_obtain", "Rare+ Weapon Crates · Forts")
+        return {
+            "ok": True,
+            "title": f"Craft — {display_name}",
+            "subtitle": f"Obtain via **{obtain}** · see `/sand craft pristine` for all variants + fort prep",
+            "workbench": None,
+            "material_rows": [{"item": display_name, "qty": 1, "where": obtain}],
+            "craft_chain": [],
+            "summary": f"Loot: **{obtain}**",
+            "steps": [f"**Obtain:** {obtain}"] + ([item["action_plan"]] if item.get("action_plan") else []),
+            "matched_item": display_name,
+            "intent": "pristine_list",
+            "intent_label": "Pristine variants",
+        }
+
     craft_chain = build_craft_chain(display_name, knowledge)
 
     if not recipe or (not recipe.get("inputs") and not recipe.get("craft_recipe_text")):
