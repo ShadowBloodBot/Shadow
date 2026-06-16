@@ -9,7 +9,7 @@ from discord.ext import commands
 from .query_engine import (
     BRAND_AUTHOR,
     format_craft_answer,
-    format_materials_table,
+    format_materials_clean,
     load_knowledge,
     truncate_for_discord,
     wiki_footer,
@@ -23,11 +23,11 @@ THEME_PRIMARY = 0x2B0B35
 OWNER_ID = 482463400929263627
 
 CRAFT_EXAMPLES = [
+    "pristine 40mm",
+    "pristine 80mm",
+    "pristine 70mm",
     "time bomb",
     "1874 petros silenced",
-    "1874 petros sniper",
-    "armored jacket",
-    "pristine",
 ]
 
 
@@ -91,6 +91,13 @@ def _brand_embed(knowledge: dict, title: str, subtitle: str = "") -> discord.Emb
     return embed
 
 
+def _pristine_card_block(card: dict) -> str:
+    lines = [f"**{card['title']}**", card.get("obtain", "")]
+    for row in card.get("material_rows") or []:
+        lines.append(f"`{row['qty']}× {row['item']}`")
+    return "\n".join(lines)
+
+
 def _build_craft_embed(result: dict, knowledge: dict) -> discord.Embed:
     if result.get("ok") is False:
         embed = _brand_embed(knowledge, f"❓ {result.get('title', 'Not found')}", result.get("subtitle", ""))
@@ -105,40 +112,33 @@ def _build_craft_embed(result: dict, knowledge: dict) -> discord.Embed:
         )
         return embed
 
-    title = f"🔨 {result.get('title', 'SAND Craft')}"
+    title = result.get("title", "SAND Craft")
     embed = _brand_embed(knowledge, title, result.get("subtitle", ""))
 
-    if result.get("material_rows"):
-        table = format_materials_table(result["material_rows"])
+    if result.get("layout") == "pristine_hub":
+        cards = result.get("pristine_cards") or []
+        left = cards[0::2]
+        right = cards[1::2]
         embed.add_field(
-            name="📋 Materials needed",
-            value=f"```\n{truncate_for_discord(table, 1000)}\n```",
+            name="Turrets",
+            value="\n\n".join(_pristine_card_block(c) for c in left) or "—",
+            inline=True,
+        )
+        embed.add_field(
+            name="\u200b",
+            value="\n\n".join(_pristine_card_block(c) for c in right) if right else "—",
+            inline=True,
+        )
+        return embed
+
+    materials_label = result.get("materials_label", "Materials")
+    rows = result.get("material_rows") or []
+    if rows:
+        embed.add_field(
+            name=materials_label,
+            value=truncate_for_discord(format_materials_clean(rows), 1024),
             inline=False,
         )
-        if result.get("summary"):
-            embed.add_field(name="📦 Total (full tree)", value=result["summary"], inline=False)
-
-    direct = result.get("direct_rows")
-    if direct and direct != result.get("material_rows"):
-        direct_table = format_materials_table(direct)
-        embed.add_field(
-            name="⚙️ Direct recipe",
-            value=f"```\n{truncate_for_discord(direct_table, 900)}\n```",
-            inline=False,
-        )
-
-    craft = result.get("craft_chain") or []
-    if craft:
-        for i, step in enumerate(craft[:8], 1):
-            embed.add_field(name=f"Step {i}", value=truncate_for_discord(step), inline=False)
-    elif result.get("steps"):
-        for i, step in enumerate(result["steps"][:12], 1):
-            embed.add_field(name=f"Step {i}", value=truncate_for_discord(step), inline=False)
-
-    if result.get("matched_item"):
-        embed.add_field(name="📍 Item", value=result["matched_item"], inline=True)
-    if result.get("intent_label"):
-        embed.add_field(name="🎯 Type", value=result["intent_label"], inline=True)
 
     return embed
 
@@ -163,7 +163,7 @@ async def _craft_autocomplete(ctx: discord.AutocompleteContext):
     cog = ctx.cog
     if not cog or not getattr(cog, "knowledge", None):
         return []
-    hints = ["pristine", "pristine turrets", *CRAFT_EXAMPLES]
+    hints = ["pristine 40mm", "pristine 80mm", "pristine 70mm", "pristine", *CRAFT_EXAMPLES]
     craftable = _craftable_names(cog.knowledge)
     current = (ctx.value or "").lower()
     if current:
@@ -222,14 +222,14 @@ class SandGuideCog(commands.Cog):
 
     @sand.command(
         name="craft",
-        description="Craft materials for an item, or list every Pristine turret variant",
+        description="Craft materials — try pristine 40mm, pristine 80mm, time bomb, etc.",
     )
     async def sand_craft(
         self,
         ctx: discord.ApplicationContext,
         item: Option(
             str,
-            "Item to craft (e.g. time bomb) — or type pristine for all Pristine variants",
+            "Item to craft — e.g. pristine 40mm, pristine 80mm, time bomb",
             required=True,
             autocomplete=_craft_autocomplete,
         ),
@@ -261,26 +261,19 @@ class SandGuideCog(commands.Cog):
         embed = _brand_embed(
             self.knowledge,
             "🏜️ ShadowSyn SAND Guide",
-            "Craft recipes with full material breakdowns, plus every **Pristine** turret variant.",
+            "Craft recipes with clean material lists. Search a Pristine turret by calibre.",
         )
         embed.add_field(
             name="Commands",
             value=(
-                "• `/sand craft <item>` — materials needed + craft steps\n"
-                "• `/sand craft pristine` — list all Pristine turret variants\n"
+                "• `/sand craft pristine 40mm` — 40mm Pristine + ammo materials\n"
+                "• `/sand craft pristine 80mm` — 80mm Pristine + ammo materials\n"
+                "• `/sand craft pristine` — all three at a glance\n"
                 "• `/sand help` — this message"
             ),
             inline=False,
         )
         embed.add_field(name="Examples", value=examples, inline=False)
-        embed.add_field(
-            name="Tips",
-            value=(
-                "Materials show the **full tree** (e.g. Petros Sniper includes base Petros cost).\n"
-                "Pristine turrets are **loot only** — use `/sand craft pristine` for the full list."
-            ),
-            inline=False,
-        )
         await safe_reply(ctx, embed=embed, ephemeral=True)
 
     @sand.command(name="reload", description="Owner: reload knowledge JSON from disk")
