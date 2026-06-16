@@ -7,7 +7,6 @@ from discord import Option
 from discord.ext import commands
 
 from .query_engine import (
-    BRAND_AUTHOR,
     format_craft_answer,
     format_materials_clean,
     load_knowledge,
@@ -86,7 +85,6 @@ def _brand_embed(knowledge: dict, title: str, subtitle: str = "") -> discord.Emb
     embed = discord.Embed(title=title, color=THEME_PRIMARY)
     if subtitle:
         embed.description = subtitle
-    embed.set_author(name=BRAND_AUTHOR)
     embed.set_footer(text=wiki_footer(knowledge))
     return embed
 

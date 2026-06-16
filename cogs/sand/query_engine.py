@@ -19,7 +19,6 @@ except ImportError:
 _PKG_DIR = Path(__file__).resolve().parent
 DEFAULT_KNOWLEDGE_PATH = _PKG_DIR.parent.parent / "data" / "sand_knowledge.json"
 
-BRAND_AUTHOR = "Made by bloodletting"
 THEME_FOOTER = "ShadowSyn · sandgame.wiki + ShadowSyn guide · bloodletting"
 
 INTENT_LABELS = {

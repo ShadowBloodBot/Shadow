@@ -1,0 +1,31 @@
+---
+description: SAND bot — GPT 5.5 implements all code in this module
+globs: cogs/sand/**,data/sand_knowledge.json,scripts/scrape_sand_wiki.py,scripts/trampler_mirror.py
+alwaysApply: false
+---
+
+# SAND bot — Raiders of Sophie
+
+## Model
+
+**GPT 5.5** (`gpt-5.5-medium`) implements all SAND bot code changes.
+
+Composer may plan, triage, and explain — do not implement SAND edits in Composer. Joseph switches to GPT 5.5, or Composer delegates a subagent with `gpt-5.5-medium`.
+
+## Scope
+
+- `cogs/sand/` — `/sand craft`, query engine, guides funnel
+- `data/sand_knowledge.json` — wiki recipes, Pristine turret data
+- `scripts/scrape_sand_wiki.py`, `scripts/trampler_mirror.py`
+
+## Embed UX
+
+- No embed author line (no "Made by bloodletting" header)
+- Materials: clean lines like steam codes hub — `2× Scrap Metal`, not code-block tables
+- `pristine 40mm` / `40m`, `80mm` / `80m`, `70mm` / `70m` → single turret + that ammo's materials
+- Bare `pristine` → two-column hub of all three turrets
+
+## Data
+
+- Pristine turrets are loot (Rare+ Weapon Crates / Forts); wiki has no Worn→Pristine craft recipe
+- Show ammo craft materials per calibre until in-game upgrade costs are verified and added to `sand_knowledge.json`
