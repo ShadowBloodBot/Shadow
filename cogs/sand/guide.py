@@ -8,10 +8,9 @@ from discord.ext import commands
 
 from .query_engine import (
     BRAND_AUTHOR,
+    format_craft_answer,
     format_materials_table,
-    format_query_answer,
     load_knowledge,
-    suggest_closest_matches,
     truncate_for_discord,
     wiki_footer,
 )
@@ -23,14 +22,12 @@ logger = logging.getLogger("ShadowSyn.SAND")
 THEME_PRIMARY = 0x2B0B35
 OWNER_ID = 482463400929263627
 
-EXAMPLE_QUESTIONS = [
-    "how do i get pristine cannons",
-    "how many materials for 1874 petros sniper silenced",
-    "storm dive dreadnaught loot",
-    "fort raid time bombs",
-    "where to farm triplet shotgun",
-    "craft time bomb",
-    "what do i need for armored jacket",
+CRAFT_EXAMPLES = [
+    "time bomb",
+    "1874 petros silenced",
+    "1874 petros sniper",
+    "armored jacket",
+    "pristine",
 ]
 
 
@@ -67,7 +64,7 @@ async def deny_wrong_thread(ctx: discord.ApplicationContext) -> bool:
     await safe_reply(
         ctx,
         f"🏜️ SAND commands live in <#{sand_id}> only.\n"
-        f"Head there and try again — e.g. `/sand query how do i get pristine cannons`",
+        f"Head there and try again — e.g. `/sand craft time bomb`",
         ephemeral=True,
     )
     return True
@@ -94,7 +91,7 @@ def _brand_embed(knowledge: dict, title: str, subtitle: str = "") -> discord.Emb
     return embed
 
 
-def _build_query_embed(result: dict, knowledge: dict) -> discord.Embed:
+def _build_craft_embed(result: dict, knowledge: dict) -> discord.Embed:
     if result.get("ok") is False:
         embed = _brand_embed(knowledge, f"❓ {result.get('title', 'Not found')}", result.get("subtitle", ""))
         suggestions = result.get("suggestions", [])
@@ -102,61 +99,85 @@ def _build_query_embed(result: dict, knowledge: dict) -> discord.Embed:
             lines = "\n".join(f"• **{name}** ({score}%)" for name, score in suggestions)
             embed.add_field(name="Did you mean?", value=lines, inline=False)
         embed.add_field(
-            name="Try asking",
-            value="\n".join(f"• `/sand query {q}`" for q in EXAMPLE_QUESTIONS[:3]),
+            name="Try",
+            value="\n".join(f"• `/sand craft {q}`" for q in CRAFT_EXAMPLES[:4]),
             inline=False,
         )
         return embed
 
-    title = f"🏜️ {result.get('title', 'SAND Guide')}"
+    title = f"🔨 {result.get('title', 'SAND Craft')}"
     embed = _brand_embed(knowledge, title, result.get("subtitle", ""))
 
-    steps = result.get("steps") or []
     if result.get("material_rows"):
         table = format_materials_table(result["material_rows"])
         embed.add_field(
-            name="📋 Materials",
+            name="📋 Materials needed",
             value=f"```\n{truncate_for_discord(table, 1000)}\n```",
             inline=False,
         )
         if result.get("summary"):
-            embed.add_field(name="📦 Total", value=result["summary"], inline=False)
-        craft = result.get("craft_chain") or []
+            embed.add_field(name="📦 Total (full tree)", value=result["summary"], inline=False)
+
+    direct = result.get("direct_rows")
+    if direct and direct != result.get("material_rows"):
+        direct_table = format_materials_table(direct)
+        embed.add_field(
+            name="⚙️ Direct recipe",
+            value=f"```\n{truncate_for_discord(direct_table, 900)}\n```",
+            inline=False,
+        )
+
+    craft = result.get("craft_chain") or []
+    if craft:
         for i, step in enumerate(craft[:8], 1):
-            embed.add_field(name=f"Craft {i}", value=truncate_for_discord(step), inline=False)
-    else:
-        for i, step in enumerate(steps[:25], 1):
+            embed.add_field(name=f"Step {i}", value=truncate_for_discord(step), inline=False)
+    elif result.get("steps"):
+        for i, step in enumerate(result["steps"][:12], 1):
             embed.add_field(name=f"Step {i}", value=truncate_for_discord(step), inline=False)
 
     if result.get("matched_item"):
-        embed.add_field(name="📍 Matched", value=result["matched_item"], inline=True)
+        embed.add_field(name="📍 Item", value=result["matched_item"], inline=True)
     if result.get("intent_label"):
-        embed.add_field(name="🎯 Topic", value=result["intent_label"], inline=True)
+        embed.add_field(name="🎯 Type", value=result["intent_label"], inline=True)
 
     return embed
 
 
-async def _query_autocomplete(ctx: discord.AutocompleteContext):
+def _craftable_names(knowledge: dict) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for recipe in knowledge.get("recipes", []):
+        name = recipe.get("output")
+        if name and name not in seen:
+            names.append(name)
+            seen.add(name)
+    for item in knowledge.get("items", []):
+        name = item.get("name")
+        if name and item.get("craft_recipe_text") and name not in seen:
+            names.append(name)
+            seen.add(name)
+    return sorted(names, key=str.lower)
+
+
+async def _craft_autocomplete(ctx: discord.AutocompleteContext):
     cog = ctx.cog
     if not cog or not getattr(cog, "knowledge", None):
         return []
-    names = []
-    seen = set()
-    for item in cog.knowledge.get("items", []):
-        n = item.get("name")
-        if n and n not in seen:
-            names.append(n)
-            seen.add(n)
+    hints = ["pristine", "pristine turrets", *CRAFT_EXAMPLES]
+    craftable = _craftable_names(cog.knowledge)
     current = (ctx.value or "").lower()
-    filtered = [n for n in names if current in n.lower()] if current else names
-    # Mix item names with example questions for autocomplete hints
-    hints = [q for q in EXAMPLE_QUESTIONS if not current or current in q.lower()]
-    combined = hints + [n for n in filtered if n not in hints]
+    if current:
+        filtered_hints = [h for h in hints if current in h.lower()]
+        filtered_items = [n for n in craftable if current in n.lower()]
+    else:
+        filtered_hints = hints
+        filtered_items = craftable
+    combined = filtered_hints + [n for n in filtered_items if n not in filtered_hints]
     return combined[:25]
 
 
 class SandGuideCog(commands.Cog):
-    """Intelligent SAND wiki + guide Q&A for ShadowSyn."""
+    """Intelligent SAND wiki + craft guide for ShadowSyn."""
 
     def __init__(self, bot: discord.Bot):
         self.bot = bot
@@ -195,22 +216,22 @@ class SandGuideCog(commands.Cog):
 
     sand = discord.SlashCommandGroup(
         "sand",
-        "SAND: Raiders of Sophie — loot, craft & acquisition guide",
+        "SAND: Raiders of Sophie — craft recipes & Pristine turrets",
         guild_ids=REGISTERED_GUILD_IDS,
     )
 
     @sand.command(
-        name="query",
-        description="Ask anything about SAND — loot, craft, materials, forts, step-by-step",
+        name="craft",
+        description="Craft materials for an item, or list every Pristine turret variant",
     )
-    async def sand_query(
+    async def sand_craft(
         self,
         ctx: discord.ApplicationContext,
-        question: Option(
+        item: Option(
             str,
-            "e.g. how do i get pristine cannons / materials for time bomb",
+            "Item to craft (e.g. time bomb) — or type pristine for all Pristine variants",
             required=True,
-            autocomplete=_query_autocomplete,
+            autocomplete=_craft_autocomplete,
         ),
     ):
         if await self._gate(ctx):
@@ -223,39 +244,40 @@ class SandGuideCog(commands.Cog):
             )
 
         try:
-            result = format_query_answer(question, self.knowledge)
-            embed = _build_query_embed(result, self.knowledge)
+            result = format_craft_answer(item, self.knowledge)
+            embed = _build_craft_embed(result, self.knowledge)
             await safe_reply(ctx, embed=embed)
         except Exception as exc:
-            logger.error("sand query failed: %s", exc)
-            await safe_reply(ctx, f"❌ Query failed — try rephrasing. ({exc})", ephemeral=True)
+            logger.error("sand craft failed: %s", exc)
+            await safe_reply(ctx, f"❌ Craft lookup failed — try rephrasing. ({exc})", ephemeral=True)
 
     @sand.command(name="help", description="SAND bot usage, examples, and tips")
     async def sand_help(self, ctx: discord.ApplicationContext):
         if await self._gate(ctx):
             return
 
-        examples = "\n".join(f"• `/sand query {q}`" for q in EXAMPLE_QUESTIONS)
+        examples = "\n".join(f"• `/sand craft {q}`" for q in CRAFT_EXAMPLES)
 
         embed = _brand_embed(
             self.knowledge,
             "🏜️ ShadowSyn SAND Guide",
-            "Ask **anything** about SAND in plain English — one command handles loot, craft, materials, and routes.",
+            "Craft recipes with full material breakdowns, plus every **Pristine** turret variant.",
         )
         embed.add_field(
             name="Commands",
             value=(
-                "• `/sand query <question>` — answers everything (loot, materials, crafting, forts, Storm Dive)\n"
+                "• `/sand craft <item>` — materials needed + craft steps\n"
+                "• `/sand craft pristine` — list all Pristine turret variants\n"
                 "• `/sand help` — this message"
             ),
             inline=False,
         )
-        embed.add_field(name="Example questions", value=examples, inline=False)
+        embed.add_field(name="Examples", value=examples, inline=False)
         embed.add_field(
             name="Tips",
             value=(
-                "Ask naturally — `how many materials for time bomb`, `where to get triplet`, `pristine 80mm`.\n"
-                "Fuzzy matching + craft chains (base → mod → final) are automatic."
+                "Materials show the **full tree** (e.g. Petros Sniper includes base Petros cost).\n"
+                "Pristine turrets are **loot only** — use `/sand craft pristine` for the full list."
             ),
             inline=False,
         )

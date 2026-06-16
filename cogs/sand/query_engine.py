@@ -289,6 +289,65 @@ def build_craft_chain(output_name: str, knowledge: dict, depth: int = 0, max_dep
     return chain
 
 
+def aggregate_craft_materials(
+    output_name: str,
+    knowledge: dict,
+    multiplier: int = 1,
+    depth: int = 0,
+    max_depth: int = 6,
+) -> dict[str, int]:
+    """Sum leaf materials for a full craft tree (base mats only)."""
+    if depth >= max_depth:
+        return {_canonical_ingredient(output_name): multiplier}
+
+    recipe = _find_recipe_for(output_name, knowledge)
+    if not recipe or not recipe.get("inputs"):
+        return {_canonical_ingredient(output_name): multiplier}
+
+    totals: dict[str, int] = defaultdict(int)
+    for inp in recipe["inputs"]:
+        sub = aggregate_craft_materials(
+            inp["item"],
+            knowledge,
+            multiplier * inp["qty"],
+            depth + 1,
+            max_depth,
+        )
+        for name, qty in sub.items():
+            totals[name] += qty
+    return dict(totals)
+
+
+def list_pristine_variants(knowledge: dict) -> list[dict]:
+    """Every item marked Pristine tier in the knowledge base."""
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for item in knowledge.get("items", []):
+        tier = item.get("tier") or item.get("rarity") or ""
+        if tier != "Pristine":
+            continue
+        name = item.get("name", "")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        rows.append(item)
+    rows.sort(key=lambda i: i.get("name", ""))
+    return rows
+
+
+def _is_pristine_lookup(query: str, knowledge: dict) -> bool:
+    q = _normalize(query)
+    if q in ("pristine", "pristine turrets", "pristine cannons", "pristine turret", "pristine variants"):
+        return True
+    if "pristine" in q and any(w in q for w in ("list", "all", "every", "variant", "turret", "cannon")):
+        return True
+    if "pristine" in q:
+        resolved = resolve_item(query, knowledge, min_score=70)
+        if resolved is None:
+            return True
+    return False
+
+
 def aggregate_materials(rows: list[dict]) -> dict[str, int]:
     totals: dict[str, int] = defaultdict(int)
     for row in rows:
@@ -433,6 +492,129 @@ def format_materials_answer(item_name: str, knowledge: dict) -> dict[str, Any]:
         "steps": chain_steps or [summary],
         "matched_item": display_name,
         "intent": "material_cost",
+    }
+
+
+def format_pristine_answer(knowledge: dict) -> dict[str, Any]:
+    variants = list_pristine_variants(knowledge)
+    steps: list[str] = []
+    for item in variants:
+        name = item.get("name", "Unknown")
+        ammo = item.get("ammo", "")
+        obtain = item.get("where_to_obtain", "Rare+ Weapon Crates · Forts")
+        plan = item.get("action_plan", "")
+        line = f"**{name}**"
+        if ammo:
+            line += f" · {ammo}"
+        line += f"\n└ Loot: {obtain}"
+        if plan:
+            line += f"\n└ {plan}"
+        steps.append(line)
+
+    if not steps:
+        steps = ["No Pristine variants in knowledge base — run wiki scrape."]
+
+    steps.append(
+        "**Note:** Pristine turrets are **not crafted** — extract from **Rare+ / Very Rare Weapon Crates** "
+        "(Fort armories are best). Mount in hangar before your next Voyage."
+    )
+
+    return {
+        "ok": True,
+        "title": "Pristine turret variants",
+        "subtitle": f"{len(variants)} variants · loot only (no craft recipe)",
+        "steps": steps,
+        "intent": "pristine_list",
+        "intent_label": "Pristine variants",
+        "matched_item": None,
+        "material_rows": [],
+        "craft_chain": [],
+        "summary": "",
+        "pristine_variants": variants,
+    }
+
+
+def format_craft_answer(item_query: str, knowledge: dict) -> dict[str, Any]:
+    """Craft-focused answer: materials table + craft chain; pristine → full variant list."""
+    if _is_pristine_lookup(item_query, knowledge):
+        return format_pristine_answer(knowledge)
+
+    resolved = resolve_item(item_query, knowledge)
+    if not resolved:
+        suggestions = suggest_closest_matches(item_query, knowledge)
+        return {
+            "ok": False,
+            "title": "Item not found",
+            "subtitle": f"No craft match for **{item_query}**.",
+            "suggestions": suggestions,
+            "steps": [],
+            "material_rows": [],
+            "craft_chain": [],
+            "summary": "",
+        }
+
+    display_name = resolved["matched_name"]
+    item = resolved["record"] if resolved["kind"] == "item" else {}
+    tier = item.get("tier") or item.get("rarity") or ""
+    if tier == "Pristine" or "(Pristine)" in display_name:
+        pristine = format_pristine_answer(knowledge)
+        pristine["subtitle"] = f"Matched **{display_name}** — loot only"
+        pristine["matched_item"] = display_name
+        return pristine
+
+    recipe = _find_recipe_for(display_name, knowledge)
+    craft_chain = build_craft_chain(display_name, knowledge)
+
+    if not recipe or (not recipe.get("inputs") and not recipe.get("craft_recipe_text")):
+        obtain = item.get("where_to_obtain", "Weapon Crates / world loot")
+        return {
+            "ok": True,
+            "title": f"Craft — {display_name}",
+            "subtitle": "No craft recipe — obtain via loot",
+            "workbench": None,
+            "material_rows": [{"item": display_name, "qty": 1, "where": obtain}],
+            "craft_chain": [],
+            "summary": f"Loot: **{obtain}**",
+            "steps": [f"**Obtain:** {obtain}"] + ([item["action_plan"]] if item.get("action_plan") else []),
+            "matched_item": display_name,
+            "intent": "craft_item",
+            "intent_label": "Crafting",
+        }
+
+    workbench = recipe.get("workbench", "Workbench")
+    totals = aggregate_craft_materials(display_name, knowledge)
+    material_rows = [
+        {
+            "item": name,
+            "qty": qty,
+            "where": where_to_obtain(name, knowledge),
+        }
+        for name, qty in sorted(totals.items())
+    ]
+    summary = " · ".join(f"**{qty}×** {name}" for name, qty in sorted(totals.items()))
+    direct_rows = [
+        {
+            "item": inp["item"],
+            "qty": inp["qty"],
+            "where": where_to_obtain(inp["item"], knowledge),
+        }
+        for inp in (recipe.get("inputs") or [])
+    ]
+    chain_steps = [c["action"] for c in craft_chain if c.get("action")]
+
+    return {
+        "ok": True,
+        "title": f"Craft — {display_name}",
+        "subtitle": f"@ **{workbench}**",
+        "workbench": workbench,
+        "material_rows": material_rows or direct_rows,
+        "direct_rows": direct_rows,
+        "craft_chain": chain_steps,
+        "summary": summary or recipe.get("craft_recipe_text", ""),
+        "steps": chain_steps or [recipe.get("craft_recipe_text", "")],
+        "matched_item": display_name,
+        "intent": "craft_item",
+        "intent_label": "Crafting",
     }
 
 

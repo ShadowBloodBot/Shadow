@@ -285,7 +285,7 @@ class HubCog(commands.Cog):
         embed.add_field(
             name="🏜️ SAND",
             value=(
-                "In the SAND thread: `/sand query <question>` — loot, craft, materials, forts, Storm Dive.\n"
+                "In the SAND thread: `/sand craft <item>` — materials & recipes; `/sand craft pristine` for all Pristine turrets.\n"
                 "`/sand help` for examples."
             ),
             inline=False,
