@@ -161,7 +161,7 @@ async def _craft_autocomplete(ctx: discord.AutocompleteContext):
     cog = ctx.cog
     if not cog or not getattr(cog, "knowledge", None):
         return []
-    hints = ["pristine 40mm", "pristine 80mm", "pristine 70mm", "pristine", *CRAFT_EXAMPLES]
+    hints = ["pristine", *CRAFT_EXAMPLES]
     craftable = _craftable_names(cog.knowledge)
     current = (ctx.value or "").lower()
     if current:
