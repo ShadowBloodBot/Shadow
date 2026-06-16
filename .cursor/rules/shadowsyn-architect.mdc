@@ -82,7 +82,7 @@ This is **Shadow**, a Discord bot for **ShadowSyn** — a private **multi-game**
 - All slash commands (no prefix commands)
 - Persistent Views re-registered on `on_ready` for button components
 - Channel/role routing via `cogs/guild_registry.py` logical keys — not per-guild hardcoded IDs in cogs
-- Dual guild: ShadowMain + ShadowBackup — every feature, panel, and Discord change must mirror both (see `shadow-dual-guild.mdc`)
+- Dual guild: ShadowMain + ShadowBackup — every feature, panel, and Discord change must mirror both (see `shadow-dual-guild.mdc`). Deploy scripts default `--guild all`; never ship Main-only without Joseph's explicit opt-out.
 
 When given a cog to work on, read the whole file before touching anything.
 

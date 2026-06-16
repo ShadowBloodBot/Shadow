@@ -2,6 +2,567 @@
   "908659586536468540": {
     "channel_id": "1516222122211672084",
     "panel_message_id": "1516223709126332478",
-    "roles": []
+    "panel_page": 0,
+    "roles": [
+      {
+        "id": "1159240019618312395",
+        "label": "Age Of Empires",
+        "emoji": null,
+        "sort": 33
+      },
+      {
+        "id": "1438652930524975245",
+        "label": "Aion2-WoW",
+        "emoji": null,
+        "sort": 15
+      },
+      {
+        "id": "1049831771463761960",
+        "label": "Albion Alliance",
+        "emoji": null,
+        "sort": 39
+      },
+      {
+        "id": "1045467371772575816",
+        "label": "Albion Online",
+        "emoji": null,
+        "sort": 49
+      },
+      {
+        "id": "961548742140506142",
+        "label": "Apex Legends",
+        "emoji": null,
+        "sort": 45
+      },
+      {
+        "id": "1428259819973906462",
+        "label": "ARC Raiders",
+        "emoji": null,
+        "sort": 19
+      },
+      {
+        "id": "1235004903076925490",
+        "label": "Arena Breakout",
+        "emoji": null,
+        "sort": 30
+      },
+      {
+        "id": "1408313984632754298",
+        "label": "Arma Reforger",
+        "emoji": null,
+        "sort": 23
+      },
+      {
+        "id": "961550928794771476",
+        "label": "Ashes Of Creation",
+        "emoji": null,
+        "sort": 55
+      },
+      {
+        "id": "1405850854354976829",
+        "label": "BF6",
+        "emoji": null,
+        "sort": 25
+      },
+      {
+        "id": "1469179463618003207",
+        "label": "Blindspot",
+        "emoji": null,
+        "sort": 10
+      },
+      {
+        "id": "1368104250885799976",
+        "label": "Blood's Cum Slut",
+        "emoji": null,
+        "sort": 26
+      },
+      {
+        "id": "1408416945023352882",
+        "label": "Counter Strike 2",
+        "emoji": null,
+        "sort": 22
+      },
+      {
+        "id": "1284789021972889685",
+        "label": "Deadlock",
+        "emoji": null,
+        "sort": 28
+      },
+      {
+        "id": "1015752701646217248",
+        "label": "Destiny",
+        "emoji": null,
+        "sort": 37
+      },
+      {
+        "id": "1460078013193392363",
+        "label": "DreadMyst",
+        "emoji": null,
+        "sort": 13
+      },
+      {
+        "id": "1366193424981561384",
+        "label": "Dune",
+        "emoji": null,
+        "sort": 32
+      },
+      {
+        "id": "1465275760255439003",
+        "label": "fellowshit",
+        "emoji": null,
+        "sort": 12
+      },
+      {
+        "id": "1234814427140853820",
+        "label": "Grey Zone Warfare",
+        "emoji": null,
+        "sort": 31
+      },
+      {
+        "id": "1467470512824389717",
+        "label": "HoN",
+        "emoji": null,
+        "sort": 56
+      },
+      {
+        "id": "990928607801139200",
+        "label": "Last Oasis",
+        "emoji": null,
+        "sort": 40
+      },
+      {
+        "id": "991141508059246592",
+        "label": "LO Friend",
+        "emoji": null,
+        "sort": 38
+      },
+      {
+        "id": "1273531895837229127",
+        "label": "Once Human",
+        "emoji": null,
+        "sort": 50
+      },
+      {
+        "id": "1408417060286890024",
+        "label": "OSRS",
+        "emoji": null,
+        "sort": 21
+      },
+      {
+        "id": "961546567771389992",
+        "label": "Overwatch",
+        "emoji": null,
+        "sort": 46
+      },
+      {
+        "id": "1515569459304337418",
+        "label": "PAINT ME LIKE FRENCH GIRL",
+        "emoji": null,
+        "sort": 3
+      },
+      {
+        "id": "1154182607358136320",
+        "label": "Pax-Dei",
+        "emoji": null,
+        "sort": 34
+      },
+      {
+        "id": "1409412272652288041",
+        "label": "Pummel Party",
+        "emoji": null,
+        "sort": 20
+      },
+      {
+        "id": "1468089604715315413",
+        "label": "Quinfall",
+        "emoji": null,
+        "sort": 11
+      },
+      {
+        "id": "961543344922718239",
+        "label": "Rust",
+        "emoji": null,
+        "sort": 48
+      },
+      {
+        "id": "1513373312430899261",
+        "label": "SAND",
+        "emoji": null,
+        "sort": 4
+      },
+      {
+        "id": "1406555211417260052",
+        "label": "Sausage",
+        "emoji": null,
+        "sort": 24
+      },
+      {
+        "id": "1497776011394158602",
+        "label": "Scars Of Honour",
+        "emoji": null,
+        "sort": 5
+      },
+      {
+        "id": "1237610641548902401",
+        "label": "Sea Of Thieves",
+        "emoji": null,
+        "sort": 29
+      },
+      {
+        "id": "1447110148442030111",
+        "label": "Shade",
+        "emoji": null,
+        "sort": 14
+      },
+      {
+        "id": "970937547414986782",
+        "label": "Skull & Bone",
+        "emoji": null,
+        "sort": 42
+      },
+      {
+        "id": "1485925898061348956",
+        "label": "Soul Mask",
+        "emoji": null,
+        "sort": 7
+      },
+      {
+        "id": "961548877910134805",
+        "label": "Star Citizen",
+        "emoji": null,
+        "sort": 44
+      },
+      {
+        "id": "1291166635490545734",
+        "label": "Throne & Liberty",
+        "emoji": null,
+        "sort": 52
+      },
+      {
+        "id": "1310514476923097138",
+        "label": "TR",
+        "emoji": null,
+        "sort": 54
+      },
+      {
+        "id": "1289196637356556358",
+        "label": "UrDaddies",
+        "emoji": null,
+        "sort": 27
+      },
+      {
+        "id": "978458122488270899",
+        "label": "V-Rising",
+        "emoji": null,
+        "sort": 41
+      },
+      {
+        "id": "961550746447380490",
+        "label": "War Thunder",
+        "emoji": null,
+        "sort": 43
+      },
+      {
+        "id": "1420074757092675736",
+        "label": "Warborne",
+        "emoji": null,
+        "sort": 47
+      },
+      {
+        "id": "1497221522572710020",
+        "label": "Windrose",
+        "emoji": null,
+        "sort": 6
+      },
+      {
+        "id": "1477127006121623724",
+        "label": "WoW",
+        "emoji": null,
+        "sort": 9
+      }
+    ]
+  },
+  "1514838718119411832": {
+    "channel_id": "1516230986529247355",
+    "panel_message_id": "1516230993370157137",
+    "panel_page": 0,
+    "roles": [
+      {
+        "id": "1514838718136057926",
+        "label": "Age Of Empires",
+        "emoji": null,
+        "sort": 29
+      },
+      {
+        "id": "1514838718127542414",
+        "label": "Aion2-WoW",
+        "emoji": null,
+        "sort": 12
+      },
+      {
+        "id": "1514838718144315456",
+        "label": "Albion Alliance",
+        "emoji": null,
+        "sort": 34
+      },
+      {
+        "id": "1514838718148644989",
+        "label": "Albion Online",
+        "emoji": null,
+        "sort": 44
+      },
+      {
+        "id": "1514838718148644985",
+        "label": "Apex Legends",
+        "emoji": null,
+        "sort": 40
+      },
+      {
+        "id": "1514838718127542416",
+        "label": "ARC Raiders",
+        "emoji": null,
+        "sort": 14
+      },
+      {
+        "id": "1514838718136057923",
+        "label": "Arena Breakout",
+        "emoji": null,
+        "sort": 26
+      },
+      {
+        "id": "1514838718127542420",
+        "label": "Arma Reforger",
+        "emoji": null,
+        "sort": 18
+      },
+      {
+        "id": "1514838718161358898",
+        "label": "Ashes Of Creation",
+        "emoji": null,
+        "sort": 50
+      },
+      {
+        "id": "1514838718136057917",
+        "label": "BF6",
+        "emoji": null,
+        "sort": 20
+      },
+      {
+        "id": "1514838718119411839",
+        "label": "Blindspot",
+        "emoji": null,
+        "sort": 7
+      },
+      {
+        "id": "1514838718136057918",
+        "label": "Blood's Cum Slut",
+        "emoji": null,
+        "sort": 21
+      },
+      {
+        "id": "1514838718127542419",
+        "label": "Counter Strike 2",
+        "emoji": null,
+        "sort": 17
+      },
+      {
+        "id": "1514838718136057920",
+        "label": "Deadlock",
+        "emoji": null,
+        "sort": 23
+      },
+      {
+        "id": "1514838718144315454",
+        "label": "Destiny",
+        "emoji": null,
+        "sort": 32
+      },
+      {
+        "id": "1514838718127542412",
+        "label": "DreadMyst",
+        "emoji": null,
+        "sort": 10
+      },
+      {
+        "id": "1514838718136057925",
+        "label": "Dune",
+        "emoji": null,
+        "sort": 28
+      },
+      {
+        "id": "1514838718119411841",
+        "label": "fellowshit",
+        "emoji": null,
+        "sort": 9
+      },
+      {
+        "id": "1514838718136057924",
+        "label": "Grey Zone Warfare",
+        "emoji": null,
+        "sort": 27
+      },
+      {
+        "id": "1514838718161358899",
+        "label": "HoN",
+        "emoji": null,
+        "sort": 51
+      },
+      {
+        "id": "1514838718144315457",
+        "label": "Last Oasis",
+        "emoji": null,
+        "sort": 35
+      },
+      {
+        "id": "1514838718144315455",
+        "label": "LO Friend",
+        "emoji": null,
+        "sort": 33
+      },
+      {
+        "id": "1514838718148644990",
+        "label": "Once Human",
+        "emoji": null,
+        "sort": 45
+      },
+      {
+        "id": "1514838718127542418",
+        "label": "OSRS",
+        "emoji": null,
+        "sort": 16
+      },
+      {
+        "id": "1514838718148644986",
+        "label": "Overwatch",
+        "emoji": null,
+        "sort": 41
+      },
+      {
+        "id": "1514838718144315452",
+        "label": "Pax-Dei",
+        "emoji": null,
+        "sort": 30
+      },
+      {
+        "id": "1514838718136057921",
+        "label": "Pummel CHAMPION",
+        "emoji": null,
+        "sort": 24
+      },
+      {
+        "id": "1514838718127542417",
+        "label": "Pummel Party",
+        "emoji": null,
+        "sort": 15
+      },
+      {
+        "id": "1514838718119411840",
+        "label": "Quinfall",
+        "emoji": null,
+        "sort": 8
+      },
+      {
+        "id": "1514838718148644988",
+        "label": "Rust",
+        "emoji": null,
+        "sort": 43
+      },
+      {
+        "id": "1514838718119411833",
+        "label": "SAND",
+        "emoji": null,
+        "sort": 1
+      },
+      {
+        "id": "1514838718127542421",
+        "label": "Sausage",
+        "emoji": null,
+        "sort": 19
+      },
+      {
+        "id": "1514838718119411834",
+        "label": "Scars Of Honour",
+        "emoji": null,
+        "sort": 2
+      },
+      {
+        "id": "1514838718136057922",
+        "label": "Sea Of Thieves",
+        "emoji": null,
+        "sort": 25
+      },
+      {
+        "id": "1514838718127542413",
+        "label": "Shade",
+        "emoji": null,
+        "sort": 11
+      },
+      {
+        "id": "1514838718144315459",
+        "label": "Skull & Bone",
+        "emoji": null,
+        "sort": 37
+      },
+      {
+        "id": "1514838718119411836",
+        "label": "Soul Mask",
+        "emoji": null,
+        "sort": 4
+      },
+      {
+        "id": "1514838718144315461",
+        "label": "Star Citizen",
+        "emoji": null,
+        "sort": 39
+      },
+      {
+        "id": "1514838718148644992",
+        "label": "Throne & Liberty",
+        "emoji": null,
+        "sort": 47
+      },
+      {
+        "id": "1514838718148644994",
+        "label": "TR",
+        "emoji": null,
+        "sort": 49
+      },
+      {
+        "id": "1514838718136057919",
+        "label": "UrDaddies",
+        "emoji": null,
+        "sort": 22
+      },
+      {
+        "id": "1514838718144315458",
+        "label": "V-Rising",
+        "emoji": null,
+        "sort": 36
+      },
+      {
+        "id": "1514838718144315460",
+        "label": "War Thunder",
+        "emoji": null,
+        "sort": 38
+      },
+      {
+        "id": "1514838718148644987",
+        "label": "Warborne",
+        "emoji": null,
+        "sort": 42
+      },
+      {
+        "id": "1514838718119411835",
+        "label": "Windrose",
+        "emoji": null,
+        "sort": 3
+      },
+      {
+        "id": "1514838718119411838",
+        "label": "WoW",
+        "emoji": null,
+        "sort": 6
+      }
+    ]
   }
 }

@@ -38,6 +38,7 @@ SLUG_ALIASES: dict[str, tuple[str, ...]] = {
     "arma_stats": ("arma-stats", "arma stats"),
     "steam_action_pvp": ("action-pvp", "action pvp"),
     "steam_adventure_coop": ("adventure-co-op", "adventure co-op"),
+    "game_roles": ("game-roles", "game roles"),
 }
 
 

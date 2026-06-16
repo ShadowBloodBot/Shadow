@@ -42,5 +42,6 @@ If Railway calls return **403**, confirm `.env.railway` exists and scripts send 
 ## Agent behaviour
 
 - After any Shadow production push, run `railway_wait_deploy.py` and report SUCCESS/FAILED.
+- **Dual guild:** After panel/hub/registry changes, run deploy scripts with `--guild all` and verify **both** ShadowMain and ShadowBackup (see `shadow-dual-guild.mdc`). Run slash `/game_roles_seed`, `/clips_deploy`, etc. in **each** guild when catalog state lives on Railway `/data`.
 - Never add `.env.railway` to git or copy the token elsewhere.
 - If the token is missing or expired, ask Joseph to refresh `.env.railway` — do not guess credentials.

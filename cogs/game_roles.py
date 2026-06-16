@@ -77,7 +77,7 @@ DENYLIST_NAMES = frozenset({
 })
 
 DEFAULT_GUILD_CFG: dict[str, Any] = {
-    "channel_id": str(ch_id(SHADOW_MAIN_GUILD_ID, "game_roles") or 1516222122211672084),
+    "channel_id": None,
     "panel_message_id": None,
     "panel_page": 0,
     "roles": [],
@@ -238,6 +238,36 @@ class GameRolesCog(commands.Cog):
                     data = loaded
             except Exception as exc:
                 logger.error("Failed to load game_roles.json: %s", exc)
+
+        if (
+            STORE_PATH.exists()
+            and _REPO_STORE.exists()
+            and STORE_PATH.resolve() != _REPO_STORE.resolve()
+        ):
+            try:
+                repo = json.loads(_REPO_STORE.read_text(encoding="utf-8"))
+                if isinstance(repo, dict):
+                    changed = False
+                    for gid, repo_cfg in repo.items():
+                        if not isinstance(repo_cfg, dict):
+                            continue
+                        repo_roles = repo_cfg.get("roles") or []
+                        if not repo_roles:
+                            continue
+                        entry = data.setdefault(gid, dict(DEFAULT_GUILD_CFG))
+                        if not entry.get("roles"):
+                            entry["roles"] = repo_roles
+                            changed = True
+                        for key in ("channel_id", "panel_message_id"):
+                            if not entry.get(key) and repo_cfg.get(key):
+                                entry[key] = repo_cfg[key]
+                                changed = True
+                    if changed:
+                        _atomic_write(STORE_PATH, data)
+                        logger.info("Backfilled empty game_roles catalog from repo template.")
+            except Exception as exc:
+                logger.warning("game_roles repo backfill skipped: %s", exc)
+
         self._store = data
         return data
 
@@ -379,6 +409,40 @@ class GameRolesCog(commands.Cog):
             return False
         return True
 
+    def _build_seed_entries(self, guild: discord.Guild) -> list[dict[str, Any]]:
+        minion = resolve_role(guild, "minion")
+        if minion is None:
+            return []
+        entries: list[dict[str, Any]] = []
+        for role in sorted(guild.roles, key=lambda r: -r.position):
+            if role.position >= minion.position:
+                continue
+            if _is_denylisted(role, guild.id):
+                continue
+            entries.append(self._role_entry(role))
+        return _sorted_catalog(entries)
+
+    async def _ensure_catalog(self, guild: discord.Guild) -> list[dict[str, Any]]:
+        catalog = self._catalog(guild.id, guild)
+        if catalog:
+            return catalog
+
+        entries = self._build_seed_entries(guild)
+        if not entries:
+            return []
+
+        cfg = self._guild_store(guild.id)
+        cfg["roles"] = entries
+        self._save_store()
+        logger.info("Auto-seeded %d game roles for guild %s", len(entries), guild.id)
+
+        try:
+            await self._deploy_panel(guild)
+        except Exception as exc:
+            logger.warning("Panel refresh after auto-seed failed: %s", exc)
+
+        return self._catalog(guild.id, guild)
+
     def _build_manage_embed(self, member: discord.Member, page: int) -> discord.Embed:
         hub_ids = self._catalog_ids(member.guild.id, member.guild)
         owned = [r.name for r in member.roles if r.id in hub_ids]
@@ -410,7 +474,7 @@ class GameRolesCog(commands.Cog):
         if not is_registered_guild(guild.id):
             return
 
-        catalog = self._catalog(guild.id, guild)
+        catalog = await self._ensure_catalog(guild)
         if not catalog:
             return await safe_reply(
                 interaction,
@@ -556,6 +620,22 @@ class GameRolesCog(commands.Cog):
             self._load_store()
             for gid in REGISTERED_GUILD_IDS:
                 guild = self.bot.get_guild(gid)
+                if guild is not None and not self._catalog(gid, guild):
+                    entries = self._build_seed_entries(guild)
+                    if entries:
+                        cfg = self._guild_store(gid)
+                        cfg["roles"] = entries
+                        self._save_store()
+                        logger.info(
+                            "Startup seed: %d game roles for guild %s",
+                            len(entries),
+                            gid,
+                        )
+                        try:
+                            await self._deploy_panel(guild)
+                        except Exception as exc:
+                            logger.warning("Panel refresh after startup seed: %s", exc)
+
                 total = self._page_count(gid, guild)
                 self.bot.add_view(GameRolesPanelView(gid, 0, total))
             logger.info("Game roles persistent views restored.")
@@ -743,15 +823,8 @@ class GameRolesCog(commands.Cog):
             return await safe_reply(ctx, "❌ Minion role not found.", ephemeral=True)
 
         cfg = self._guild_store(ctx.guild.id)
-        entries: list[dict[str, Any]] = []
-        for role in sorted(ctx.guild.roles, key=lambda r: -r.position):
-            if role.position >= minion.position:
-                continue
-            if _is_denylisted(role, ctx.guild.id):
-                continue
-            entries.append(self._role_entry(role))
-
-        cfg["roles"] = _sorted_catalog(entries)
+        entries = self._build_seed_entries(ctx.guild)
+        cfg["roles"] = entries
         self._save_store()
 
         try:
