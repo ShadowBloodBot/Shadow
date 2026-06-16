@@ -31,6 +31,7 @@ You operate under an absolute policy of non-destructive modification and forward
 - **Atomic Persistence**: All long-term state (economy, configs) must read/write to JSON stores at `os.getenv("PERSIST_PATH", "/data")`. Enforce atomic saves (write to `.temp` -> `os.replace` to target). Never rely on local variables for persistent state.
 - **Telemetry**: Output all logs cleanly to stdout. Do not generate local `.log` files.
 - **Standardized UX**: All user-facing outputs must utilize Rich Embeds adhering to the ShadowSyn theme (Dark Purple: `#2B0B35`).
+- **Ephemeral flash toasts**: Success and info confirmations from admin slash commands (`/game_roles_add`, `/game_roles_remove`, `/game_roles_seed`, deploy commands, etc.) must auto-delete after **1.5 seconds** via `ephemeral_flash_reply()`. In-panel toggle confirmations auto-delete after **1.0 second** via `ephemeral_flash()`. Errors and denial messages stay ephemeral but **do not** auto-delete.
 - **Operational Security**: Enforce `ephemeral=True` for all error messages, configuration outputs, and administrative actions.
 
 ## Execution and Output Protocol

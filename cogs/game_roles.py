@@ -28,6 +28,7 @@ logger = logging.getLogger("ShadowSyn.GameRoles")
 THEME_PRIMARY = 0x2B0B35
 PAGE_SIZE = 10
 FLASH_SECONDS = 1.0
+ADMIN_FLASH_SECONDS = 1.5
 
 PANEL_TITLE = "🎮 Game Roles"
 PANEL_BLURB = (
@@ -129,6 +130,49 @@ async def ephemeral_flash(
         msg = await interaction.followup.send(content, ephemeral=True, wait=True)
     except Exception as exc:
         logger.warning("Ephemeral flash send failed: %s", exc)
+        return
+    try:
+        await asyncio.sleep(seconds)
+        await msg.delete()
+    except Exception:
+        pass
+
+
+async def ephemeral_flash_reply(
+    ctx: discord.ApplicationContext,
+    content: str | None = None,
+    *,
+    embed: discord.Embed | None = None,
+    seconds: float = ADMIN_FLASH_SECONDS,
+) -> None:
+    """Admin slash success/info toast — auto-deletes after 1.5s."""
+    try:
+        kwargs: dict[str, Any] = {"ephemeral": True, "wait": True}
+        if embed is not None:
+            msg = await ctx.respond(embed=embed, **kwargs)
+        else:
+            msg = await ctx.respond(content or "", **kwargs)
+    except Exception as exc:
+        logger.warning("Ephemeral flash reply failed: %s", exc)
+        return
+    try:
+        await asyncio.sleep(seconds)
+        await msg.delete()
+    except Exception:
+        pass
+
+
+async def ephemeral_flash_followup(
+    ctx: discord.ApplicationContext,
+    content: str,
+    *,
+    seconds: float = ADMIN_FLASH_SECONDS,
+) -> None:
+    """Flash toast after ctx.defer() — auto-deletes after 1.5s."""
+    try:
+        msg = await ctx.followup.send(content, ephemeral=True, wait=True)
+    except Exception as exc:
+        logger.warning("Ephemeral flash followup failed: %s", exc)
         return
     try:
         await asyncio.sleep(seconds)
@@ -792,15 +836,14 @@ class GameRolesCog(commands.Cog):
         if not has_admin_shadow(ctx.author, ctx.guild.id):
             return await safe_reply(ctx, "🚫 Admin clearance required.", ephemeral=True)
 
-        await safe_reply(ctx, "🛠️ Deploying game roles panel...", ephemeral=True)
+        await ctx.defer(ephemeral=True)
         try:
             msg = await self._deploy_panel(ctx.guild)
             ch = await resolve_channel(self.bot, ctx.guild.id, "game_roles")
             mention = ch.mention if ch else "game_roles channel"
-            await safe_reply(
+            await ephemeral_flash_followup(
                 ctx,
                 f"✅ Panel live in {mention} · message `{msg.id}`",
-                ephemeral=True,
             )
         except Exception as exc:
             logger.error("game_roles_deploy failed: %s", exc)
@@ -832,10 +875,9 @@ class GameRolesCog(commands.Cog):
         except Exception as exc:
             logger.warning("Panel refresh after seed failed: %s", exc)
 
-        await safe_reply(
+        await ephemeral_flash_reply(
             ctx,
             f"✅ Seeded **{len(entries)}** gaming roles into the hub catalog.",
-            ephemeral=True,
         )
 
     @discord.slash_command(
@@ -861,15 +903,17 @@ class GameRolesCog(commands.Cog):
         cfg = self._guild_store(ctx.guild.id)
         roles: list[dict[str, Any]] = list(cfg.get("roles") or [])
         if any(int(e["id"]) == role.id for e in roles):
-            return await safe_reply(ctx, f"ℹ️ **{role.name}** is already in the catalog.", ephemeral=True)
+            return await ephemeral_flash_reply(
+                ctx,
+                f"ℹ️ **{role.name}** is already in the catalog.",
+            )
 
         roles.append(self._role_entry(role))
         cfg["roles"] = _sorted_catalog(roles)
         self._save_store()
-        await safe_reply(
+        await ephemeral_flash_reply(
             ctx,
             f"✅ Added **{role.name}** to the hub ({len(roles)} total).",
-            ephemeral=True,
         )
 
     @discord.slash_command(
@@ -892,14 +936,16 @@ class GameRolesCog(commands.Cog):
         roles: list[dict[str, Any]] = list(cfg.get("roles") or [])
         new_roles = [e for e in roles if int(e["id"]) != role.id]
         if len(new_roles) == len(roles):
-            return await safe_reply(ctx, f"ℹ️ **{role.name}** is not in the catalog.", ephemeral=True)
+            return await ephemeral_flash_reply(
+                ctx,
+                f"ℹ️ **{role.name}** is not in the catalog.",
+            )
 
         cfg["roles"] = new_roles
         self._save_store()
-        await safe_reply(
+        await ephemeral_flash_reply(
             ctx,
             f"✅ Removed **{role.name}** from the hub ({len(new_roles)} remaining).",
-            ephemeral=True,
         )
 
     @discord.slash_command(
