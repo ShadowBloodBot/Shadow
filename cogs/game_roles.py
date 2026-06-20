@@ -52,6 +52,15 @@ else:
     STORE_PATH = PERSIST_ROOT / "game_roles.json"
 _REPO_STORE = _REPO_DATA / "game_roles.json"
 
+DENYLIST_ROLE_IDS = frozenset({
+    1283738820160000031,
+    955600547266822174,
+    960088893351415898,
+    1403928804891693187,
+    1214794734770323466,
+    1447110148442030111,
+})
+
 DENYLIST_NAMES = frozenset({
     "@everyone",
     "everyone",
@@ -61,6 +70,7 @@ DENYLIST_NAMES = frozenset({
     "mover and shaker",
     "🔥shadow",
     "silhouette",
+    "shade",
     "major alcoholic boomer",
     "degenerate",
     "member",
@@ -97,6 +107,8 @@ def _normalize_role_name(name: str) -> str:
 
 
 def _is_denylisted(role: discord.Role, guild_id: int) -> bool:
+    if role.id in DENYLIST_ROLE_IDS:
+        return True
     if role.is_default():
         return True
     if role.managed:
@@ -847,7 +859,7 @@ class GameRolesCog(commands.Cog):
             )
         except Exception as exc:
             logger.error("game_roles_deploy failed: %s", exc)
-            await safe_reply(ctx, f"❌ Deploy failed: {exc}", ephemeral=True)
+            await ctx.followup.send(f"❌ Deploy failed: {exc}", ephemeral=True)
 
     @discord.slash_command(
         name="game_roles_seed",
@@ -865,20 +877,25 @@ class GameRolesCog(commands.Cog):
         if minion is None:
             return await safe_reply(ctx, "❌ Minion role not found.", ephemeral=True)
 
-        cfg = self._guild_store(ctx.guild.id)
-        entries = self._build_seed_entries(ctx.guild)
-        cfg["roles"] = entries
-        self._save_store()
-
+        await ctx.defer(ephemeral=True)
         try:
-            await self._deploy_panel(ctx.guild)
-        except Exception as exc:
-            logger.warning("Panel refresh after seed failed: %s", exc)
+            cfg = self._guild_store(ctx.guild.id)
+            entries = self._build_seed_entries(ctx.guild)
+            cfg["roles"] = entries
+            await asyncio.to_thread(self._save_store)
 
-        await ephemeral_flash_reply(
-            ctx,
-            f"✅ Seeded **{len(entries)}** gaming roles into the hub catalog.",
-        )
+            try:
+                await self._deploy_panel(ctx.guild)
+            except Exception as exc:
+                logger.warning("Panel refresh after seed failed: %s", exc)
+
+            await ephemeral_flash_followup(
+                ctx,
+                f"✅ Seeded **{len(entries)}** gaming roles into the hub catalog.",
+            )
+        except Exception as exc:
+            logger.exception("game_roles_seed failed")
+            await ctx.followup.send(f"❌ Seed failed: {exc}", ephemeral=True)
 
     @discord.slash_command(
         name="game_roles_add",
@@ -900,21 +917,37 @@ class GameRolesCog(commands.Cog):
         if err:
             return await safe_reply(ctx, f"❌ {err}", ephemeral=True)
 
-        cfg = self._guild_store(ctx.guild.id)
-        roles: list[dict[str, Any]] = list(cfg.get("roles") or [])
-        if any(int(e["id"]) == role.id for e in roles):
-            return await ephemeral_flash_reply(
-                ctx,
-                f"ℹ️ **{role.name}** is already in the catalog.",
-            )
+        await ctx.defer(ephemeral=True)
+        try:
+            cfg = self._guild_store(ctx.guild.id)
+            roles: list[dict[str, Any]] = list(cfg.get("roles") or [])
+            if any(
+                str(e.get("id")) == str(role.id)
+                for e in roles
+                if isinstance(e, dict)
+            ):
+                await ephemeral_flash_followup(
+                    ctx,
+                    f"ℹ️ **{role.name}** is already in the catalog.",
+                )
+                return
 
-        roles.append(self._role_entry(role))
-        cfg["roles"] = _sorted_catalog(roles)
-        self._save_store()
-        await ephemeral_flash_reply(
-            ctx,
-            f"✅ Added **{role.name}** to the hub ({len(roles)} total).",
-        )
+            roles.append(self._role_entry(role))
+            cfg["roles"] = _sorted_catalog(roles)
+            await asyncio.to_thread(self._save_store)
+
+            try:
+                await self._refresh_panel_message(guild_id=ctx.guild.id)
+            except Exception as exc:
+                logger.warning("Panel refresh after add failed: %s", exc)
+
+            await ephemeral_flash_followup(
+                ctx,
+                f"✅ Added **{role.name}** to the hub ({len(roles)} total).",
+            )
+        except Exception as exc:
+            logger.exception("game_roles_add failed")
+            await ctx.followup.send(f"❌ Add failed: {exc}", ephemeral=True)
 
     @discord.slash_command(
         name="game_roles_remove",
@@ -932,21 +965,36 @@ class GameRolesCog(commands.Cog):
         if not has_admin_shadow(ctx.author, ctx.guild.id):
             return await safe_reply(ctx, "🚫 Admin clearance required.", ephemeral=True)
 
-        cfg = self._guild_store(ctx.guild.id)
-        roles: list[dict[str, Any]] = list(cfg.get("roles") or [])
-        new_roles = [e for e in roles if int(e["id"]) != role.id]
-        if len(new_roles) == len(roles):
-            return await ephemeral_flash_reply(
-                ctx,
-                f"ℹ️ **{role.name}** is not in the catalog.",
-            )
+        await ctx.defer(ephemeral=True)
+        try:
+            cfg = self._guild_store(ctx.guild.id)
+            roles: list[dict[str, Any]] = list(cfg.get("roles") or [])
+            new_roles = [
+                e for e in roles
+                if isinstance(e, dict) and str(e.get("id")) != str(role.id)
+            ]
+            if len(new_roles) == len(roles):
+                await ephemeral_flash_followup(
+                    ctx,
+                    f"ℹ️ **{role.name}** is not in the catalog.",
+                )
+                return
 
-        cfg["roles"] = new_roles
-        self._save_store()
-        await ephemeral_flash_reply(
-            ctx,
-            f"✅ Removed **{role.name}** from the hub ({len(new_roles)} remaining).",
-        )
+            cfg["roles"] = new_roles
+            await asyncio.to_thread(self._save_store)
+
+            try:
+                await self._refresh_panel_message(guild_id=ctx.guild.id)
+            except Exception as exc:
+                logger.warning("Panel refresh after remove failed: %s", exc)
+
+            await ephemeral_flash_followup(
+                ctx,
+                f"✅ Removed **{role.name}** from the hub ({len(new_roles)} remaining).",
+            )
+        except Exception as exc:
+            logger.exception("game_roles_remove failed")
+            await ctx.followup.send(f"❌ Remove failed: {exc}", ephemeral=True)
 
     @discord.slash_command(
         name="game_roles_list",

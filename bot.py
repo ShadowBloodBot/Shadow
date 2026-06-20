@@ -132,6 +132,21 @@ async def on_ready():
     except Exception as e:
         logger.error(f"Guild slash sync failed: {e}")
 
+
+@bot.event
+async def on_application_command_error(ctx: discord.ApplicationContext, error: Exception):
+    cmd_name = ctx.command.name if ctx.command else "?"
+    logger.exception("Slash command failed: /%s", cmd_name)
+    message = f"⚠️ Command error: {error}"
+    try:
+        if not ctx.response.is_done():
+            await ctx.respond(message, ephemeral=True)
+        else:
+            await ctx.followup.send(message, ephemeral=True)
+    except Exception:
+        pass
+
+
 # ==========================================
 # EXECUTION & NETWORK PATCHING
 # ==========================================
