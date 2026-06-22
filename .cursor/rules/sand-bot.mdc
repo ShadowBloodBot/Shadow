@@ -1,22 +1,19 @@
 ---
 description: SAND bot — GPT 5.5 implements all code in this module
-globs: cogs/sand/**,data/sand_knowledge.json,scripts/scrape_sand_wiki.py,scripts/trampler_mirror.py
+globs: cogs/sand/**,data/sand_knowledge.json,data/sand_pristine_recipes.json,scripts/scrape_sand_wiki.py,scripts/sand_guides_import.py,scripts/verify_sand_commands.py
 alwaysApply: false
 ---
 
 # SAND bot — Raiders of Sophie
 
-## Model
-
-**GPT 5.5** (`gpt-5.5-medium`) implements all SAND bot code changes.
-
-Composer may plan, triage, and explain — do not implement SAND edits in Composer. Joseph switches to GPT 5.5, or Composer delegates a subagent with `gpt-5.5-medium`.
-
 ## Scope
 
-- `cogs/sand/` — `/sand craft`, query engine, guides funnel
-- `data/sand_knowledge.json` — wiki recipes, Pristine turret data
-- `scripts/scrape_sand_wiki.py`, `scripts/trampler_mirror.py`
+- `cogs/sand/` — `/sand craft`, `query_engine.py`, `guides_funnel.py` (Raiders of Sophie)
+- `data/sand_knowledge.json` — wiki recipes (via `scripts/scrape_sand_wiki.py`)
+- `data/sand_pristine_recipes.json` — in-game workshop Pristine costs (not on wiki)
+- `scripts/sand_guides_import.py` — import/republish guide embeds from crossposts
+- `scripts/verify_sand_commands.py` — check `/sand` registration on both guilds
+- Registry key `sand_general` — SAND discussion channel (both guilds)
 
 ## Embed UX
 

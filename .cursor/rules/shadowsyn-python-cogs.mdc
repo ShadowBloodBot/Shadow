@@ -1,0 +1,46 @@
+---
+description: Python and cog editing standards for ShadowSyn
+globs: "**/*.py"
+alwaysApply: false
+---
+
+# ShadowSyn Python / Cog Standards
+
+## Before you edit
+
+- Read the **whole cog file** before changing anything.
+- Preserve all constants, channel/role/user IDs, and existing command signatures unless explicitly ordered.
+- Never alter core modules (Casino, Music, VoiceMaster/JTC) without explicit approval.
+
+## Py-cord
+
+- Slash commands only — use `discord.Option` for every parameter.
+- Re-register persistent Views in `on_ready`.
+- Wrap Voice API, HTTP, and file IO in try/except; never let silent failures crash the event loop.
+
+## Persistence pattern
+
+```python
+PERSIST_PATH = os.getenv("PERSIST_PATH", "/data")
+temp_path = file_path.with_suffix(".tmp")
+# write JSON to temp_path, then:
+os.replace(temp_path, file_path)
+```
+
+Never store durable state only in memory or instance variables.
+
+## UX
+
+- Embeds: ShadowSyn dark purple `#2B0B35`.
+- Errors, config output, admin actions: `ephemeral=True`.
+- Success flash toasts: `ephemeral_flash_reply()` (1.5s) / `ephemeral_flash()` (1.0s) where the cog already uses them.
+
+## Output protocol (when delivering full files)
+
+1. **Build** — complete runnable `.py` first.
+2. **Breakdown** — what changed, what was preserved, how it integrates.
+
+## Guild routing
+
+- Use `cogs/guild_registry.py` (`ch_id`, `role_id`, `REGISTERED_GUILD_IDS`).
+- Deploy scripts default `--guild all`.

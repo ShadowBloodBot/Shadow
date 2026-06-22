@@ -15,15 +15,20 @@ Railway API access lives in the **project root**:
 
 Gitignored via `.env.*`. Contains `RAILWAY_API_TOKEN`, `RAILWAY_PROJECT_ID`, `RAILWAY_SERVICE`.
 
+**Restore after wipe:** `.\scripts\setup_cursor_access.ps1` writes `.env.railway` and `.cursor/mcp.json`. Verify: `.\scripts\verify_cursor_access.ps1`.
+
 All `scripts/railway_*.py` and `*_production_deploy.py` scripts load this file automatically. **Do not** paste the token into rules, commits, or chat.
 
 ## Shadow service
 
 | Item | Value |
 |---|---|
+| GitHub | https://github.com/ShadowBloodBot/Shadow |
 | Project | `sublime-enthusiasm` |
 | Project ID | `b147a1c2-7073-4ba9-be34-14f30b200bb4` |
 | Service | `Shadow` |
+| Service ID | `78169915-8c7f-4190-98fa-c78db2c94bcb` |
+| Console | https://railway.com/project/b147a1c2-7073-4ba9-be34-14f30b200bb4/service/78169915-8c7f-4190-98fa-c78db2c94bcb |
 
 ## Deploy workflow
 

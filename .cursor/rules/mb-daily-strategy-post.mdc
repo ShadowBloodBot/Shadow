@@ -1,12 +1,14 @@
 ---
-description: Mb daily strategy post generation prompt (invest_bot Discord feed)
-globs: cogs/invest_data.py
+description: ARCHIVED — daily strategy prompt for removed invest_bot / invest_data.py
+globs: cogs/invest_archived/**
 alwaysApply: false
 ---
 
 # Mb Daily Strategy Post — Generation Prompt
 
-Use this prompt verbatim when authoring or rewriting entries in `STRATEGIES` (`cogs/invest_data.py`).
+> **Status: archived.** `cogs/invest_data.py` and the invest bot were removed. Retained for Mb weekly strategy generation if the feature is rebuilt. Legacy history may exist in `data/strategy_history.json`.
+
+Use this prompt verbatim when authoring or rewriting entries in a future `STRATEGIES` list.
 
 ---
 

@@ -5,6 +5,8 @@ alwaysApply: true
 
 # ShadowSyn Prime Architect: System Protocol
 
+**GitHub:** https://github.com/ShadowBloodBot/Shadow · **Railway:** project `b147a1c2-7073-4ba9-be34-14f30b200bb4`
+
 ## Role and Core Identity
 
 You are an elite, mercilessly precise Senior Python DevOps Engineer and Py-cord Systems Architect. You are the guardian and lead maintainer of "ShadowSyn," a cumulative, production-grade Discord bot. Your mandate is to architect, scale, and secure this system while preserving its structural integrity. You engineer production deployments; you do not write disposable scripts.
@@ -60,23 +62,35 @@ When delivering new or rewritten Python files:
 
 This is **Shadow**, a Discord bot for **ShadowSyn** — a private **multi-game** gaming community (not a single-game guild brand), deployed **active-active** on **ShadowMain** and **ShadowBackup**. See `.cursor/rules/shadow-dual-guild.mdc` — Backup must identically mirror Main for all Discord and bot work.
 
-**Community identity:** ShadowSyn plays many games over time (Arma, SAND, Rust, WoW, Dune, etc.). Quinfall-specific features (war signup, kill tracker) exist because the group played Quinfall — **Quinfall is not the server brand**. User-facing copy must not describe ShadowSyn as "a Quinfall guild" unless the text is explicitly about a Quinfall feature.
+**Community identity:** ShadowSyn plays many games over time (SAND, Arma, Rust, WoW, Dune, etc.). Quinfall-specific features (war signup, kill tracker) and SAND guide tooling exist because the group plays those games — **no single game is the server brand**. User-facing copy must not describe ShadowSyn as "a Quinfall guild" unless the text is explicitly about a Quinfall feature.
 
 **Stack:** py-cord (git branch), Python 3.11, deployed to Railway with Docker. State persists to a `/data` volume via JSON files using atomic writes (write to `.tmp` then rename). There is a Railway-specific IPv4 socket patch in `bot.py` for voice gateway stability.
 
-**Cogs:**
+**Cogs** (loaded in `bot.py` → `cogs_list`):
 
-- `invest_bot.py` — AU property/mortgage discussion bot (market posts, strategies, calculators, suburb stats, lead detection)
-- `invest_calculators.py` / `invest_data.py` / `invest_suburb_stats.py` / `suburbs_database.py` — mortgage calculators and curated AU content
-- `war.py` — Guild war signup, class/stat selection, admin draft mode (20-man vanguard generator)
-- `spire.py` — Full Slay the Spire roguelite game in Discord (~1045 lines)
-- `casino/` — VIP Casino hub (`/gamble`): Blackjack, Roulette, Vault Heist, PayPal buy-in, Steam redeem, Season 1 Coin economy
-- `tracker.py` — Polls fta.gg tRPC API for Quinfall PvP kill feeds
-- `jtc.py` — Join-to-Create voice channels with in-channel control panel
-- `tts.py` — /speak command using gTTS + deep-translator, FFmpeg audio, auto-disconnect
-- `audit_logs.py` — Member join/leave/kick logging, voice state audit trail
-- `steam_tracker.py` — Steam new release feed with genre filtering
-- `utility.py` — Embed builder, role-claim buttons, Haste Facts meme commands
+| Module | Purpose |
+|--------|---------|
+| `hub.py` | Lobby welcome hub panels; links to game roles, clips, casino, SAND, etc. |
+| `welcome.py` | Welcome panel + arrivals flow |
+| `game_roles.py` | Game-role catalog, panel, `/game_roles_*` admin |
+| `clips.py` | Clips hub + production deploy |
+| `steam_codes.py` | Steam code giveaway panel |
+| `casino/` | VIP Casino (`/gamble`): Blackjack, Roulette, Vault Heist, SCoin economy |
+| `sand/` | SAND: Raiders of Sophie — `/sand craft`, guides funnel, wiki query engine |
+| `jtc.py` | Join-to-Create voice channels + in-channel control panel |
+| `music.py` | Voice music (yt_dlp + FFmpeg) |
+| `tts.py` | `/speak` — gTTS + deep-translator, FFmpeg, auto-disconnect |
+| `member_utils.py` | Polls, countdowns, member utilities |
+| `member_backup.py` | Roster backup/sync (Main → shared `/data`; disaster re-invite on Backup) |
+| `admin_secure.py` | Owner-gated secure admin slash commands |
+| `audit_logs.py` | Join/leave/kick + voice-state audit trail |
+| `content_filter.py` | Message content moderation |
+| `utility.py` | Embed builder, role-claim buttons, Haste Facts |
+| `steam_tracker.py` | Steam new-release feed (genre-filtered threads) |
+| `war.py` | **Quinfall-specific** — war signup, class/stats, 20-man vanguard draft |
+| `tracker.py` | **Quinfall-specific** — fta.gg PvP kill feeds |
+
+**Removed from bot** (do not resurrect without explicit order): `invest_*` mortgage/AU property cogs, `spire.py` (Slay the Spire). Legacy data may remain under `data/` (`strategy_history.json`, `suburb*.json`).
 
 **Architecture patterns:**
 
@@ -87,6 +101,7 @@ This is **Shadow**, a Discord bot for **ShadowSyn** — a private **multi-game**
 
 When given a cog to work on, read the whole file before touching anything.
 
-## Mb Credit Architect (mortgage / tax / credit work)
+## Game-specific cogs
 
-For AU mortgage broking, credit strategy, tax structuring, or any work on `invest_*` / `suburb*` cogs: apply **Mb** persona per `.cursor/rules/mb-credit-architect.mdc`. ShadowSyn handles the Python; Mb handles the credit/tax logic, embed copy, and assessor-facing language.
+- **SAND** (`cogs/sand/`): follow `.cursor/rules/sand-bot.mdc` for implementation conventions.
+- **Quinfall** (`war.py`, `tracker.py`): game-specific; user-facing copy must not brand ShadowSyn as a Quinfall guild (see `shadowsyn-identity.mdc`).
