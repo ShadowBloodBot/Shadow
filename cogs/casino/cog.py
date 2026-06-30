@@ -34,17 +34,22 @@ def owner_only():
 class CasinoCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._views_restored = False
         load_scoins()
 
     @commands.Cog.listener()
     async def on_ready(self):
+        if self._views_restored:
+            return
+        self._views_restored = True
+
         from .buyin import BuyInAdminView
         from .shop import RedemptionAdminView
 
         try:
             self.bot.add_view(CasinoFloorView())
         except Exception as exc:
-            print(f"⚠️ Casino floor view restore failed: {exc}")
+            logger.warning("Casino floor view restore failed: %s", exc)
 
         try:
             for req in pending_redemptions():
@@ -58,7 +63,7 @@ class CasinoCog(commands.Cog):
                     BuyInAdminView(req["id"], int(req["user_id"]), req["coins"])
                 )
         except Exception as exc:
-            print(f"⚠️ Casino admin view restore failed: {exc}")
+            logger.warning("Casino admin view restore failed: %s", exc)
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
@@ -115,9 +120,7 @@ class CasinoCog(commands.Cog):
                 ctx, "❌ Casino channel not found in registry.", ephemeral=True
             )
 
-        await safe_reply(
-            ctx, f"🛠️ Deploying casino floor panel to {channel.mention}...", ephemeral=True
-        )
+        await ctx.defer(ephemeral=True)
 
         old_id = get_panel_id(ctx.guild.id)
         if old_id:
@@ -136,14 +139,13 @@ class CasinoCog(commands.Cog):
             )
             set_panel_id(ctx.guild.id, msg.id)
             self.bot.add_view(CasinoFloorView())
-            await safe_reply(
-                ctx,
+            await ctx.followup.send(
                 f"✅ Casino floor live in {channel.mention} · message `{msg.id}`",
                 ephemeral=True,
             )
         except Exception as exc:
             logger.error(f"casino_deploy failed: {exc}")
-            await safe_reply(ctx, f"❌ Deploy failed: {exc}", ephemeral=True)
+            await ctx.followup.send(f"❌ Deploy failed: {exc}", ephemeral=True)
 
     @casino_deploy.error
     async def casino_deploy_error(
@@ -208,6 +210,10 @@ class CasinoCog(commands.Cog):
     )
     @owner_only()
     async def give_coins(self, ctx: ApplicationContext, user: discord.Member, amount: int):
+        if amount <= 0:
+            return await safe_reply(
+                ctx, "❌ Amount must be a positive integer.", ephemeral=True
+            )
         new_bal = update_balance(str(user.id), amount)
         await safe_reply(
             ctx,

@@ -1,6 +1,7 @@
 # cogs/casino/constants.py — ShadowSyn VIP Casino configuration
 
 import os
+import sys
 
 THEME_PRIMARY = 0x2B0B35
 THEME_WIN = 0x43B581
@@ -10,7 +11,15 @@ THEME_INFO = 0x3498DB
 THEME_WARNING = 0xE67E22
 THEME_NEUTRAL = 0x95A5A6
 
-OWNER_ID = 482463400929263627
+_owner_env = os.getenv("CASINO_OWNER_ID", "").strip()
+if _owner_env:
+    try:
+        OWNER_ID: int = int(_owner_env)
+    except ValueError:
+        print(f"ERROR: CASINO_OWNER_ID='{_owner_env}' is not a valid integer.", file=sys.stderr)
+        sys.exit(1)
+else:
+    OWNER_ID = 482463400929263627  # fallback for local dev without env set
 
 # ── Economy peg: 1,000 Coins = $1 USD · 10 Coins = 1¢ ──
 ECONOMY_VERSION = 2

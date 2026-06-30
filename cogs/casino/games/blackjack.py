@@ -60,14 +60,20 @@ class BlackjackView(View):
         self.doubled = False
         self.game_over = False
         self.outcome_recorded = False
+        self.message: discord.Message | None = None
         self.deck = _build_deck()
-        self.player_hand = [self.deck.pop(), self.deck.pop()]
-        self.dealer_hand = [self.deck.pop(), self.deck.pop()]
+        self.player_hand = [self._draw(), self._draw()]
+        self.dealer_hand = [self._draw(), self._draw()]
         update_balance(self.user_id, -bet)
         record_stat(self.user_id, "blackjack_hands")
 
         if calculate_hand(self.player_hand) == 21 or calculate_hand(self.dealer_hand) == 21:
             self._resolve()
+
+    def _draw(self) -> str:
+        if len(self.deck) < 5:
+            self.deck = _build_deck()
+        return self.deck.pop()
 
     def _status_block(self) -> tuple[str, int]:
         player_total = calculate_hand(self.player_hand)
@@ -88,59 +94,67 @@ class BlackjackView(View):
             return f"🤝 **Push** — {format_coins(self.bet)} returned.", THEME_NEUTRAL
         return f"❌ **Dealer wins.** Lost {format_coins(self.bet)}.", THEME_LOSS
 
-    def _record_outcome(self) -> None:
+    def _resolve_outcome(self) -> tuple[int, int, str, dict]:
+        """Record the outcome and return (profit, payout, headline, flags) for announcement."""
         if self.outcome_recorded:
-            return
+            return 0, 0, "", {}
         self.outcome_recorded = True
 
-        player_total = calculate_hand(self.player_hand)
-        dealer_total = calculate_hand(self.dealer_hand)
-
-        if player_total > 21:
-            record_stat(self.user_id, "total_lost", self.bet)
-            return
-        if dealer_total > 21:
-            payout = self.bet * 2
-            update_balance(self.user_id, payout)
-            record_stat(self.user_id, "total_won", payout - self.bet)
-            return
-        if player_total == 21 and len(self.player_hand) == 2 and dealer_total != 21:
-            payout = int(self.bet * BLACKJACK_NATURAL_MULTIPLIER)
-            update_balance(self.user_id, payout)
-            record_stat(self.user_id, "total_won", payout - self.bet)
-            return
-        if player_total > dealer_total:
-            payout = self.bet * 2
-            update_balance(self.user_id, payout)
-            record_stat(self.user_id, "total_won", payout - self.bet)
-            return
-        if player_total == dealer_total:
-            update_balance(self.user_id, self.bet)
-            return
-        record_stat(self.user_id, "total_lost", self.bet)
-
-    def _win_details(self) -> tuple[int, int, str, dict]:
-        """Return (profit, payout, headline, flags) when player won; else zeros."""
         player_total = calculate_hand(self.player_hand)
         dealer_total = calculate_hand(self.dealer_hand)
         flags: dict = {}
 
         if player_total > 21:
+            record_stat(self.user_id, "total_lost", self.bet)
             return 0, 0, "", flags
+
         if dealer_total > 21:
             payout = self.bet * 2
-            return payout - self.bet, payout, "Dealer bust!", flags
+            update_balance(self.user_id, payout)
+            profit = payout - self.bet
+            record_stat(self.user_id, "total_won", profit)
+            return profit, payout, "Dealer bust!", flags
+
         if player_total == 21 and len(self.player_hand) == 2 and dealer_total != 21:
             payout = int(self.bet * BLACKJACK_NATURAL_MULTIPLIER)
+            update_balance(self.user_id, payout)
+            profit = payout - self.bet
+            record_stat(self.user_id, "total_won", profit)
             flags["blackjack_natural"] = True
-            return payout - self.bet, payout, "BLACKJACK!", flags
+            return profit, payout, "BLACKJACK!", flags
+
         if player_total > dealer_total:
             payout = self.bet * 2
-            return payout - self.bet, payout, "Table win!", flags
+            update_balance(self.user_id, payout)
+            profit = payout - self.bet
+            record_stat(self.user_id, "total_won", profit)
+            return profit, payout, "Table win!", flags
+
+        if player_total == dealer_total:
+            update_balance(self.user_id, self.bet)
+            return 0, self.bet, "Push", flags
+
+        record_stat(self.user_id, "total_lost", self.bet)
         return 0, 0, "", flags
 
+    async def on_timeout(self) -> None:
+        if not self.game_over:
+            self.game_over = True
+            self.outcome_recorded = True
+            record_stat(self.user_id, "total_lost", self.bet)
+            for child in self.children:
+                child.disabled = True
+            if self.message:
+                try:
+                    await self.message.edit(
+                        content="⏰ Game timed out — bet forfeited.",
+                        view=self,
+                    )
+                except Exception:
+                    pass
+
     async def announce_if_notable(self, bot: discord.Client) -> None:
-        profit, payout, headline, flags = self._win_details()
+        profit, payout, headline, flags = self._resolve_outcome()
         if profit <= 0:
             return
         await maybe_announce_win(
@@ -186,8 +200,7 @@ class BlackjackView(View):
             child.disabled = True
         if calculate_hand(self.player_hand) <= 21:
             while calculate_hand(self.dealer_hand) < 17:
-                self.dealer_hand.append(self.deck.pop())
-        self._record_outcome()
+                self.dealer_hand.append(self._draw())
 
     @discord.ui.button(label="Hit", style=ButtonStyle.primary, emoji="➕", row=0)
     async def hit(self, button, interaction: discord.Interaction):
@@ -196,12 +209,14 @@ class BlackjackView(View):
         if self.game_over:
             return await interaction.response.send_message("Round ended.", ephemeral=True)
 
-        self.player_hand.append(self.deck.pop())
+        self.player_hand.append(self._draw())
         if self.doubled:
             self.children[2].disabled = True
         if calculate_hand(self.player_hand) >= 21:
             self._resolve()
         await interaction.response.edit_message(embed=self.generate_embed(), view=self)
+        if self.message is None:
+            self.message = interaction.message
         if self.game_over:
             await self.announce_if_notable(interaction.client)
 
@@ -213,8 +228,9 @@ class BlackjackView(View):
             return await interaction.response.send_message("Round ended.", ephemeral=True)
         self._resolve()
         await interaction.response.edit_message(embed=self.generate_embed(), view=self)
-        if self.game_over:
-            await self.announce_if_notable(interaction.client)
+        if self.message is None:
+            self.message = interaction.message
+        await self.announce_if_notable(interaction.client)
 
     @discord.ui.button(label="Double", style=ButtonStyle.danger, emoji="✖️", row=0)
     async def double_down(self, button, interaction: discord.Interaction):
@@ -230,8 +246,9 @@ class BlackjackView(View):
         update_balance(self.user_id, -self.bet)
         self.bet *= 2
         self.doubled = True
-        self.player_hand.append(self.deck.pop())
+        self.player_hand.append(self._draw())
         self._resolve()
         await interaction.response.edit_message(embed=self.generate_embed(), view=self)
-        if self.game_over:
-            await self.announce_if_notable(interaction.client)
+        if self.message is None:
+            self.message = interaction.message
+        await self.announce_if_notable(interaction.client)

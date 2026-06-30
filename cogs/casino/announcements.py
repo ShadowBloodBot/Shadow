@@ -20,9 +20,9 @@ def classify_win(profit: int, wager: int, flags: dict | None = None) -> str | No
 
     flags = flags or {}
 
-    if flags.get("blackjack_natural") and profit >= 50:
+    if flags.get("blackjack_natural") and profit >= JACKPOT_MIN_PROFIT:
         return "jackpot"
-    if flags.get("roulette_straight") and profit >= 50:
+    if flags.get("roulette_straight") and profit >= JACKPOT_MIN_PROFIT:
         return "jackpot"
     if flags.get("vault_multiplier", 0) >= 5.0 and profit >= 250:
         return "jackpot"

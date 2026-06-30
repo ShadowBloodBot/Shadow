@@ -1,12 +1,14 @@
 # cogs/casino/economy.py — Atomic economy persistence & redemptions
 
 import json
+import logging
 import os
 import time
 import uuid
 from pathlib import Path
 
 from .constants import (
+    BUYIN_MAX_PER_MONTH,
     DAILY_CLAIM_AMOUNT,
     DAILY_CLAIM_SECONDS,
     ECONOMY_VERSION,
@@ -15,11 +17,9 @@ from .constants import (
     STARTING_BALANCE,
 )
 
-PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve()
-try:
-    PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
-except OSError:
-    PERSIST_ROOT = Path(".").resolve()
+logger = logging.getLogger("ShadowSyn.Economy")
+
+from cogs.guild_registry import PERSIST_ROOT  # noqa: E402 — must follow constants import
 
 SCOINS_STORE = PERSIST_ROOT / "scoins.json"
 META_STORE = PERSIST_ROOT / "economy_meta.json"
@@ -43,7 +43,7 @@ def _atomic_write(file_path: Path, data) -> None:
         temp_path.write_text(payload, encoding="utf-8")
         temp_path.replace(file_path)
     except Exception as exc:
-        print(f"⚠️ Persistence Error [{file_path.name}]: {exc}")
+        logger.error("Persistence Error [%s]: %s", file_path.name, exc)
 
 
 def _save_scoins() -> None:
@@ -113,8 +113,11 @@ def load_scoins() -> None:
     if SCOINS_STORE.exists():
         try:
             scoins_db = json.loads(SCOINS_STORE.read_text(encoding="utf-8"))
-        except Exception:
-            scoins_db = {}
+        except Exception as exc:
+            logger.critical(
+                "FATAL: scoins.json is unreadable — halting to prevent data overwrite: %s", exc
+            )
+            raise SystemExit(1)
     else:
         scoins_db = {}
     if REDEMPTIONS_STORE.exists():
@@ -146,13 +149,26 @@ def update_balance(user_id: str, amount: int) -> int:
     return row["balance"]
 
 
-def record_stat(user_id: str, key: str, amount: int = 1) -> None:
+def record_stat(user_id: str, key: str, amount: int = 1, _save: bool = True) -> None:
     row = _ensure_user(user_id)
     stats = row.setdefault("stats", {})
     stats[key] = stats.get(key, 0) + amount
     if key == "total_won" and amount > stats.get("best_win", 0):
         stats["best_win"] = amount
+    if _save:
+        _save_scoins()
+
+
+def update_balance_and_stat(user_id: str, balance_delta: int, stat_key: str, stat_amount: int = 1) -> int:
+    """Adjust balance and record a stat in a single disk write."""
+    row = _ensure_user(user_id)
+    row["balance"] = max(0, row.get("balance", 0) + balance_delta)
+    stats = row.setdefault("stats", {})
+    stats[stat_key] = stats.get(stat_key, 0) + stat_amount
+    if stat_key == "total_won" and stat_amount > stats.get("best_win", 0):
+        stats["best_win"] = stat_amount
     _save_scoins()
+    return row["balance"]
 
 
 def _load_panels() -> None:
@@ -293,9 +309,10 @@ def count_monthly_redemptions(user_id: str) -> int:
     user_id = str(user_id)
     now = time.time()
     month_ago = now - (30 * 86_400)
+    all_requests = redemptions_db.get("requests", []) + redemptions_db.get("resolved", [])
     return sum(
         1
-        for req in redemptions_db.get("requests", [])
+        for req in all_requests
         if req.get("user_id") == user_id
         and req.get("status") in {"pending", "approved"}
         and req.get("created_at", 0) >= month_ago
@@ -336,12 +353,18 @@ def create_redemption(user_id: str, tier: dict, steam_id: str) -> dict:
         "created_at": time.time(),
     }
     redemptions_db.setdefault("requests", []).append(request)
-    _save_redemptions()
+    try:
+        _save_redemptions()
+    except Exception as exc:
+        update_balance(user_id, cost)
+        redemptions_db["requests"].remove(request)
+        raise RuntimeError(f"Redemption save failed: {exc}") from exc
     return request
 
 
 def resolve_redemption(request_id: str, approved: bool, admin_id: int) -> dict | None:
-    for req in redemptions_db.get("requests", []):
+    requests = redemptions_db.get("requests", [])
+    for req in requests:
         if req.get("id") != request_id or req.get("status") != "pending":
             continue
         req["status"] = "approved" if approved else "denied"
@@ -353,6 +376,8 @@ def resolve_redemption(request_id: str, approved: bool, admin_id: int) -> dict |
             _save_scoins()
         else:
             update_balance(req["user_id"], req["coins"])
+        requests.remove(req)
+        redemptions_db.setdefault("resolved", []).append(req)
         _save_redemptions()
         return req
     return None
@@ -373,9 +398,10 @@ def get_pending_buyin(user_id: str) -> dict | None:
 def count_monthly_buyins(user_id: str) -> int:
     user_id = str(user_id)
     month_ago = time.time() - (30 * 86_400)
+    all_requests = buyins_db.get("requests", []) + buyins_db.get("resolved", [])
     return sum(
         1
-        for req in buyins_db.get("requests", [])
+        for req in all_requests
         if req.get("user_id") == user_id
         and req.get("status") == "approved"
         and req.get("created_at", 0) >= month_ago
@@ -384,8 +410,6 @@ def count_monthly_buyins(user_id: str) -> int:
 
 def create_buyin(user_id: str, tier: dict, payment_ref: str) -> dict:
     user_id = str(user_id)
-    from .constants import BUYIN_MAX_PER_MONTH
-
     if get_pending_buyin(user_id):
         raise ValueError("You already have a pending buy-in. Wait for admin review.")
     if count_monthly_buyins(user_id) >= BUYIN_MAX_PER_MONTH:
@@ -407,7 +431,8 @@ def create_buyin(user_id: str, tier: dict, payment_ref: str) -> dict:
 
 
 def resolve_buyin(request_id: str, approved: bool, admin_id: int) -> dict | None:
-    for req in buyins_db.get("requests", []):
+    requests = buyins_db.get("requests", [])
+    for req in requests:
         if req.get("id") != request_id or req.get("status") != "pending":
             continue
         req["status"] = "approved" if approved else "denied"
@@ -415,6 +440,8 @@ def resolve_buyin(request_id: str, approved: bool, admin_id: int) -> dict | None
         req["resolved_by"] = str(admin_id)
         if approved:
             update_balance(req["user_id"], req["coins"])
+        requests.remove(req)
+        buyins_db.setdefault("resolved", []).append(req)
         _save_buyins()
         return req
     return None

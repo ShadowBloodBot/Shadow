@@ -272,6 +272,17 @@ class GambleHubView(View):
             return False
         return True
 
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        try:
+            # Best-effort: edit the message to show the hub is stale.
+            # interaction.message is not available here, so this is a no-op
+            # unless a subclass stores it.
+            pass
+        except Exception:
+            pass
+
     def _refresh_view(self) -> "GambleHubView":
         return GambleHubView(self._user)
 

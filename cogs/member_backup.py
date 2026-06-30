@@ -4,7 +4,6 @@
 import asyncio
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,11 +23,7 @@ THEME_PRIMARY = 0x2B0B35
 OWNER_ID = 482463400929263627
 SYNC_GUILD_ID = SHADOW_MAIN_GUILD_ID
 
-PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve()
-try:
-    PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
-except Exception:
-    PERSIST_ROOT = Path(".").resolve()
+from cogs.guild_registry import PERSIST_ROOT  # noqa: E402
 
 ROSTER_STORE = PERSIST_ROOT / "member_roster_backup.json"
 SCHEMA_VERSION = 1
@@ -272,6 +267,7 @@ class MemberBackupCog(commands.Cog):
 
             if not entry.get("still_in_guild", True):
                 try:
+                    await asyncio.sleep(DM_PROBE_DELAY)
                     user = await self.bot.fetch_user(int(user_id))
                     if user.bot:
                         self._remove_entry(user_id)

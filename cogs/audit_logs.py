@@ -1,11 +1,15 @@
 # cogs/audit_logs.py
 import asyncio
+import logging
+
 import discord
 from discord.ext import commands
 from discord.ui import View, Button
 from datetime import datetime, timezone
 
-from cogs.guild_registry import is_registered_guild, resolve_channel, resolve_role
+from cogs.guild_registry import has_admin_shadow, is_registered_guild, resolve_channel, resolve_role
+
+logger = logging.getLogger("ShadowSyn.AuditLogs")
 
 # --- CONSTANTS ---
 THEME_PRIMARY = 0x2B0B35
@@ -14,21 +18,13 @@ THEME_WIN = 0x43B581
 THEME_INFO = 0x3498DB
 
 
-def format_age(dt):
-    if not dt:
-        return "Unknown"
-    delta = datetime.now(timezone.utc) - dt
-    if delta.days > 365:
-        return f"{delta.days // 365} years ago"
-    return f"{delta.days} days ago"
-
-
 class MinionView(View):
     def __init__(self, target_member_id):
-        super().__init__(timeout=86400)
+        super().__init__(timeout=None)
         self.target = target_member_id
 
-        b = Button(label="Grant Minion", style=discord.ButtonStyle.success, emoji="✅")
+        b = Button(label="Grant Minion", style=discord.ButtonStyle.success, emoji="✅",
+                   custom_id=f"minion_grant_{target_member_id}")
         b.callback = self.grant
         self.add_item(b)
 
@@ -40,7 +36,11 @@ class MinionView(View):
         )
         self.add_item(profile_btn)
 
-    async def grant(self, i):
+    async def grant(self, i: discord.Interaction):
+        if not has_admin_shadow(i.user, i.guild.id if i.guild else None):
+            return await i.response.send_message(
+                "🚫 Admin clearance required.", ephemeral=True
+            )
         try:
             m = i.guild.get_member(self.target)
             r = resolve_role(i.guild, "minion")
@@ -76,6 +76,11 @@ class DepartureView(View):
 class AuditLogsCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        self.bot.add_view(MinionView(0))
+        logger.info("AuditLogs: MinionView registered as persistent.")
 
     async def _get_mod(self, guild, action_type, target):
         await asyncio.sleep(1.5)
@@ -120,7 +125,7 @@ class AuditLogsCog(commands.Cog):
 
             await ch.send(embed=em, view=MinionView(member.id))
         except Exception as e:
-            print(f"⚠️ Exception in on_member_join routing: {e}")
+            logger.error("Exception in on_member_join routing: %s", e)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member):
@@ -166,7 +171,7 @@ class AuditLogsCog(commands.Cog):
 
             await channel.send(embed=embed, view=DepartureView(member.id))
         except Exception as e:
-            print(f"⚠️ Exception in on_member_remove routing: {e}")
+            logger.error("Exception in on_member_remove routing: %s", e)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
@@ -179,32 +184,54 @@ class AuditLogsCog(commands.Cog):
         actions = []
         color = THEME_PRIMARY
 
+        # Batch all audit-log lookups we need into concurrent tasks so we only
+        # wait 1.5 s once instead of up to 1.5 s × N sequential calls.
+        channel_mod_task = None
+        mute_mod_task = None
+        deaf_mod_task = None
+
+        if before.channel != after.channel:
+            if before.channel is None:
+                pass  # join — no mod lookup needed
+            elif after.channel is None:
+                channel_mod_task = asyncio.ensure_future(
+                    self._get_mod(member.guild, discord.AuditLogAction.member_disconnect, member)
+                )
+            else:
+                channel_mod_task = asyncio.ensure_future(
+                    self._get_mod(member.guild, discord.AuditLogAction.member_move, member)
+                )
+
+        if before.mute != after.mute or before.deaf != after.deaf:
+            mute_mod_task = asyncio.ensure_future(
+                self._get_mod(member.guild, discord.AuditLogAction.member_update, member)
+            )
+
+        # Await all outstanding tasks at once
+        pending = [t for t in (channel_mod_task, mute_mod_task) if t is not None]
+        if pending:
+            await asyncio.gather(*pending)
+
+        channel_mod = await channel_mod_task if channel_mod_task else None
+        mute_deaf_mod = await mute_mod_task if mute_mod_task else None
+
         if before.channel != after.channel:
             if before.channel is None:
                 actions.append(f"📥 Joined **{after.channel.name}**")
                 color = THEME_WIN
             elif after.channel is None:
-                mod = await self._get_mod(
-                    member.guild, discord.AuditLogAction.member_disconnect, member
-                )
-                mod_text = f"\n*(Disconnected by {mod.mention})*" if mod else ""
+                mod_text = f"\n*(Disconnected by {channel_mod.mention})*" if channel_mod else ""
                 actions.append(f"📤 Left **{before.channel.name}**{mod_text}")
                 color = THEME_LOSS
             else:
-                mod = await self._get_mod(
-                    member.guild, discord.AuditLogAction.member_move, member
-                )
-                mod_text = f"\n*(Moved by {mod.mention})*" if mod else ""
+                mod_text = f"\n*(Moved by {channel_mod.mention})*" if channel_mod else ""
                 actions.append(
                     f"🔄 Moved: **{before.channel.name}** ➡️ **{after.channel.name}**{mod_text}"
                 )
                 color = THEME_INFO
 
         if before.mute != after.mute:
-            mod = await self._get_mod(
-                member.guild, discord.AuditLogAction.member_update, member
-            )
-            mod_text = f" *(by {mod.mention})*" if mod else ""
+            mod_text = f" *(by {mute_deaf_mod.mention})*" if mute_deaf_mod else ""
             if after.mute:
                 actions.append(f"🔇 Server Muted{mod_text}")
                 color = THEME_LOSS
@@ -213,10 +240,7 @@ class AuditLogsCog(commands.Cog):
                 color = THEME_WIN
 
         if before.deaf != after.deaf:
-            mod = await self._get_mod(
-                member.guild, discord.AuditLogAction.member_update, member
-            )
-            mod_text = f" *(by {mod.mention})*" if mod else ""
+            mod_text = f" *(by {mute_deaf_mod.mention})*" if mute_deaf_mod else ""
             if after.deaf:
                 actions.append(f"🔕 Server Deafened{mod_text}")
                 color = THEME_LOSS

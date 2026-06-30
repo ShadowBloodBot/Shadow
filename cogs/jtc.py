@@ -1,8 +1,7 @@
 # cogs/jtc.py
-import os
 import json
 import asyncio
-from pathlib import Path
+import logging
 from typing import Dict
 
 import discord
@@ -11,44 +10,39 @@ from discord.ui import View, Button, Modal, TextInput, Select
 from discord.ext import commands
 from discord.utils import get
 
-from cogs.guild_registry import ch_id, is_registered_guild
+from cogs.guild_registry import ch_id, is_registered_guild, PERSIST_ROOT
+
+logger = logging.getLogger("ShadowSyn.JTC")
 
 # --- CONSTANTS ---
 THEME_PRIMARY             = 0x2B0B35
 ROLE_ADMIN_ID             = 1214794734770323466
 MASTER_OWNERS             = [132451058961219584, 482463400929263627]
-ADMIN_ROLE_NAME           = "SHADOW"
 VC_DEFAULT_BITRATE        = 64000
 
 # --- PERSISTENCE ---
-PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve()
-try:
-    PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
-except Exception:
-    PERSIST_ROOT = Path(".").resolve()
-
 ACTIVE_VCS_STORE = PERSIST_ROOT / "active_vcs.json"
 
-def _atomic_write(file_path: Path, data):
+def _atomic_write(file_path, data):
     try:
         content  = json.dumps(data, indent=2)
         tmp_path = file_path.with_suffix(".tmp")
         tmp_path.write_text(content, encoding="utf-8")
         tmp_path.replace(file_path)
     except Exception as e:
-        print(f"⚠️ Persistence Error [{file_path.name}]: {e}")
+        logger.error("Persistence Error [%s]: %s", file_path.name, e)
 
 def _load_active_vcs() -> Dict[int, int]:
     if ACTIVE_VCS_STORE.exists():
         try:
             data = json.loads(ACTIVE_VCS_STORE.read_text(encoding="utf-8"))
             if isinstance(data, list):
-                print("⚠️ JTC: Migrating active_vcs.json from old list format.")
+                logger.warning("JTC: Migrating active_vcs.json from old list format.")
                 return {int(cid): 0 for cid in data}
             elif isinstance(data, dict):
                 return {int(k): v for k, v in data.items()}
         except Exception as e:
-            print(f"⚠️ JTC: Failed to load active VCs — starting fresh: {e}")
+            logger.error("JTC: Failed to load active VCs — starting fresh: %s", e)
     return {}
 
 def _save_active_vcs(vcs: Dict[int, int]) -> None:
@@ -222,7 +216,7 @@ class VCControlPanel(View):
         if i.user.id == self.creator_id:
             return True
         if i.data.get("custom_id") == f"jtc_delete_{self.vc.id}":
-            if any(r.name == ADMIN_ROLE_NAME or r.id == ROLE_ADMIN_ID for r in i.user.roles):
+            if any(r.id == ROLE_ADMIN_ID for r in i.user.roles):
                 return True
         await i.response.send_message("🚫 Only the channel creator can do that.", ephemeral=True)
         return False
@@ -231,17 +225,25 @@ class VCControlPanel(View):
         if not await self._check(i): return
         await i.response.defer(ephemeral=True)
         try:
+            _sem = asyncio.Semaphore(3)
+
+            async def _set(target, **kwargs):
+                async with _sem:
+                    await self.vc.set_permissions(target, **kwargs)
+
+            tasks = []
             for m in self.vc.members:
-                await self.vc.set_permissions(m, connect=True)
+                tasks.append(_set(m, connect=True, speak=True))
             for oid in MASTER_OWNERS:
                 owner = i.guild.get_member(oid)
                 if owner and owner not in self.vc.members:
-                    await self.vc.set_permissions(owner, connect=True)
-            await self.vc.set_permissions(i.guild.default_role, connect=False)
+                    tasks.append(_set(owner, connect=True, speak=True))
+            tasks.append(_set(i.guild.default_role, connect=False))
             if self.vc.category:
                 for target, overwrite in self.vc.category.overwrites.items():
                     if isinstance(target, discord.Role) and target != i.guild.default_role and not target.permissions.administrator:
-                        await self.vc.set_permissions(target, connect=False)
+                        tasks.append(_set(target, connect=False))
+            await asyncio.gather(*tasks)
             await i.followup.send("🔒 Locked.", ephemeral=True)
         except Exception as e:
             await i.followup.send(f"❌ Failed to lock: {e}", ephemeral=True)
@@ -250,11 +252,19 @@ class VCControlPanel(View):
         if not await self._check(i): return
         await i.response.defer(ephemeral=True)
         try:
-            await self.vc.set_permissions(i.guild.default_role, connect=None)
-            if self.vc.category:
-                for target, overwrite in self.vc.category.overwrites.items():
-                    if isinstance(target, discord.Role) and target != i.guild.default_role:
-                        await self.vc.set_permissions(target, connect=None)
+            _sem = asyncio.Semaphore(3)
+
+            async def _clear(target):
+                async with _sem:
+                    await self.vc.set_permissions(target, overwrite=None)
+
+            tasks = [_clear(i.guild.default_role)]
+            for target in list(self.vc.overwrites.keys()):
+                if isinstance(target, discord.Member):
+                    tasks.append(_clear(target))
+                elif isinstance(target, discord.Role) and target != i.guild.default_role:
+                    tasks.append(_clear(target))
+            await asyncio.gather(*tasks)
             await i.followup.send("🔓 Unlocked.", ephemeral=True)
         except Exception as e:
             await i.followup.send(f"❌ Failed to unlock: {e}", ephemeral=True)
@@ -319,6 +329,7 @@ class JTCCog(commands.Cog):
         self.bot             = bot
         self.active_temp_vcs = _load_active_vcs()
         self._startup_done   = False
+        self._panel_tasks: set = set()
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -340,7 +351,7 @@ class JTCCog(commands.Cog):
                     to_remove.append(channel_id)
                     continue
                 except Exception as e:
-                    print(f"⚠️ JTC: Could not fetch channel {channel_id}: {e}")
+                    logger.warning("JTC: Could not fetch channel %s: %s", channel_id, e)
                     continue
 
             if len(channel.members) == 0:
@@ -361,7 +372,32 @@ class JTCCog(commands.Cog):
         if to_remove:
             _save_active_vcs(self.active_temp_vcs)
 
-        print(f"✅ JTC: {restored} panel(s) restored, {len(to_remove)} stale VC(s) cleaned up.")
+        logger.info("JTC: %d panel(s) restored, %d stale VC(s) cleaned up.", restored, len(to_remove))
+
+    async def _auto_grant_locked_vc(self, member: discord.Member, vc: discord.VoiceChannel) -> None:
+        """Grant connect+speak to a member who was force-moved into a locked temp VC."""
+        try:
+            everyone_ow = vc.overwrites_for(vc.guild.default_role)
+            if everyone_ow.connect is not False:
+                return
+            existing = vc.overwrites_for(member)
+            if existing.connect is True:
+                return
+            await vc.set_permissions(member, connect=True, speak=True)
+        except Exception as exc:
+            logger.warning("JTC: auto-grant on locked join failed for %s: %s", member.id, exc)
+
+    async def _auto_revoke_locked_vc(self, member: discord.Member, vc: discord.VoiceChannel) -> None:
+        """Remove the explicit overwrite for a member who left a locked temp VC."""
+        try:
+            everyone_ow = vc.overwrites_for(vc.guild.default_role)
+            if everyone_ow.connect is not False:
+                return
+            existing = vc.overwrites_for(member)
+            if existing.connect is True:
+                await vc.set_permissions(member, overwrite=None)
+        except Exception as exc:
+            logger.warning("JTC: auto-revoke on locked leave failed for %s: %s", member.id, exc)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
@@ -371,6 +407,21 @@ class JTCCog(commands.Cog):
 
         jtc_id = ch_id(guild.id, "jtc")
         vc_cat_id = ch_id(guild.id, "vc_category")
+
+        # Auto-grant connect+speak when someone joins a locked temp VC.
+        # Covers the admin-force-move case where @everyone has connect=False
+        # but no explicit overwrite was added for the moved member.
+        if (after.channel
+                and after.channel.id in self.active_temp_vcs
+                and (not jtc_id or after.channel.id != jtc_id)):
+            await self._auto_grant_locked_vc(member, after.channel)
+
+        # Clean up the member-level overwrite when they leave a locked temp VC.
+        if (before.channel
+                and before.channel.id in self.active_temp_vcs
+                and before.channel != after.channel
+                and len(before.channel.members) > 0):
+            await self._auto_revoke_locked_vc(member, before.channel)
 
         if after.channel and jtc_id and after.channel.id == jtc_id:
             try:
@@ -387,7 +438,7 @@ class JTCCog(commands.Cog):
                 try:
                     await member.move_to(new_vc)
                 except Exception as e:
-                    print(f"⚠️ JTC: move_to failed for {member.display_name} — deleting orphaned VC: {e}")
+                    logger.warning("JTC: move_to failed for %s — deleting orphaned VC: %s", member.display_name, e)
                     try:
                         await new_vc.delete()
                     except Exception:
@@ -408,12 +459,14 @@ class JTCCog(commands.Cog):
                         await vc.send(embed=embed, view=view)
                         self.bot.add_view(view)
                     except Exception as e:
-                        print(f"⚠️ JTC: Failed to send control panel: {e}")
+                        logger.warning("JTC: Failed to send control panel: %s", e)
 
-                asyncio.create_task(send_control_panel(new_vc, member.id))
+                task = asyncio.create_task(send_control_panel(new_vc, member.id))
+                self._panel_tasks.add(task)
+                task.add_done_callback(self._panel_tasks.discard)
 
             except Exception as e:
-                print(f"⚠️ JTC: VC creation failed for {member.display_name}: {e}")
+                logger.error("JTC: VC creation failed for %s: %s", member.display_name, e)
 
         if (before.channel
                 and before.channel.id in self.active_temp_vcs
@@ -423,7 +476,7 @@ class JTCCog(commands.Cog):
             except discord.NotFound:
                 pass
             except Exception as e:
-                print(f"⚠️ JTC: Cleanup delete failed for channel {before.channel.id}: {e}")
+                logger.warning("JTC: Cleanup delete failed for channel %s: %s", before.channel.id, e)
             finally:
                 self.active_temp_vcs.pop(before.channel.id, None)
                 _save_active_vcs(self.active_temp_vcs)

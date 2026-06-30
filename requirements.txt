@@ -1,8 +1,8 @@
 python-dotenv>=1.0.1
 aiohttp>=3.9.5
 edge-tts>=6.1.12
-deep-translator
-yt-dlp
+deep-translator>=1.11.4
+yt-dlp>=2024.11.4
 pynacl
 py-cord[voice] @ git+https://github.com/Pycord-Development/pycord.git
 httpx

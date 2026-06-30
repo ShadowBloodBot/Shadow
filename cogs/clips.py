@@ -16,17 +16,10 @@ from discord import Interaction, ButtonStyle
 from discord.ui import View, Button, Modal, TextInput
 from discord.ext import commands
 
-# ==============================================================================
-# TELEMETRY
-# ==============================================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | [ShadowSyn] %(levelname)s | %(message)s",
-    handlers=[logging.StreamHandler()],
-)
 logger = logging.getLogger("ShadowSyn.Clips")
 
 from cogs.guild_registry import (
+    PERSIST_ROOT,
     REGISTERED_GUILD_IDS,
     SHADOW_MAIN_GUILD_ID,
     ch_id,
@@ -36,6 +29,7 @@ from cogs.guild_registry import (
     resolve_role,
     role_id,
 )
+from cogs.utils import safe_reply
 
 # ==============================================================================
 # CONSTANTS & IDS
@@ -93,12 +87,6 @@ GENERIC_MEDAL_TITLE_MARKERS = (
 # ==============================================================================
 # PERSISTENCE
 # ==============================================================================
-PERSIST_ROOT = Path(os.getenv("PERSIST_PATH", "/data")).resolve()
-try:
-    PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
-except Exception:
-    PERSIST_ROOT = Path(".").resolve()
-
 CLIPS_STORE = PERSIST_ROOT / "clips_repo.json"
 
 
@@ -115,18 +103,6 @@ def _atomic_write(file_path: Path, data):
 # ==============================================================================
 # HELPERS
 # ==============================================================================
-async def safe_reply(ctx_or_inter, *args, **kwargs):
-    try:
-        if hasattr(ctx_or_inter, "respond"):
-            return await ctx_or_inter.respond(*args, **kwargs)
-        if hasattr(ctx_or_inter, "response"):
-            if not ctx_or_inter.response.is_done():
-                return await ctx_or_inter.response.send_message(*args, **kwargs)
-            return await ctx_or_inter.followup.send(*args, **kwargs)
-    except Exception:
-        return None
-
-
 _CONTRIBUTOR_NAME_MAX = 24
 
 
@@ -492,6 +468,7 @@ class ClipsCog(commands.Cog):
         self.session = None
         self.data = {"panels": {}, "clips": {}}
         self._flow_sessions: dict[int, dict] = {}
+        self._panel_refresh_pending: dict[int, bool] = {}
         self._load_data()
 
     def cog_unload(self):
@@ -819,7 +796,17 @@ class ClipsCog(commands.Cog):
             logger.warning(f"Failed to create banter thread for clip {msg.id}: {e}")
 
     def _schedule_ingest_panel_bump(self, channel: discord.TextChannel) -> None:
-        asyncio.create_task(self._refresh_ingest_panel(channel))
+        gid = channel.guild.id if channel.guild else 0
+        if self._panel_refresh_pending.get(gid):
+            return
+        self._panel_refresh_pending[gid] = True
+
+        async def _debounced():
+            await asyncio.sleep(3)
+            self._panel_refresh_pending[gid] = False
+            await self._refresh_ingest_panel(channel)
+
+        asyncio.create_task(_debounced())
 
     # --------------------------------------------------------------------------
     # GALLERY POST

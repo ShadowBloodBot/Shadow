@@ -1,5 +1,7 @@
 # cogs/casino/buyin.py — USD buy-in flow ($1–$5 → Coins)
 
+import logging
+
 import discord
 from discord import ButtonStyle
 from discord.ui import Modal, Select, TextInput, View
@@ -25,6 +27,8 @@ from .economy import (
     resolve_buyin,
 )
 from .helpers import format_wallet, resolve_casino_channel
+
+logger = logging.getLogger("ShadowSyn.BuyIn")
 
 
 def paypal_tier_url(usd: int) -> str:
@@ -110,15 +114,34 @@ class BuyInProofModal(Modal):
             try:
                 await channel.send(embed=admin_embed, view=admin_view)
                 return
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("BuyIn: casino channel notify failed: %s", exc)
 
         owner = interaction.client.get_user(OWNER_ID)
+        if owner is None:
+            try:
+                owner = await interaction.client.fetch_user(OWNER_ID)
+            except Exception:
+                pass
         if owner:
             try:
                 await owner.send(embed=admin_embed, view=admin_view)
-            except Exception:
-                pass
+                return
+            except Exception as exc:
+                logger.warning("BuyIn: owner DM notify failed: %s", exc)
+
+        logger.error(
+            "BuyIn: BOTH admin notification paths failed for buy-in %s (user %s). "
+            "Ticket ID: %s — manual review required.",
+            request["id"], member.id, request["id"],
+        )
+        try:
+            await member.send(
+                f"⚠️ Your buy-in (`{request['id']}`) was submitted but admin notification failed. "
+                "Please DM an admin with your ticket ID to confirm it was received."
+            )
+        except Exception:
+            pass
 
 
 class BuyInTierSelect(Select):

@@ -1,5 +1,7 @@
 # cogs/casino/shop.py — Steam Wallet redemption shop
 
+import logging
+
 import discord
 from discord import ButtonStyle
 from discord.ui import Modal, Select, TextInput, View
@@ -23,6 +25,8 @@ from .economy import (
     resolve_redemption,
 )
 from .helpers import coins_to_usd, format_wallet, resolve_casino_channel
+
+logger = logging.getLogger("ShadowSyn.Shop")
 
 
 def _tenure_ok(member: discord.Member) -> tuple[bool, str]:
@@ -119,15 +123,34 @@ class SteamIdModal(Modal):
             try:
                 await channel.send(embed=admin_embed, view=admin_view)
                 return
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Shop: casino channel notify failed: %s", exc)
 
         owner = interaction.client.get_user(OWNER_ID)
+        if owner is None:
+            try:
+                owner = await interaction.client.fetch_user(OWNER_ID)
+            except Exception:
+                pass
         if owner:
             try:
                 await owner.send(embed=admin_embed, view=admin_view)
-            except Exception:
-                pass
+                return
+            except Exception as exc:
+                logger.warning("Shop: owner DM notify failed: %s", exc)
+
+        logger.error(
+            "Shop: BOTH admin notification paths failed for redemption %s (user %s). "
+            "Ticket ID: %s — manual review required.",
+            request["id"], member.id, request["id"],
+        )
+        try:
+            await member.send(
+                f"⚠️ Your redemption (`{request['id']}`) was submitted but admin notification failed. "
+                "Please DM an admin with your ticket ID to confirm it was received."
+            )
+        except Exception:
+            pass
 
 
 class RedeemTierSelect(Select):

@@ -15,15 +15,8 @@ from cogs.guild_registry import (
     resolve_channel,
     resolve_role,
 )
+from cogs.utils import safe_reply
 
-# ==============================================================================
-# TELEMETRY
-# ==============================================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | [ShadowSyn] %(levelname)s | %(message)s",
-    handlers=[logging.StreamHandler()],
-)
 logger = logging.getLogger("ShadowSyn.Hub")
 
 # ==============================================================================
@@ -51,21 +44,6 @@ def _build_hub_embed(guild_id: int) -> discord.Embed:
         description=_hub_description(guild_id),
         color=THEME_PRIMARY,
     )
-
-
-# ==============================================================================
-# HELPERS
-# ==============================================================================
-async def safe_reply(ctx_or_inter, *args, **kwargs):
-    try:
-        if hasattr(ctx_or_inter, "respond"):
-            return await ctx_or_inter.respond(*args, **kwargs)
-        if hasattr(ctx_or_inter, "response"):
-            if not ctx_or_inter.response.is_done():
-                return await ctx_or_inter.response.send_message(*args, **kwargs)
-            return await ctx_or_inter.followup.send(*args, **kwargs)
-    except Exception:
-        return None
 
 
 # ==============================================================================
@@ -225,21 +203,20 @@ class HubCog(commands.Cog):
         if lobby is None:
             return await safe_reply(ctx, "❌ Lobby channel not found in registry.", ephemeral=True)
 
-        await safe_reply(ctx, f"🛠️ Deploying hub panel to {lobby.mention}...", ephemeral=True)
+        await ctx.defer(ephemeral=True)
         try:
             msg = await lobby.send(
                 embed=_build_hub_embed(ctx.guild.id),
                 view=HubPanelView(ctx.guild.id),
             )
             self.bot.add_view(HubPanelView(ctx.guild.id))
-            await safe_reply(
-                ctx,
+            await ctx.followup.send(
                 f"✅ Hub panel live in {lobby.mention} · message `{msg.id}`",
                 ephemeral=True,
             )
         except Exception as e:
             logger.error(f"hub_deploy failed: {e}")
-            await safe_reply(ctx, f"❌ Deploy failed: {e}", ephemeral=True)
+            await ctx.followup.send(f"❌ Deploy failed: {e}", ephemeral=True)
 
     @discord.slash_command(
         name="help",
@@ -249,10 +226,14 @@ class HubCog(commands.Cog):
     async def help_command(self, ctx: discord.ApplicationContext):
         gid = ctx.guild.id if ctx.guild else REGISTERED_GUILD_IDS[0]
         embed = discord.Embed(title="👻 ShadowSyn", color=THEME_PRIMARY)
+        def _ch(key: str) -> str:
+            cid = ch_id(gid, key)
+            return f"<#{cid}>" if cid else f"`#{key}`"
+
         embed.add_field(
             name="🔊 Voice",
             value=(
-                f"Join <#{ch_id(gid, 'jtc')}> to spawn your own room with a control panel "
+                f"Join {_ch('jtc')} to spawn your own room with a control panel "
                 "— lock, rename, kick, bitrate, user limit."
             ),
             inline=False,
@@ -269,7 +250,7 @@ class HubCog(commands.Cog):
         embed.add_field(
             name="🏆 Clips",
             value=(
-                f"Hit **Submit Clip** in <#{ch_id(gid, 'clips')}> — Medal/YouTube link or file upload. "
+                f"Hit **Submit Clip** in {_ch('clips')} — Medal/YouTube link or file upload. "
                 "Drop a 🔥 on the ones that deserve it."
             ),
             inline=False,
@@ -277,7 +258,7 @@ class HubCog(commands.Cog):
         embed.add_field(
             name="🎮 Steam Codes",
             value=(
-                f"Open <#{ch_id(gid, 'steam_codes')}> and hit **Add Steam Code** — "
+                f"Open {_ch('steam_codes')} and hit **Add Steam Code** — "
                 "your friend code joins the guild directory (multiple alts allowed)."
             ),
             inline=False,
@@ -293,7 +274,7 @@ class HubCog(commands.Cog):
         embed.add_field(
             name="🎰 Casino",
             value=(
-                f"`/gamble` or the pinned floor panel in <#{ch_id(gid, 'casino')}> — "
+                f"`/gamble` or the pinned floor panel in {_ch('casino')} — "
                 "Blackjack, Roulette, Vault Heist. Shared wallet across ShadowMain and ShadowBackup."
             ),
             inline=False,
@@ -303,7 +284,7 @@ class HubCog(commands.Cog):
             value=(
                 "`/speak` — bot speaks your text in VC, any language\n"
                 "`/haste` — random Haste fact\n"
-                f"`/stats` — Arma combat record (in <#{ch_id(gid, 'arma_stats')}>)"
+                f"`/stats` — Arma combat record (in {_ch('arma_stats')})"
             ),
             inline=False,
         )

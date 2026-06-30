@@ -34,7 +34,7 @@ class ContentFilterCog(commands.Cog):
         if message.channel.id not in filter_ids:
             return
 
-        if message.embeds and is_protected_hub_panel(message.embeds[0].title):
+        if message.embeds and is_protected_hub_panel(message.embeds[0].title or ""):
             return
 
         text = searchable_text(

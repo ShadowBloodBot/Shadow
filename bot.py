@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import socket
@@ -36,6 +37,10 @@ class ShadowBot(discord.Bot):
     ShadowSyn Master Instance
     Engineered with armored gateway synchronization to prevent 403 fatal lockups.
     """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._commands_synced = False
+
     async def sync_commands(self, **kwargs) -> None:
         """
         Overrides the native Py-cord sync_commands method to intercept 
@@ -122,15 +127,17 @@ async def on_ready():
         else:
             logger.info(f"App command: /{cmd.name}")
 
-    try:
-        await bot.sync_commands(guild_ids=REGISTERED_GUILD_IDS)
-        logger.info("Guild slash sync complete for ShadowMain + ShadowBackup")
-    except discord.errors.Forbidden:
-        logger.error(
-            "403 during guild slash sync — re-invite bot with applications.commands scope"
-        )
-    except Exception as e:
-        logger.error(f"Guild slash sync failed: {e}")
+    if not bot._commands_synced:
+        bot._commands_synced = True
+        try:
+            await bot.sync_commands(guild_ids=REGISTERED_GUILD_IDS)
+            logger.info("Guild slash sync complete for ShadowMain + ShadowBackup")
+        except discord.errors.Forbidden:
+            logger.error(
+                "403 during guild slash sync — re-invite bot with applications.commands scope"
+            )
+        except Exception as e:
+            logger.error(f"Guild slash sync failed: {e}")
 
 
 @bot.event
@@ -151,6 +158,10 @@ async def on_application_command_error(ctx: discord.ApplicationContext, error: E
 # EXECUTION & NETWORK PATCHING
 # ==========================================
 if __name__ == "__main__":
+    # Windows: use SelectorEventLoop so asyncio.get_event_loop() works for local dev
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     # --- RAILWAY IPV4 NETWORK PATCH ---
     # Guarded block: Forces Railway to route UDP audio packets over IPv4.
     # Essential for FFmpeg/Opus payload delivery on Railway's IPv6-heavy network.

@@ -22,6 +22,7 @@ from cogs.guild_registry import (
     resolve_channel,
     resolve_role,
 )
+from cogs.utils import safe_reply
 
 logger = logging.getLogger("ShadowSyn.GameRoles")
 
@@ -117,18 +118,6 @@ def _is_denylisted(role: discord.Role, guild_id: int) -> bool:
     if admin_rid and role.id == admin_rid.id:
         return True
     return _normalize_role_name(role.name) in DENYLIST_NAMES
-
-
-async def safe_reply(ctx_or_inter, *args, **kwargs):
-    try:
-        if hasattr(ctx_or_inter, "respond"):
-            return await ctx_or_inter.respond(*args, **kwargs)
-        if hasattr(ctx_or_inter, "response"):
-            if not ctx_or_inter.response.is_done():
-                return await ctx_or_inter.response.send_message(*args, **kwargs)
-            return await ctx_or_inter.followup.send(*args, **kwargs)
-    except Exception:
-        return None
 
 
 async def ephemeral_flash(
@@ -282,7 +271,13 @@ class GameRolesCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
         self._store: dict[str, Any] = {}
+        self._role_locks: dict[int, asyncio.Lock] = {}
         self._load_store()
+
+    def _get_user_lock(self, user_id: int) -> asyncio.Lock:
+        if user_id not in self._role_locks:
+            self._role_locks[user_id] = asyncio.Lock()
+        return self._role_locks[user_id]
 
     def _load_store(self) -> dict[str, Any]:
         source = STORE_PATH if STORE_PATH.exists() else _REPO_STORE
@@ -584,49 +579,51 @@ class GameRolesCog(commands.Cog):
         if not is_registered_guild(guild.id):
             return
 
-        hub_ids = self._catalog_ids(guild.id, guild)
-        if role_id not in hub_ids:
-            return await safe_reply(interaction, "❌ That game isn't in the hub.", ephemeral=True)
+        lock = self._get_user_lock(member.id)
+        async with lock:
+            hub_ids = self._catalog_ids(guild.id, guild)
+            if role_id not in hub_ids:
+                return await safe_reply(interaction, "❌ That game isn't in the hub.", ephemeral=True)
 
-        role = guild.get_role(role_id)
-        if role is None:
-            return await safe_reply(interaction, "❌ Role no longer exists.", ephemeral=True)
+            role = guild.get_role(role_id)
+            if role is None:
+                return await safe_reply(interaction, "❌ Role no longer exists.", ephemeral=True)
 
-        bot_member = guild.me
-        if bot_member is None:
-            return await safe_reply(interaction, "❌ Bot unavailable.", ephemeral=True)
+            bot_member = guild.me
+            if bot_member is None:
+                return await safe_reply(interaction, "❌ Bot unavailable.", ephemeral=True)
 
-        if not self._can_manage_role(member, role, bot_member):
-            return await safe_reply(
-                interaction,
-                f"❌ You can't assign **{role.name}** (above your tier).",
-                ephemeral=True,
-            )
+            if not self._can_manage_role(member, role, bot_member):
+                return await safe_reply(
+                    interaction,
+                    f"❌ You can't assign **{role.name}** (above your tier).",
+                    ephemeral=True,
+                )
 
-        page = self._eph_page_from_interaction(interaction)
+            page = self._eph_page_from_interaction(interaction)
 
-        had_role = role in member.roles
-        try:
-            if had_role:
-                await member.remove_roles(role, reason="ShadowSyn Game Roles toggle")
-                action = f"Removed **{role.name}**"
-            else:
-                await member.add_roles(role, reason="ShadowSyn Game Roles toggle")
-                action = f"Added **{role.name}**"
-        except discord.Forbidden:
-            return await safe_reply(
-                interaction,
-                "❌ I can't assign that role right now. Tell an admin.",
-                ephemeral=True,
-            )
-        except Exception as exc:
-            logger.error("Toggle failed for %s: %s", member.id, exc)
-            return await safe_reply(interaction, "⚠️ Something broke. Try again.", ephemeral=True)
+            had_role = role in member.roles
+            try:
+                if had_role:
+                    await member.remove_roles(role, reason="ShadowSyn Game Roles toggle")
+                    action = f"Removed **{role.name}**"
+                else:
+                    await member.add_roles(role, reason="ShadowSyn Game Roles toggle")
+                    action = f"Added **{role.name}**"
+            except discord.Forbidden:
+                return await safe_reply(
+                    interaction,
+                    "❌ I can't assign that role right now. Tell an admin.",
+                    ephemeral=True,
+                )
+            except Exception as exc:
+                logger.error("Toggle failed for %s: %s", member.id, exc)
+                return await safe_reply(interaction, "⚠️ Something broke. Try again.", ephemeral=True)
 
-        await interaction.response.defer(ephemeral=True)
-        member = guild.get_member(member.id) or member
-        await self._refresh_manage(interaction, page)
-        await ephemeral_flash(interaction, f"✅ {action}")
+            await interaction.response.defer(ephemeral=True)
+            member = guild.get_member(member.id) or member
+            await self._refresh_manage(interaction, page)
+            await ephemeral_flash(interaction, f"✅ {action}")
 
     async def _refresh_panel_message(
         self,

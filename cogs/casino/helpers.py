@@ -4,6 +4,7 @@ import discord
 from discord.ui import Modal, TextInput
 
 from cogs.guild_registry import ch_id, is_owner, resolve_channel, role_id, REGISTERED_GUILD_IDS
+from cogs.utils import safe_reply
 
 from .constants import (
     COINS_PER_CENT,
@@ -75,18 +76,6 @@ def is_gambler(user, guild_id: int | None = None) -> bool:
     if rid is None:
         return False
     return any(role.id == rid for role in user.roles)
-
-
-async def safe_reply(ctx_or_inter, *args, **kwargs):
-    try:
-        if hasattr(ctx_or_inter, "respond"):
-            return await ctx_or_inter.respond(*args, **kwargs)
-        if hasattr(ctx_or_inter, "response"):
-            if not ctx_or_inter.response.is_done():
-                return await ctx_or_inter.response.send_message(*args, **kwargs)
-            return await ctx_or_inter.followup.send(*args, **kwargs)
-    except Exception:
-        return None
 
 
 def coins_to_usd(coins: int) -> str:
