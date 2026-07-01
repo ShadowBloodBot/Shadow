@@ -7,7 +7,7 @@ from typing import Dict
 import discord
 from discord import ButtonStyle, SelectOption, Interaction
 from discord.ui import View, Button, Modal, TextInput, Select
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord.utils import get
 
 from cogs.guild_registry import ch_id, is_registered_guild, PERSIST_ROOT
@@ -337,6 +337,8 @@ class JTCCog(commands.Cog):
             return
         self._startup_done = True
         await self._startup_cleanup()
+        if not self._vc_sweep.is_running():
+            self._vc_sweep.start()
 
     async def _startup_cleanup(self):
         to_remove = []
@@ -373,6 +375,10 @@ class JTCCog(commands.Cog):
             _save_active_vcs(self.active_temp_vcs)
 
         logger.info("JTC: %d panel(s) restored, %d stale VC(s) cleaned up.", restored, len(to_remove))
+
+        orphan_del, orphan_add = await self._sweep_category_orphans()
+        if orphan_del or orphan_add:
+            logger.info("JTC: orphan sweep — %d deleted, %d adopted.", orphan_del, orphan_add)
 
     async def _auto_grant_locked_vc(self, member: discord.Member, vc: discord.VoiceChannel) -> None:
         """Grant connect+speak to a member who was force-moved into a locked temp VC."""
@@ -480,6 +486,81 @@ class JTCCog(commands.Cog):
             finally:
                 self.active_temp_vcs.pop(before.channel.id, None)
                 _save_active_vcs(self.active_temp_vcs)
+
+    async def _sweep_category_orphans(self) -> tuple[int, int]:
+        """Scan every vc_category for voice channels not in active_temp_vcs.
+
+        Returns (deleted, adopted):
+          deleted — empty orphans that were removed.
+          adopted — occupied orphans added to tracking (creator_id=0).
+        """
+        deleted = 0
+        adopted = 0
+        changed = False
+
+        for guild in self.bot.guilds:
+            if not is_registered_guild(guild.id):
+                continue
+            jtc_trigger_id = ch_id(guild.id, "jtc")
+            vc_cat_id      = ch_id(guild.id, "vc_category")
+            if not vc_cat_id:
+                continue
+            category = guild.get_channel(vc_cat_id)
+            if not isinstance(category, discord.CategoryChannel):
+                continue
+            for vc in category.voice_channels:
+                if jtc_trigger_id and vc.id == jtc_trigger_id:
+                    continue
+                if vc.id in self.active_temp_vcs:
+                    continue
+                if len(vc.members) == 0:
+                    try:
+                        await vc.delete()
+                        deleted += 1
+                        changed = True
+                    except Exception:
+                        pass
+                else:
+                    self.active_temp_vcs[vc.id] = 0
+                    adopted += 1
+                    changed = True
+
+        if changed:
+            _save_active_vcs(self.active_temp_vcs)
+        return deleted, adopted
+
+    @tasks.loop(minutes=10)
+    async def _vc_sweep(self):
+        orphan_del, orphan_add = await self._sweep_category_orphans()
+
+        # Also clear any tracked-but-now-empty channels missed by leave events.
+        stale = []
+        for cid in list(self.active_temp_vcs):
+            channel = self.bot.get_channel(cid)
+            if channel is None:
+                stale.append(cid)
+                continue
+            if len(channel.members) == 0:
+                try:
+                    await channel.delete()
+                except Exception:
+                    pass
+                stale.append(cid)
+        for cid in stale:
+            self.active_temp_vcs.pop(cid, None)
+        if stale:
+            _save_active_vcs(self.active_temp_vcs)
+
+        if orphan_del or orphan_add or stale:
+            logger.info(
+                "JTC sweep: %d orphan deleted, %d orphan adopted, %d stale cleared.",
+                orphan_del, orphan_add, len(stale)
+            )
+
+    @_vc_sweep.before_loop
+    async def _before_vc_sweep(self):
+        await self.bot.wait_until_ready()
+
 
 def setup(bot):
     bot.add_cog(JTCCog(bot))
