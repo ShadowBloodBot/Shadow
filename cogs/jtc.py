@@ -416,9 +416,12 @@ class JTCCog(commands.Cog):
                 new_vc = await guild.create_voice_channel(
                     name=_limit_channel_name(_to_sans_bold_italic(f"{member.display_name}'s Room")),
                     category=cat,
-                    bitrate=VC_DEFAULT_BITRATE
+                    bitrate=VC_DEFAULT_BITRATE,
+                    overwrites={
+                        guild.default_role: discord.PermissionOverwrite(connect=True),
+                        member: discord.PermissionOverwrite(connect=True, speak=True),
+                    }
                 )
-                await new_vc.set_permissions(member, connect=True, speak=True)
                 self.active_temp_vcs[new_vc.id] = member.id
                 _save_active_vcs(self.active_temp_vcs)
 
