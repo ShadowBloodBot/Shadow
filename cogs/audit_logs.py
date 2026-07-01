@@ -142,7 +142,7 @@ class AuditLogsCog(commands.Cog):
             now = datetime.now(timezone.utc)
 
             try:
-                async for entry in member.guild.audit_logs(limit=1, action=discord.AuditLogAction.kick):
+                async for entry in member.guild.audit_logs(limit=5, action=discord.AuditLogAction.kick):
                     if entry.target.id == member.id and (now - entry.created_at).total_seconds() < 10:
                         title = "🥾 Member Kicked"
                         description = (

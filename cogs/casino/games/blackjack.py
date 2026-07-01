@@ -65,7 +65,6 @@ class BlackjackView(View):
         self.player_hand = [self._draw(), self._draw()]
         self.dealer_hand = [self._draw(), self._draw()]
         update_balance(self.user_id, -bet)
-        record_stat(self.user_id, "blackjack_hands")
 
         if calculate_hand(self.player_hand) == 21 or calculate_hand(self.dealer_hand) == 21:
             self._resolve()
@@ -99,6 +98,7 @@ class BlackjackView(View):
         if self.outcome_recorded:
             return 0, 0, "", {}
         self.outcome_recorded = True
+        record_stat(self.user_id, "blackjack_hands", _save=False)
 
         player_total = calculate_hand(self.player_hand)
         dealer_total = calculate_hand(self.dealer_hand)
