@@ -418,7 +418,6 @@ class JTCCog(commands.Cog):
                     category=cat,
                     bitrate=VC_DEFAULT_BITRATE,
                     overwrites={
-                        guild.default_role: discord.PermissionOverwrite(connect=True),
                         member: discord.PermissionOverwrite(connect=True, speak=True),
                     }
                 )
