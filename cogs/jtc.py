@@ -393,18 +393,6 @@ class JTCCog(commands.Cog):
         except Exception as exc:
             logger.warning("JTC: auto-grant on locked join failed for %s: %s", member.id, exc)
 
-    async def _auto_revoke_locked_vc(self, member: discord.Member, vc: discord.VoiceChannel) -> None:
-        """Remove the explicit overwrite for a member who left a locked temp VC."""
-        try:
-            everyone_ow = vc.overwrites_for(vc.guild.default_role)
-            if everyone_ow.connect is not False:
-                return
-            existing = vc.overwrites_for(member)
-            if existing.connect is True:
-                await vc.set_permissions(member, overwrite=None)
-        except Exception as exc:
-            logger.warning("JTC: auto-revoke on locked leave failed for %s: %s", member.id, exc)
-
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         guild = member.guild
@@ -421,13 +409,6 @@ class JTCCog(commands.Cog):
                 and after.channel.id in self.active_temp_vcs
                 and (not jtc_id or after.channel.id != jtc_id)):
             await self._auto_grant_locked_vc(member, after.channel)
-
-        # Clean up the member-level overwrite when they leave a locked temp VC.
-        if (before.channel
-                and before.channel.id in self.active_temp_vcs
-                and before.channel != after.channel
-                and len(before.channel.members) > 0):
-            await self._auto_revoke_locked_vc(member, before.channel)
 
         if after.channel and jtc_id and after.channel.id == jtc_id:
             try:
