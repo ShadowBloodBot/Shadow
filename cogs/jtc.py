@@ -330,6 +330,7 @@ class JTCCog(commands.Cog):
         self.active_temp_vcs = _load_active_vcs()
         self._startup_done   = False
         self._panel_tasks: set = set()
+        self._healing: set   = set()
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -387,11 +388,41 @@ class JTCCog(commands.Cog):
             if everyone_ow.connect is not False:
                 return
             existing = vc.overwrites_for(member)
-            if existing.connect is True:
+            if existing.connect is True and existing.speak is True:
                 return
             await vc.set_permissions(member, connect=True, speak=True)
         except Exception as exc:
             logger.warning("JTC: auto-grant on locked join failed for %s: %s", member.id, exc)
+
+    async def _heal_suppress(self, member: discord.Member, vc: discord.VoiceChannel) -> None:
+        """Clear a stuck suppress voice-state by re-moving the member.
+
+        Discord evaluates Speak at connect/move time. A member moved into a
+        channel where Speak resolved to denied stays suppressed even after
+        overwrites are granted — only a reconnect or another move clears it.
+        """
+        key = (member.id, vc.id)
+        if key in self._healing:
+            return
+        self._healing.add(key)
+        try:
+            await asyncio.sleep(1.0)
+            voice = member.voice
+            if not voice or not voice.channel or voice.channel.id != vc.id:
+                return
+            if not voice.suppress:
+                return
+            await member.move_to(vc, reason="JTC: clearing stuck voice suppression")
+            await asyncio.sleep(1.0)
+            voice = member.voice
+            if voice and voice.channel and voice.channel.id == vc.id and voice.suppress:
+                logger.warning("JTC: suppress heal did not clear for %s in %s.", member.id, vc.id)
+            else:
+                logger.info("JTC: cleared stuck suppress for %s in %s.", member.id, vc.id)
+        except Exception as exc:
+            logger.warning("JTC: suppress heal failed for %s: %s", member.id, exc)
+        finally:
+            self._healing.discard(key)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
@@ -405,10 +436,14 @@ class JTCCog(commands.Cog):
         # Auto-grant connect+speak when someone joins a locked temp VC.
         # Covers the admin-force-move case where @everyone has connect=False
         # but no explicit overwrite was added for the moved member.
+        # Only on actual channel joins (not mute/deaf toggles) so the
+        # suppress heal's re-move cannot re-trigger this path.
         if (after.channel
                 and after.channel.id in self.active_temp_vcs
+                and (before.channel is None or before.channel.id != after.channel.id)
                 and (not jtc_id or after.channel.id != jtc_id)):
             await self._auto_grant_locked_vc(member, after.channel)
+            await self._heal_suppress(member, after.channel)
 
         if after.channel and jtc_id and after.channel.id == jtc_id:
             try:
@@ -435,6 +470,13 @@ class JTCCog(commands.Cog):
                     self.active_temp_vcs.pop(new_vc.id, None)
                     _save_active_vcs(self.active_temp_vcs)
                     return
+
+                # Creator may have entered the lobby suppressed (dragged in,
+                # or lacking a lobby Connect role) — the stuck state can carry
+                # into the new room. Heal in the background.
+                heal_task = asyncio.create_task(self._heal_suppress(member, new_vc))
+                self._panel_tasks.add(heal_task)
+                heal_task.add_done_callback(self._panel_tasks.discard)
 
                 async def send_control_panel(vc: discord.VoiceChannel, creator_id: int):
                     await asyncio.sleep(1)
