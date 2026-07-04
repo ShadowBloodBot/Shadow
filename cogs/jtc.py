@@ -113,7 +113,7 @@ class RoleRestrictSelect(Select):
         self.creator_id = creator_id
         super().__init__(
             select_type=discord.ComponentType.role_select,
-            placeholder="Search a role to restrict to...",
+            placeholder="Type a role name to search…",
             min_values=1,
             max_values=1
         )
@@ -310,11 +310,22 @@ class VCControlPanel(View):
         if not await self._check(i): return
         try:
             view = RoleRestrictView(self.vc, self.creator_id)
-            await i.response.send_message(
-                "Select a role to restrict this channel to:",
-                view=view,
-                ephemeral=True
+            role_count = sum(
+                1 for r in i.guild.roles
+                if r != i.guild.default_role and not r.managed
             )
+            embed = discord.Embed(
+                title="Restrict to Role",
+                description=(
+                    "Discord only shows a short preview in the dropdown — **type the role name** "
+                    "(e.g. `SAND`, `Rust`) to find any role in the server.\n\n"
+                    "Pick the matching role from the filtered results.\n"
+                    "Use **🌐 Open to Everyone** to clear a restriction."
+                ),
+                color=THEME_PRIMARY
+            )
+            embed.set_footer(text=f"{role_count} roles in server — search required for most")
+            await i.response.send_message(embed=embed, view=view, ephemeral=True)
         except Exception as e:
             await i.response.send_message(f"❌ Failed: {e}", ephemeral=True)
 
