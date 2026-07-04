@@ -88,6 +88,7 @@ cogs_list = [
     "cogs.clips",
     "cogs.steam_codes",
     "cogs.member_utils",
+    "cogs.role_assign",
     "cogs.admin_secure",
     "cogs.member_backup",
     "cogs.hub",

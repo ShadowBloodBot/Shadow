@@ -44,7 +44,7 @@ CHANNEL_KEYS = (
     "game_roles",
 )
 
-ROLE_KEYS = ("minion", "member", "admin_shadow")
+ROLE_KEYS = ("minion", "member", "admin_shadow", "silhouette")
 
 _SHADOW_MAIN_CHANNELS: dict[str, int] = {
     "lobby": 974113723188912218,
@@ -71,6 +71,7 @@ _SHADOW_MAIN_ROLES: dict[str, int] = {
     "minion": 955600021502431233,
     "member": 955600320287887400,
     "admin_shadow": 1214794734770323466,
+    "silhouette": 1403928804891693187,
 }
 
 _REPO_DATA = Path(__file__).resolve().parents[1] / "data"
@@ -271,6 +272,26 @@ def has_admin_shadow(
     if gid is None:
         return False
     rid = role_id(gid, "admin_shadow")
+    if rid is None:
+        return False
+    return any(role.id == rid for role in user.roles)
+
+
+def has_silhouette_tier(
+    user: discord.User | discord.Member | None,
+    guild_id: int | str | None = None,
+) -> bool:
+    """Owner, admin_shadow, or holder of the registry silhouette role."""
+    if is_owner(user):
+        return True
+    if has_admin_shadow(user, guild_id):
+        return True
+    if not isinstance(user, discord.Member):
+        return False
+    gid = _guild_id_for_user(user, guild_id)
+    if gid is None:
+        return False
+    rid = role_id(gid, "silhouette")
     if rid is None:
         return False
     return any(role.id == rid for role in user.roles)
