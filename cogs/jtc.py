@@ -106,21 +106,14 @@ class KickMemberView(View):
         self.add_item(KickMemberDropdown(vc, members))
 
 class RoleRestrictSelect(Select):
+    """Native role select — searchable over every guild role, always current."""
+
     def __init__(self, vc: discord.VoiceChannel, creator_id: int):
         self.vc         = vc
         self.creator_id = creator_id
-
-        options = [SelectOption(label="🌐 Everyone (remove restriction)", value="everyone")]
-        roles   = sorted(
-            [r for r in vc.guild.roles if r != vc.guild.default_role and not r.managed],
-            key=lambda r: r.position, reverse=True
-        )[:24]
-        for r in roles:
-            options.append(SelectOption(label=(r.name or "Role")[:100], value=str(r.id)))
-
         super().__init__(
-            placeholder="Select a role to restrict to...",
-            options=options,
+            select_type=discord.ComponentType.role_select,
+            placeholder="Search a role to restrict to...",
             min_values=1,
             max_values=1
         )
@@ -129,40 +122,61 @@ class RoleRestrictSelect(Select):
         if interaction.user.id != self.creator_id:
             return await interaction.response.send_message("🚫 Only the creator can restrict this channel.", ephemeral=True)
         try:
-            if self.values[0] == "everyone":
-                await self.vc.set_permissions(interaction.guild.default_role, connect=None)
-                if self.vc.category:
-                    for target, overwrite in self.vc.category.overwrites.items():
-                        if isinstance(target, discord.Role) and target != interaction.guild.default_role:
-                            await self.vc.set_permissions(target, connect=None)
-                await interaction.response.send_message("✅ Restriction cleared — open to everyone.", ephemeral=True)
-            else:
-                role = interaction.guild.get_role(int(self.values[0]))
-                if role:
-                    await self.vc.set_permissions(interaction.guild.default_role, connect=False)
-                    await self.vc.set_permissions(role, connect=True)
-                    creator = interaction.guild.get_member(self.creator_id)
-                    if creator:
-                        await self.vc.set_permissions(creator, connect=True)
-                    for oid in MASTER_OWNERS:
-                        owner = interaction.guild.get_member(oid)
-                        if owner:
-                            await self.vc.set_permissions(owner, connect=True)
-                    if self.vc.category:
-                        for target, overwrite in self.vc.category.overwrites.items():
-                            if (isinstance(target, discord.Role)
-                                    and target != interaction.guild.default_role
-                                    and target.id != role.id
-                                    and not target.permissions.administrator):
-                                await self.vc.set_permissions(target, connect=False)
-                    await interaction.response.send_message(f"🔐 Restricted to **{role.name}**.", ephemeral=True)
+            picked = self.values[0]
+            role = picked if isinstance(picked, discord.Role) else interaction.guild.get_role(int(picked))
+            if role is None:
+                return await interaction.response.send_message("❌ Role not found.", ephemeral=True)
+            if role == interaction.guild.default_role:
+                return await interaction.response.send_message(
+                    "⚠️ Use the **🌐 Open to Everyone** button to clear the restriction.", ephemeral=True
+                )
+            if role.managed:
+                return await interaction.response.send_message(
+                    "⚠️ Bot/integration roles can't be used for restriction.", ephemeral=True
+                )
+            await self.vc.set_permissions(interaction.guild.default_role, connect=False)
+            await self.vc.set_permissions(role, connect=True)
+            creator = interaction.guild.get_member(self.creator_id)
+            if creator:
+                await self.vc.set_permissions(creator, connect=True)
+            for oid in MASTER_OWNERS:
+                owner = interaction.guild.get_member(oid)
+                if owner:
+                    await self.vc.set_permissions(owner, connect=True)
+            if self.vc.category:
+                for target, overwrite in self.vc.category.overwrites.items():
+                    if (isinstance(target, discord.Role)
+                            and target != interaction.guild.default_role
+                            and target.id != role.id
+                            and not target.permissions.administrator):
+                        await self.vc.set_permissions(target, connect=False)
+            await interaction.response.send_message(f"🔐 Restricted to **{role.name}**.", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
 
 class RoleRestrictView(View):
     def __init__(self, vc: discord.VoiceChannel, creator_id: int):
         super().__init__(timeout=60)
+        self.vc         = vc
+        self.creator_id = creator_id
         self.add_item(RoleRestrictSelect(vc, creator_id))
+
+        btn_open          = Button(label="🌐 Open to Everyone", style=ButtonStyle.success)
+        btn_open.callback = self._open_everyone
+        self.add_item(btn_open)
+
+    async def _open_everyone(self, interaction: Interaction):
+        if interaction.user.id != self.creator_id:
+            return await interaction.response.send_message("🚫 Only the creator can restrict this channel.", ephemeral=True)
+        try:
+            await self.vc.set_permissions(interaction.guild.default_role, connect=None)
+            if self.vc.category:
+                for target, overwrite in self.vc.category.overwrites.items():
+                    if isinstance(target, discord.Role) and target != interaction.guild.default_role:
+                        await self.vc.set_permissions(target, connect=None)
+            await interaction.response.send_message("✅ Restriction cleared — open to everyone.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
 
 class VCControlPanel(View):
     def __init__(self, vc: discord.VoiceChannel, creator_id: int, cog: 'JTCCog'):
