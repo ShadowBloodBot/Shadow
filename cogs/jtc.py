@@ -121,38 +121,55 @@ class RoleRestrictSelect(Select):
     async def callback(self, interaction: Interaction):
         if interaction.user.id != self.creator_id:
             return await interaction.response.send_message("🚫 Only the creator can restrict this channel.", ephemeral=True)
+        picked = self.values[0]
+        role = picked if isinstance(picked, discord.Role) else interaction.guild.get_role(int(picked))
+        if role is None:
+            return await interaction.response.send_message("❌ Role not found.", ephemeral=True)
+        if role == interaction.guild.default_role:
+            return await interaction.response.send_message(
+                "⚠️ Use the **🌐 Open to Everyone** button to clear the restriction.", ephemeral=True
+            )
+        if role.managed:
+            return await interaction.response.send_message(
+                "⚠️ Bot/integration roles can't be used for restriction.", ephemeral=True
+            )
+        # Defer immediately — the old serial set_permissions calls routinely
+        # blew the 3s interaction deadline and died with Unknown interaction.
+        await interaction.response.defer(ephemeral=True)
         try:
-            picked = self.values[0]
-            role = picked if isinstance(picked, discord.Role) else interaction.guild.get_role(int(picked))
-            if role is None:
-                return await interaction.response.send_message("❌ Role not found.", ephemeral=True)
-            if role == interaction.guild.default_role:
-                return await interaction.response.send_message(
-                    "⚠️ Use the **🌐 Open to Everyone** button to clear the restriction.", ephemeral=True
-                )
-            if role.managed:
-                return await interaction.response.send_message(
-                    "⚠️ Bot/integration roles can't be used for restriction.", ephemeral=True
-                )
-            await self.vc.set_permissions(interaction.guild.default_role, connect=False)
-            await self.vc.set_permissions(role, connect=True)
+            overwrites = dict(self.vc.overwrites)
+
+            def _merge(target, **perms):
+                ow = overwrites.get(target) or discord.PermissionOverwrite()
+                ow.update(**perms)
+                overwrites[target] = ow
+
+            _merge(interaction.guild.default_role, connect=False)
+            _merge(role, connect=True)
             creator = interaction.guild.get_member(self.creator_id)
             if creator:
-                await self.vc.set_permissions(creator, connect=True)
+                _merge(creator, connect=True)
             for oid in MASTER_OWNERS:
                 owner = interaction.guild.get_member(oid)
                 if owner:
-                    await self.vc.set_permissions(owner, connect=True)
+                    _merge(owner, connect=True)
             if self.vc.category:
-                for target, overwrite in self.vc.category.overwrites.items():
+                for target in self.vc.category.overwrites:
                     if (isinstance(target, discord.Role)
                             and target != interaction.guild.default_role
                             and target.id != role.id
                             and not target.permissions.administrator):
-                        await self.vc.set_permissions(target, connect=False)
-            await interaction.response.send_message(f"🔐 Restricted to **{role.name}**.", ephemeral=True)
+                        _merge(target, connect=False)
+
+            # Single API call instead of 5-10 serial permission PATCHes.
+            await self.vc.edit(overwrites=overwrites)
+            await interaction.followup.send(f"🔐 Restricted to **{role.name}**.", ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+            logger.warning("JTC: restrict-to-role failed for VC %s: %s", self.vc.id, e)
+            try:
+                await interaction.followup.send(f"❌ Failed: {e}", ephemeral=True)
+            except Exception:
+                pass
 
 class RoleRestrictView(View):
     def __init__(self, vc: discord.VoiceChannel, creator_id: int):
@@ -168,15 +185,25 @@ class RoleRestrictView(View):
     async def _open_everyone(self, interaction: Interaction):
         if interaction.user.id != self.creator_id:
             return await interaction.response.send_message("🚫 Only the creator can restrict this channel.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
         try:
-            await self.vc.set_permissions(interaction.guild.default_role, connect=None)
-            if self.vc.category:
-                for target, overwrite in self.vc.category.overwrites.items():
-                    if isinstance(target, discord.Role) and target != interaction.guild.default_role:
-                        await self.vc.set_permissions(target, connect=None)
-            await interaction.response.send_message("✅ Restriction cleared — open to everyone.", ephemeral=True)
+            # Clear connect on every role overwrite in one edit call —
+            # member overwrites (creator, kicked/granted users) are preserved.
+            overwrites = {}
+            for target, ow in self.vc.overwrites.items():
+                if isinstance(target, discord.Role):
+                    ow.update(connect=None)
+                    if ow.is_empty():
+                        continue
+                overwrites[target] = ow
+            await self.vc.edit(overwrites=overwrites)
+            await interaction.followup.send("✅ Restriction cleared — open to everyone.", ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+            logger.warning("JTC: open-to-everyone failed for VC %s: %s", self.vc.id, e)
+            try:
+                await interaction.followup.send(f"❌ Failed: {e}", ephemeral=True)
+            except Exception:
+                pass
 
 class VCControlPanel(View):
     def __init__(self, vc: discord.VoiceChannel, creator_id: int, cog: 'JTCCog'):

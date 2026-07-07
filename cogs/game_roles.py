@@ -86,6 +86,7 @@ DENYLIST_NAMES = frozenset({
     "high t",
     "annoying",
     "bloods cum slut",
+    "blood's cum slut",
 })
 
 DEFAULT_GUILD_CFG: dict[str, Any] = {
@@ -93,7 +94,13 @@ DEFAULT_GUILD_CFG: dict[str, Any] = {
     "panel_message_id": None,
     "panel_page": 0,
     "roles": [],
+    "excluded": [],
 }
+
+
+def _fresh_guild_cfg() -> dict[str, Any]:
+    """Deep-enough copy of DEFAULT_GUILD_CFG — never share the list objects."""
+    return {**DEFAULT_GUILD_CFG, "roles": [], "excluded": []}
 
 
 def _atomic_write(file_path: Path, data: Any) -> None:
@@ -104,7 +111,10 @@ def _atomic_write(file_path: Path, data: Any) -> None:
 
 
 def _normalize_role_name(name: str) -> str:
-    return (name or "").strip().lower()
+    cleaned = (name or "").strip().lower()
+    for quote in ("'", "\u2018", "\u2019", "`"):
+        cleaned = cleaned.replace(quote, "")
+    return cleaned
 
 
 def _is_denylisted(role: discord.Role, guild_id: int) -> bool:
@@ -305,9 +315,14 @@ class GameRolesCog(commands.Cog):
                         repo_roles = repo_cfg.get("roles") or []
                         if not repo_roles:
                             continue
-                        entry = data.setdefault(gid, dict(DEFAULT_GUILD_CFG))
-                        if not entry.get("roles"):
-                            entry["roles"] = repo_roles
+                        entry = data.setdefault(gid, _fresh_guild_cfg())
+                        excluded_ids = {str(x) for x in (entry.get("excluded") or [])}
+                        allowed_roles = [
+                            r for r in repo_roles
+                            if isinstance(r, dict) and str(r.get("id")) not in excluded_ids
+                        ]
+                        if not entry.get("roles") and allowed_roles:
+                            entry["roles"] = allowed_roles
                             changed = True
                         for key in ("channel_id", "panel_message_id"):
                             if not entry.get(key) and repo_cfg.get(key):
@@ -328,12 +343,25 @@ class GameRolesCog(commands.Cog):
     def _guild_store(self, guild_id: int) -> dict[str, Any]:
         key = str(guild_id)
         if key not in self._store:
-            cfg = dict(DEFAULT_GUILD_CFG)
+            cfg = _fresh_guild_cfg()
             cid = ch_id(guild_id, "game_roles")
             if cid:
                 cfg["channel_id"] = str(cid)
             self._store[key] = cfg
-        return self._store[key]
+        entry = self._store[key]
+        if "excluded" not in entry:
+            entry["excluded"] = []
+        return entry
+
+    def _excluded_ids(self, guild_id: int) -> set[int]:
+        """Role IDs the admins removed — never re-seeded by any code path."""
+        out: set[int] = set()
+        for rid in self._guild_store(guild_id).get("excluded") or []:
+            try:
+                out.add(int(rid))
+            except (TypeError, ValueError):
+                continue
+        return out
 
     def _catalog(self, guild_id: int, guild: discord.Guild | None = None) -> list[dict[str, Any]]:
         cfg = self._guild_store(guild_id)
@@ -464,9 +492,12 @@ class GameRolesCog(commands.Cog):
         minion = resolve_role(guild, "minion")
         if minion is None:
             return []
+        excluded = self._excluded_ids(guild.id)
         entries: list[dict[str, Any]] = []
         for role in sorted(guild.roles, key=lambda r: -r.position):
             if role.position >= minion.position:
+                continue
+            if role.id in excluded:
                 continue
             if _is_denylisted(role, guild.id):
                 continue
@@ -860,7 +891,7 @@ class GameRolesCog(commands.Cog):
 
     @discord.slash_command(
         name="game_roles_seed",
-        description="Bootstrap hub catalog from gaming roles below Minion.",
+        description="Add new gaming roles below Minion to the hub — never removes curated entries.",
         guild_ids=REGISTERED_GUILD_IDS,
         default_member_permissions=discord.Permissions(administrator=True),
     )
@@ -877,18 +908,35 @@ class GameRolesCog(commands.Cog):
         await ctx.defer(ephemeral=True)
         try:
             cfg = self._guild_store(ctx.guild.id)
-            entries = self._build_seed_entries(ctx.guild)
-            cfg["roles"] = entries
-            await asyncio.to_thread(self._save_store)
+            existing_roles: list[dict[str, Any]] = list(cfg.get("roles") or [])
+            existing_ids = {
+                str(e.get("id")) for e in existing_roles if isinstance(e, dict)
+            }
+            excluded = self._excluded_ids(ctx.guild.id)
 
-            try:
-                await self._deploy_panel(ctx.guild)
-            except Exception as exc:
-                logger.warning("Panel refresh after seed failed: %s", exc)
+            candidates = self._build_seed_entries(ctx.guild)
+            new_entries = [e for e in candidates if str(e["id"]) not in existing_ids]
 
+            skipped_excluded = sum(
+                1 for role in ctx.guild.roles
+                if role.position < minion.position
+                and role.id in excluded
+                and not _is_denylisted(role, ctx.guild.id)
+            )
+
+            if new_entries:
+                cfg["roles"] = _sorted_catalog(existing_roles + new_entries)
+                await asyncio.to_thread(self._save_store)
+                try:
+                    await self._deploy_panel(ctx.guild)
+                except Exception as exc:
+                    logger.warning("Panel refresh after seed failed: %s", exc)
+
+            total = len(cfg.get("roles") or [])
             await ephemeral_flash_followup(
                 ctx,
-                f"✅ Seeded **{len(entries)}** gaming roles into the hub catalog.",
+                f"✅ Seed merged: added **{len(new_entries)}** · "
+                f"skipped **{skipped_excluded}** (excluded) · **{total}** total.",
             )
         except Exception as exc:
             logger.exception("game_roles_seed failed")
@@ -917,12 +965,20 @@ class GameRolesCog(commands.Cog):
         await ctx.defer(ephemeral=True)
         try:
             cfg = self._guild_store(ctx.guild.id)
+            excluded_before = list(cfg.get("excluded") or [])
+            cfg["excluded"] = [
+                x for x in excluded_before if str(x) != str(role.id)
+            ]
+            unexcluded = len(cfg["excluded"]) != len(excluded_before)
+
             roles: list[dict[str, Any]] = list(cfg.get("roles") or [])
             if any(
                 str(e.get("id")) == str(role.id)
                 for e in roles
                 if isinstance(e, dict)
             ):
+                if unexcluded:
+                    await asyncio.to_thread(self._save_store)
                 await ephemeral_flash_followup(
                     ctx,
                     f"ℹ️ **{role.name}** is already in the catalog.",
@@ -965,15 +1021,24 @@ class GameRolesCog(commands.Cog):
         await ctx.defer(ephemeral=True)
         try:
             cfg = self._guild_store(ctx.guild.id)
+            excluded = [str(x) for x in (cfg.get("excluded") or [])]
+            newly_excluded = str(role.id) not in excluded
+            if newly_excluded:
+                excluded.append(str(role.id))
+            cfg["excluded"] = excluded
+
             roles: list[dict[str, Any]] = list(cfg.get("roles") or [])
             new_roles = [
                 e for e in roles
                 if isinstance(e, dict) and str(e.get("id")) != str(role.id)
             ]
             if len(new_roles) == len(roles):
+                if newly_excluded:
+                    await asyncio.to_thread(self._save_store)
                 await ephemeral_flash_followup(
                     ctx,
-                    f"ℹ️ **{role.name}** is not in the catalog.",
+                    f"ℹ️ **{role.name}** is not in the catalog — "
+                    "marked excluded from future seeds.",
                 )
                 return
 
@@ -987,7 +1052,8 @@ class GameRolesCog(commands.Cog):
 
             await ephemeral_flash_followup(
                 ctx,
-                f"✅ Removed **{role.name}** from the hub ({len(new_roles)} remaining).",
+                f"✅ Removed **{role.name}** from the hub ({len(new_roles)} remaining) — "
+                "excluded from future seeds.",
             )
         except Exception as exc:
             logger.exception("game_roles_remove failed")
