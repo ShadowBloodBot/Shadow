@@ -25,6 +25,7 @@ THEME_PRIMARY = 0x2B0B35
 AUTO_LEAVE_TIMEOUT = 120
 VOICE_SETTLE_MAX = 0.5
 SEARCH_RESULTS = 5
+SEARCH_FETCH = 10
 
 FFMPEG_BEFORE = "-probesize 32 -analyzeduration 0"
 FFMPEG_OPTIONS = "-loglevel error"
@@ -151,7 +152,7 @@ def _ydl_extract(url_or_search: str, *, playlist: bool = True) -> list[dict]:
     return [info]
 
 
-def _ydl_search_candidates(query: str, limit: int = SEARCH_RESULTS) -> list[dict]:
+def _ydl_search_candidates(query: str, limit: int = SEARCH_FETCH) -> list[dict]:
     opts = {
         **YDL_OPTS_BASE,
         "extract_flat": "in_playlist",
@@ -160,7 +161,8 @@ def _ydl_search_candidates(query: str, limit: int = SEARCH_RESULTS) -> list[dict
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(f"ytsearch{limit}:{query.strip()}", download=False)
-    return [e for e in (info.get("entries") or []) if e and e.get("title")]
+    entries = [e for e in (info.get("entries") or []) if e and e.get("title")]
+    return entries[:SEARCH_RESULTS]
 
 
 def _entry_to_track(entry: dict, requester_id: int, requester_name: str) -> Optional[Track]:
@@ -214,10 +216,20 @@ class SearchPickSelect(Select):
         for i, entry in enumerate(candidates[:SEARCH_RESULTS]):
             title = (entry.get("title") or "Unknown")[:100]
             duration = _format_duration(entry.get("duration"))
+            uploader = (
+                entry.get("channel")
+                or entry.get("uploader")
+                or entry.get("channel_id")
+                or ""
+            )
+            if uploader:
+                desc = f"{duration} · {str(uploader)[:60]}"
+            else:
+                desc = f"{duration} · tap to play"
             options.append(
                 SelectOption(
                     label=title,
-                    description=f"{duration} · tap to play",
+                    description=desc[:100],
                     value=str(i),
                 )
             )
@@ -569,17 +581,21 @@ class MusicCog(commands.Cog):
     # -------------------------------------------------------------------------
     @discord.slash_command(
         name="play",
-        description="Play a song — search by name or paste a YouTube/Spotify link",
+        description="Song title (search) or YouTube/Spotify URL",
         guild_ids=REGISTERED_GUILD_IDS,
     )
     async def play(
         self,
         ctx: discord.ApplicationContext,
-        query: Option(str, "Song name or YouTube/Spotify link"),
+        query: Option(str, "Song title (search) or YouTube/Spotify URL"),
     ):
         channel = await self._require_music_access(ctx)
         if not channel:
             return
+
+        query = query.strip()
+        if not query:
+            return await ctx.respond("❌ Enter a song name or link.", ephemeral=True)
 
         if not _is_url_query(query):
             await ctx.defer(ephemeral=True)
@@ -723,51 +739,6 @@ class MusicCog(commands.Cog):
         status = "⏸️ Paused" if vc and vc.is_paused() else "▶️ Live"
         embed = self._track_embed(player.current, title="🎵 Now Playing", status=status)
         await ctx.respond(embed=embed, view=MusicControlsView(self, ctx.guild.id))
-
-    # -------------------------------------------------------------------------
-    # Auto-play links pasted in chat
-    # -------------------------------------------------------------------------
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        if message.author.bot or not message.guild:
-            return
-
-        urls = _extract_urls(message.content)
-        if not urls:
-            return
-
-        member = message.guild.get_member(message.author.id)
-        if not member or not has_music_role(member):
-            return
-        if not getattr(member, "voice", None) or not member.voice.channel:
-            try:
-                await message.reply(
-                    "🎵 Join a voice channel — I'll play that link when you're in.",
-                    mention_author=False,
-                    delete_after=20,
-                )
-            except Exception:
-                pass
-            return
-
-        channel = member.voice.channel
-        query = urls[0]
-
-        try:
-            tracks = await self._resolve_tracks(
-                query, message.author.id, message.author.display_name
-            )
-            if not tracks:
-                return
-            position = await self._enqueue(message.guild, channel, tracks)
-            embed, view = self._play_payload(message.guild.id, tracks, position)
-            await message.reply(embed=embed, view=view, mention_author=False)
-        except Exception as exc:
-            logger.error("Auto-play from message failed: %s", exc)
-            try:
-                await message.reply("❌ Couldn't play that link.", mention_author=False, delete_after=10)
-            except Exception:
-                pass
 
 
 def setup(bot: commands.Bot):

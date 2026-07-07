@@ -126,8 +126,8 @@ class HubCog(commands.Cog):
         embed.add_field(
             name="🎵 Music",
             value=(
-                "In VC: paste a **YouTube** or **Spotify** link — ShadowSyn plays it automatically.\n"
-                "`/play` — song name (pick from results) or link\n"
+                "`/play <song name>` — pick from search results (join VC first)\n"
+                "`/play <YouTube or Spotify link>` — plays that URL\n"
                 "`/pause` · `/resume` · `/skip` · `/stop` · `/queue`"
             ),
             inline=False,
