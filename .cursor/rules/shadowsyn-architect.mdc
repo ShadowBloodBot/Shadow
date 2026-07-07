@@ -70,8 +70,8 @@ This is **Shadow**, a Discord bot for **ShadowSyn** — a private **multi-game**
 
 | Module | Purpose |
 |--------|---------|
-| `hub.py` | Lobby welcome hub panels; links to game roles, clips, casino, SAND, etc. |
-| `welcome.py` | Welcome panel + arrivals flow |
+| `hub.py` | Minion starter-role grab handler + `/help` (hub buttons live on the welcome panel) |
+| `welcome.py` | Static welcome hub panel (Minion, Game-Roles, Steam-Codes, Invite buttons) |
 | `game_roles.py` | Game-role catalog, panel, `/game_roles_*` admin |
 | `clips.py` | Clips hub + production deploy |
 | `steam_codes.py` | Steam code giveaway panel |

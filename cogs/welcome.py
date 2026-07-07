@@ -14,6 +14,7 @@ from discord.ext import commands
 from cogs.guild_registry import (
     REGISTERED_GUILD_IDS,
     ch_id,
+    channel_url,
     has_admin_shadow,
     is_registered_guild,
     resolve_channel,
@@ -24,6 +25,7 @@ logger = logging.getLogger("ShadowSyn.Welcome")
 THEME_PRIMARY = 0x2B0B35
 PANEL_TITLE = "Welcome to ShadowSyn"
 VANITY_INVITE_URL = "https://discord.gg/shadowsyn"
+MINION_BUTTON_ID = "hub_minion_grab"
 
 _REPO_DATA = Path(__file__).resolve().parents[1] / "data"
 _persist_env = os.getenv("PERSIST_PATH", "").strip()
@@ -55,7 +57,17 @@ async def safe_reply(ctx_or_inter, *args, **kwargs):
 
 def build_welcome_embed(guild_id: int) -> discord.Embed:
     jtc = ch_id(guild_id, "jtc")
+    game_roles = ch_id(guild_id, "game_roles")
+    steam = ch_id(guild_id, "steam_codes")
     embed = discord.Embed(title=PANEL_TITLE, color=THEME_PRIMARY)
+    embed.add_field(
+        name="👻 Getting Started",
+        value=(
+            f"> Grab your Starter role **[ Minion ]** below so you can see "
+            f"<#{game_roles}> & share your <#{steam}>."
+        ),
+        inline=False,
+    )
     embed.add_field(
         name="❓ Support",
         value="Ping @Gravy if you need to vent about how hard your life is.",
@@ -113,10 +125,29 @@ def build_welcome_embed(guild_id: int) -> discord.Embed:
 
 
 class WelcomePanelView(View):
-    """Link button only — opens Discord share/invite flow (no custom_id interaction)."""
+    """Static hub buttons — Minion grab handled statelessly in hub.py's on_interaction."""
 
-    def __init__(self):
+    def __init__(self, guild_id: int):
         super().__init__(timeout=None)
+        self.guild_id = guild_id
+        self.add_item(Button(
+            label="Minion",
+            style=ButtonStyle.primary,
+            emoji="👻",
+            custom_id=MINION_BUTTON_ID,
+        ))
+        self.add_item(Button(
+            label="Game-Roles",
+            style=ButtonStyle.link,
+            emoji="🎮",
+            url=channel_url(guild_id, "game_roles"),
+        ))
+        self.add_item(Button(
+            label="Steam-Codes",
+            style=ButtonStyle.link,
+            emoji="📥",
+            url=channel_url(guild_id, "steam_codes"),
+        ))
         self.add_item(Button(
             label="Invite Friends",
             style=ButtonStyle.link,
@@ -182,7 +213,7 @@ class WelcomeCog(commands.Cog):
 
         cfg = self._guild_cfg(guild.id)
         embed = build_welcome_embed(guild.id)
-        view = WelcomePanelView()
+        view = WelcomePanelView(guild.id)
 
         existing_id = cfg.get("panel_message_id")
         msg: discord.Message | None = None
@@ -210,8 +241,9 @@ class WelcomeCog(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         try:
-            self.bot.add_view(WelcomePanelView())
-            logger.info("Welcome panel view registered.")
+            for gid in REGISTERED_GUILD_IDS:
+                self.bot.add_view(WelcomePanelView(gid))
+            logger.info("Welcome panel views registered for ShadowMain + ShadowBackup.")
         except Exception as exc:
             logger.error("Failed to register welcome view on_ready: %s", exc)
 

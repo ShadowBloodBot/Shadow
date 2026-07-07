@@ -1,15 +1,13 @@
-# cogs/hub.py
+# cogs/hub.py — Minion starter-role grab handler + /help
+# The static hub panel itself lives on the welcome panel (cogs/welcome.py).
 import logging
 
 import discord
-from discord import ButtonStyle
-from discord.ui import View, Button
 from discord.ext import commands
 
 from cogs.guild_registry import (
     REGISTERED_GUILD_IDS,
     ch_id,
-    channel_url,
     has_admin_shadow,
     is_registered_guild,
     resolve_channel,
@@ -24,61 +22,6 @@ logger = logging.getLogger("ShadowSyn.Hub")
 # ==============================================================================
 THEME_PRIMARY = 0x2B0B35
 MINION_BUTTON_ID = "hub_minion_grab"
-HUB_TITLE = "Welcome -ShadowSyn-"
-
-
-def _hub_description(guild_id: int) -> str:
-    game_roles = ch_id(guild_id, "game_roles")
-    steam = ch_id(guild_id, "steam_codes")
-    welcome = ch_id(guild_id, "welcome")
-    return (
-        f"Grab your Starter role **[ Minion ]** so you can see\n"
-        f"<#{game_roles}> & Share your <#{steam}>\n"
-        f"Check out <#{welcome}> for anything else"
-    )
-
-
-def _build_hub_embed(guild_id: int) -> discord.Embed:
-    return discord.Embed(
-        title=HUB_TITLE,
-        description=_hub_description(guild_id),
-        color=THEME_PRIMARY,
-    )
-
-
-# ==============================================================================
-# UI COMPONENTS
-# ==============================================================================
-class HubPanelView(View):
-    """Persistent hub panel — Minion grab handled statelessly in on_interaction."""
-
-    def __init__(self, guild_id: int):
-        super().__init__(timeout=None)
-        self.guild_id = guild_id
-        self.add_item(Button(
-            label="Minion",
-            style=ButtonStyle.primary,
-            emoji="👻",
-            custom_id=MINION_BUTTON_ID,
-        ))
-        self.add_item(Button(
-            label="Game-Roles",
-            style=ButtonStyle.link,
-            emoji="🎮",
-            url=channel_url(guild_id, "game_roles"),
-        ))
-        self.add_item(Button(
-            label="Steam-Codes",
-            style=ButtonStyle.link,
-            emoji="📥",
-            url=channel_url(guild_id, "steam_codes"),
-        ))
-        self.add_item(Button(
-            label="Welcome",
-            style=ButtonStyle.link,
-            emoji="👋",
-            url=channel_url(guild_id, "welcome"),
-        ))
 
 
 # ==============================================================================
@@ -87,15 +30,6 @@ class HubPanelView(View):
 class HubCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
         self.bot = bot
-
-    @commands.Cog.listener()
-    async def on_ready(self):
-        try:
-            for gid in REGISTERED_GUILD_IDS:
-                self.bot.add_view(HubPanelView(gid))
-            logger.info("Hub persistent views restored for ShadowMain + ShadowBackup.")
-        except Exception as e:
-            logger.error(f"Failed to restore hub views on_ready: {e}")
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
@@ -168,55 +102,6 @@ class HubCog(commands.Cog):
             await thread.send(embed=embed)
         except Exception as e:
             logger.warning(f"Failed to post hub grant notice to arrivals: {e}")
-
-    @commands.Cog.listener()
-    async def on_member_join(self, member: discord.Member):
-        if member.bot or not is_registered_guild(member.guild.id):
-            return
-        lobby = await resolve_channel(self.bot, member.guild.id, "lobby")
-        if lobby is None:
-            return
-        try:
-            await lobby.send(
-                content=member.mention,
-                embed=_build_hub_embed(member.guild.id),
-                view=HubPanelView(member.guild.id),
-                allowed_mentions=discord.AllowedMentions(users=True),
-            )
-            logger.info(f"Hub welcome ping posted for {member.id} in guild {member.guild.id}.")
-        except Exception as e:
-            logger.error(f"Failed to post hub welcome ping for {member.id}: {e}")
-
-    @discord.slash_command(
-        name="hub_deploy",
-        description="Post the Welcome hub panel to this guild's lobby channel.",
-        guild_ids=REGISTERED_GUILD_IDS,
-        default_member_permissions=discord.Permissions(administrator=True),
-    )
-    async def hub_deploy(self, ctx: discord.ApplicationContext):
-        if not ctx.guild or not is_registered_guild(ctx.guild.id):
-            return await safe_reply(ctx, "⛔ Unregistered guild.", ephemeral=True)
-        if not has_admin_shadow(ctx.author, ctx.guild.id):
-            return await safe_reply(ctx, "🚫 Admin clearance required.", ephemeral=True)
-
-        lobby = await resolve_channel(self.bot, ctx.guild.id, "lobby")
-        if lobby is None:
-            return await safe_reply(ctx, "❌ Lobby channel not found in registry.", ephemeral=True)
-
-        await ctx.defer(ephemeral=True)
-        try:
-            msg = await lobby.send(
-                embed=_build_hub_embed(ctx.guild.id),
-                view=HubPanelView(ctx.guild.id),
-            )
-            self.bot.add_view(HubPanelView(ctx.guild.id))
-            await ctx.followup.send(
-                f"✅ Hub panel live in {lobby.mention} · message `{msg.id}`",
-                ephemeral=True,
-            )
-        except Exception as e:
-            logger.error(f"hub_deploy failed: {e}")
-            await ctx.followup.send(f"❌ Deploy failed: {e}", ephemeral=True)
 
     @discord.slash_command(
         name="help",
@@ -302,7 +187,7 @@ class HubCog(commands.Cog):
             embed.add_field(
                 name="🛠️ Admin",
                 value=(
-                    "`/hub_deploy` · `/welcome_deploy` · `/clips_deploy` · `/steam_codes_deploy` · `/casino_deploy` · "
+                    "`/welcome_deploy` · `/clips_deploy` · `/steam_codes_deploy` · `/casino_deploy` · "
                     "`/role_button` · `/send_custom` · `/edit_custom` · `/morehaste` · `/steam`"
                 ),
                 inline=False,

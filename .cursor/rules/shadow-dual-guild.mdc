@@ -38,10 +38,8 @@ This includes:
 | Clips | `clips` | `scripts/clips_production_deploy.py --guild all` · `/clips_deploy` |
 | Steam codes | `steam_codes` | `/steam_codes_deploy` |
 | Casino | `casino` | `/casino_deploy` |
-| Lobby welcome hub | `lobby` | `scripts/hub_lobby_refresh.py --guild all` · `/hub_deploy` |
-| Welcome info | `welcome` | `scripts/welcome_discord_deploy.py` · `/welcome_deploy` |
+| Welcome hub (static panel + Minion/Game-Roles/Steam-Codes buttons) | `welcome` | `scripts/welcome_discord_deploy.py --guild all` · `/welcome_deploy` |
 | **Game roles** | `game_roles` | `scripts/game_roles_deploy.py --guild all` · `/game_roles_deploy` + `/game_roles_seed` |
-| Game roles lobby link | `game_roles` in `hub.py` | `hub_lobby_refresh.py --guild all` after hub copy changes |
 | SAND guides | `sand_general` | `scripts/sand_guides_import.py` after funnel/copy changes; verify `/sand` with `scripts/verify_sand_commands.py` |
 
 After any new registry channel key on Main: run `guild_registry_seed.py`, verify Backup `MISS` list is empty, then deploy panels on **both**.
