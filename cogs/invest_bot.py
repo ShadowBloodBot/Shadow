@@ -22,6 +22,7 @@ from cogs.invest_data import (
     strategy_embed_parts,
     strategy_for_today,
 )
+from cogs.guild_registry import REGISTERED_GUILD_IDS
 from cogs.invest_calculators import calc_negative_gearing, calc_refinance_check, fmt_currency
 from cogs.invest_suburb_stats import get_store
 from cogs.suburbs_database import db as suburbs_db, SUBURB_TO_STATE
@@ -30,7 +31,6 @@ from cogs.suburb_fetcher import build_suburb_profile
 logger = logging.getLogger("ShadowSyn.InvestBot")
 
 THEME = 0x2B0B35
-GUILD_ID = 908659586536468540
 TZ = ZoneInfo("Australia/Sydney")
 PERSIST = Path(os.getenv("PERSIST_PATH", "/data"))
 STATE_FILE = PERSIST / "invest_state.json"
@@ -551,7 +551,7 @@ class InvestBotCog(commands.Cog):
     @discord.slash_command(
         name="suburb",
         description="Market intel — median, growth, yield, hotspot score",
-        guild_ids=[GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
     )
     async def suburb(self, ctx, suburb_name: Option(str, autocomplete=suburb_autocomplete)):
         await ctx.defer()
@@ -583,7 +583,7 @@ class InvestBotCog(commands.Cog):
     @discord.slash_command(
         name="compare",
         description="Side-by-side suburb investment comparison",
-        guild_ids=[GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
     )
     async def compare(
         self,
@@ -613,7 +613,7 @@ class InvestBotCog(commands.Cog):
     @discord.slash_command(
         name="neggear",
         description="Negative gearing discussion calculator",
-        guild_ids=[GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
     )
     async def neggear(
         self,
@@ -647,7 +647,7 @@ class InvestBotCog(commands.Cog):
     @discord.slash_command(
         name="refi_check",
         description="Refinance eligibility discussion check",
-        guild_ids=[GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
     )
     async def refi_check(
         self,
@@ -686,7 +686,7 @@ class InvestBotCog(commands.Cog):
     @discord.slash_command(
         name="invest_config",
         description="Bind invest bot channels — run inside target channel",
-        guild_ids=[GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
         default_member_permissions=discord.Permissions(administrator=True),
     )
     async def invest_config(
@@ -713,7 +713,7 @@ class InvestBotCog(commands.Cog):
     @discord.slash_command(
         name="invest_post_now",
         description="Admin: trigger a feed post immediately",
-        guild_ids=[GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
         default_member_permissions=discord.Permissions(administrator=True),
     )
     async def invest_post_now(
@@ -738,7 +738,7 @@ class InvestBotCog(commands.Cog):
     @discord.slash_command(
         name="invest_survey_post",
         description="Admin: post qualification survey in this channel",
-        guild_ids=[GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
         default_member_permissions=discord.Permissions(administrator=True),
     )
     async def invest_survey_post(self, ctx):
@@ -762,7 +762,7 @@ class InvestBotCog(commands.Cog):
     @discord.slash_command(
         name="invest_flag_lead",
         description="Admin: flag a member as qualified lead",
-        guild_ids=[GUILD_ID],
+        guild_ids=REGISTERED_GUILD_IDS,
         default_member_permissions=discord.Permissions(administrator=True),
     )
     async def invest_flag_lead(
@@ -780,7 +780,7 @@ class InvestBotCog(commands.Cog):
         if payload.user_id == self.bot.user.id:
             return
         guild = self.bot.get_guild(payload.guild_id)
-        if not guild or guild.id != GUILD_ID:
+        if not guild or guild.id not in REGISTERED_GUILD_IDS:
             return
 
         emoji = str(payload.emoji)
@@ -833,7 +833,7 @@ class InvestBotCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.bot or not message.guild or message.guild.id != GUILD_ID:
+        if message.author.bot or not message.guild or message.guild.id not in REGISTERED_GUILD_IDS:
             return
         if not LEAD_KEYWORDS.search(message.content):
             return
