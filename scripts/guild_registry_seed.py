@@ -35,7 +35,6 @@ SLUG_ALIASES: dict[str, tuple[str, ...]] = {
     "steam_codes": ("steam-codes", "steam codes", "steamcodes"),
     "sand_general": ("sand-general", "sand general"),
     "war": ("quinfall-war", "war"),
-    "arma_stats": ("arma-stats", "arma stats"),
     "steam_action_pvp": ("action-pvp", "action pvp"),
     "steam_adventure_coop": ("adventure-co-op", "adventure co-op"),
     "game_roles": ("game-roles", "game roles"),

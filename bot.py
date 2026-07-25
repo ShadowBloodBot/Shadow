@@ -83,7 +83,6 @@ cogs_list = [
     "cogs.content_filter",
     "cogs.tts",
     "cogs.music",
-    "cogs.tracker",
     "cogs.steam_tracker",
     "cogs.clips",
     "cogs.steam_codes",

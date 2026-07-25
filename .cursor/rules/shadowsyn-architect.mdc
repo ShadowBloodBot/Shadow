@@ -62,7 +62,7 @@ When delivering new or rewritten Python files:
 
 This is **Shadow**, a Discord bot for **ShadowSyn** — a private **multi-game** gaming community (not a single-game guild brand), deployed **active-active** on **ShadowMain** and **ShadowBackup**. See `.cursor/rules/shadow-dual-guild.mdc` — Backup must identically mirror Main for all Discord and bot work.
 
-**Community identity:** ShadowSyn plays many games over time (SAND, Arma, Rust, WoW, Dune, etc.). Quinfall-specific features (war signup, kill tracker) and SAND guide tooling exist because the group plays those games — **no single game is the server brand**. User-facing copy must not describe ShadowSyn as "a Quinfall guild" unless the text is explicitly about a Quinfall feature.
+**Community identity:** ShadowSyn plays many games over time (SAND, Arma, Rust, WoW, Dune, etc.). Quinfall-specific features (war signup) and SAND guide tooling exist because the group plays those games — **no single game is the server brand**. User-facing copy must not describe ShadowSyn as "a Quinfall guild" unless the text is explicitly about a Quinfall feature.
 
 **Stack:** py-cord (git branch), Python 3.11, deployed to Railway with Docker. State persists to a `/data` volume via JSON files using atomic writes (write to `.tmp` then rename). There is a Railway-specific IPv4 socket patch in `bot.py` for voice gateway stability.
 
@@ -88,9 +88,8 @@ This is **Shadow**, a Discord bot for **ShadowSyn** — a private **multi-game**
 | `utility.py` | Embed builder, role-claim buttons, Haste Facts |
 | `steam_tracker.py` | Steam new-release feed (genre-filtered threads) |
 | `war.py` | **Quinfall-specific** — war signup, class/stats, 20-man vanguard draft |
-| `tracker.py` | **Quinfall-specific** — fta.gg PvP kill feeds |
 
-**Removed from bot** (do not resurrect without explicit order): `invest_*` mortgage/AU property cogs, `spire.py` (Slay the Spire). Legacy data may remain under `data/` (`strategy_history.json`, `suburb*.json`).
+**Removed from bot** (do not resurrect without explicit order): `invest_*` mortgage/AU property cogs, `spire.py` (Slay the Spire), `tracker.py` (Arma Reforger FTA.gg kill-feed). Legacy data may remain under `data/` (`strategy_history.json`, `suburb*.json`, Railway `/data/kill_tracker_api.json`).
 
 **Architecture patterns:**
 
@@ -104,4 +103,4 @@ When given a cog to work on, read the whole file before touching anything.
 ## Game-specific cogs
 
 - **SAND** (`cogs/sand/`): follow `.cursor/rules/sand-bot.mdc` for implementation conventions.
-- **Quinfall** (`war.py`, `tracker.py`): game-specific; user-facing copy must not brand ShadowSyn as a Quinfall guild (see `shadowsyn-identity.mdc`).
+- **Quinfall** (`war.py`): game-specific; user-facing copy must not brand ShadowSyn as a Quinfall guild (see `shadowsyn-identity.mdc`).

@@ -44,7 +44,7 @@ This includes:
 
 After any new registry channel key on Main: run `guild_registry_seed.py`, verify Backup `MISS` list is empty, then deploy panels on **both**.
 
-Current registry channel keys: `lobby`, `general_open`, `welcome`, `steam_codes`, `clips`, `jtc`, `casino`, `arrivals`, `departures`, `voice_audit`, `war`, `sand_general`, `arma_stats`, `steam_action_pvp`, `steam_adventure_coop`, `vc_category`, `tts_history`, `game_roles`.
+Current registry channel keys: `lobby`, `general_open`, `welcome`, `steam_codes`, `clips`, `jtc`, `casino`, `arrivals`, `departures`, `voice_audit`, `war`, `sand_general`, `steam_action_pvp`, `steam_adventure_coop`, `vc_category`, `tts_history`, `game_roles`.
 
 ## Code conventions
 

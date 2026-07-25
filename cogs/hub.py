@@ -168,8 +168,7 @@ class HubCog(commands.Cog):
             name="🤖 Commands",
             value=(
                 "`/speak` — bot speaks your text in VC, any language\n"
-                "`/haste` — random Haste fact\n"
-                f"`/stats` — Arma combat record (in {_ch('arma_stats')})"
+                "`/haste` — random Haste fact"
             ),
             inline=False,
         )
