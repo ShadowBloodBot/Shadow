@@ -88,7 +88,7 @@ STRATEGIES = [
             'LRBA servicing is not just rent minus repayments. The lender tests member contributions, '
             'employer SG cadence, concessional and non-concessional cap room, fund expenses, insurance, '
             'and pension phase obligations inside a vehicle that cannot be casually topped up. A '
-            'related-party loan may solve rate or LVR friction, but its terms still need arm's-length '
+            'related-party loan may solve rate or LVR friction, but its terms still need arm\'s-length '
             'support and fund liquidity after the property settles.'
         ),
         "retail_trap": (
