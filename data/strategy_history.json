@@ -6,7 +6,14 @@
     "HECS & Bonus Income — Lender Arbitrage",
     "Self-Employed NPR & Add-Back Architecture",
     "Cross-Collateralisation Exit Trap",
-    "IO Expiry Without Servicing Bridge"
+    "IO Expiry Without Servicing Bridge",
+    "Section 100A Trust Distribution Drag",
+    "SMSF LRBA Contribution Cap Squeeze",
+    "Div 7A Deposit Poisoning",
+    "DTI Ceiling With Hidden HEM Burn",
+    "Fixed Split Break-Cost Trap",
+    "Alt-Doc GST Turnover Mirage",
+    "Equity Release Buffer Leakage"
   ],
   "weeks": [
     {
@@ -21,6 +28,19 @@
         "IO Expiry Without Servicing Bridge"
       ],
       "generated_at": "2026-06-09"
+    },
+    {
+      "week": "2026-W33",
+      "titles": [
+        "Section 100A Trust Distribution Drag",
+        "SMSF LRBA Contribution Cap Squeeze",
+        "Div 7A Deposit Poisoning",
+        "DTI Ceiling With Hidden HEM Burn",
+        "Fixed Split Break-Cost Trap",
+        "Alt-Doc GST Turnover Mirage",
+        "Equity Release Buffer Leakage"
+      ],
+      "generated_at": "2026-08-09"
     }
   ]
 }
