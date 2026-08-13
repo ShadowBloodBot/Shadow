@@ -142,9 +142,19 @@ async def on_ready():
 
 @bot.event
 async def on_application_command_error(ctx: discord.ApplicationContext, error: Exception):
+    from discord.ext import commands as _commands
+
     cmd_name = ctx.command.name if ctx.command else "?"
-    logger.exception("Slash command failed: /%s", cmd_name)
-    message = f"⚠️ Command error: {error}"
+    root = error
+    if isinstance(error, _commands.CommandInvokeError) and error.original:
+        root = error.original
+
+    if isinstance(root, (_commands.CheckFailure, _commands.MissingPermissions, _commands.MissingRole)):
+        message = "🚫 You don't have permission to use this command."
+    else:
+        message = f"⚠️ Command error: {root}"
+
+    # ACK first — logging must never burn the 3s interaction window.
     try:
         if not ctx.response.is_done():
             await ctx.respond(message, ephemeral=True)
@@ -152,6 +162,8 @@ async def on_application_command_error(ctx: discord.ApplicationContext, error: E
             await ctx.followup.send(message, ephemeral=True)
     except Exception:
         pass
+
+    logger.exception("Slash command failed: /%s", cmd_name)
 
 
 # ==========================================

@@ -58,23 +58,29 @@ class HubCog(commands.Cog):
                 ephemeral=True,
             )
 
+        # ACK first — add_roles can exceed Discord's 3s interaction window.
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+
         try:
             await member.add_roles(role, reason="ShadowSyn Hub: starter role self-grab")
         except discord.Forbidden:
             logger.error("Forbidden while granting Minion via hub button.")
-            return await safe_reply(
-                interaction,
+            return await interaction.followup.send(
                 "❌ I can't assign roles right now. Tell an admin.",
                 ephemeral=True,
             )
         except Exception as e:
             logger.error(f"Minion grant failed for {member.id}: {e}")
-            return await safe_reply(interaction, "⚠️ Something broke. Try again.", ephemeral=True)
+            return await interaction.followup.send(
+                "⚠️ Something broke. Try again.",
+                ephemeral=True,
+            )
 
         game_roles = ch_id(guild.id, "game_roles")
-        await safe_reply(
-            interaction,
-            f"👻 You're in. Pick your games in <#{game_roles}>.",
+        mention = f"<#{game_roles}>" if game_roles else "#game-roles"
+        await interaction.followup.send(
+            f"👻 You're in. Pick your games in {mention}.",
             ephemeral=True,
         )
         await self._notify_arrivals(member)

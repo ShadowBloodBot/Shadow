@@ -11,11 +11,6 @@ from cogs.guild_registry import REGISTERED_GUILD_IDS, is_registered_guild
 # ==============================================================================
 # TELEMETRY & ENVIRONMENT CONFIGURATION
 # ==============================================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | [ShadowSyn] %(levelname)s | %(message)s",
-    handlers=[logging.StreamHandler()]
-)
 logger = logging.getLogger("ShadowSyn.SteamTracker")
 
 PERSIST_PATH = os.getenv("PERSIST_PATH", "/data")
@@ -35,8 +30,9 @@ class SteamReleasesTracker(discord.Cog):
         self.session = None
         
         self.targets = {}      # Dictionary tracking {channel_id_str: filter_string_or_None}
-        self.seen_apps = []    
-        
+        self.seen_apps = []
+        self._last_saved_fingerprint: str | None = None
+
         self._ensure_persist_dir()
         self._load_state()
         self.release_scanner.start()
@@ -72,6 +68,7 @@ class SteamReleasesTracker(discord.Cog):
                         self.targets = raw_targets
                         
                     self.seen_apps = data.get("seen_apps", [])
+                self._last_saved_fingerprint = self._state_fingerprint()
                 logger.info(f"Loaded {len(self.targets)} targets and {len(self.seen_apps)} seen apps.")
             except Exception as e:
                 logger.error(f"Corruption detected in {STEAM_STATE_FILE}, starting fresh. Error: {e}")
@@ -82,18 +79,37 @@ class SteamReleasesTracker(discord.Cog):
             self.targets = {}
             self.seen_apps = []
 
-    def _save_state(self):
+    def _state_fingerprint(self) -> str:
+        capped = self.seen_apps[-1000:]
+        return json.dumps(
+            {"targets": self.targets, "seen_apps": capped},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _save_state(self) -> bool:
+        """Sync disk write — must only run off the event loop (via to_thread)."""
+        fingerprint = self._state_fingerprint()
+        if fingerprint == self._last_saved_fingerprint:
+            return False
         data = {
             "targets": self.targets,
-            "seen_apps": self.seen_apps[-1000:]  
+            "seen_apps": self.seen_apps[-1000:],
         }
         try:
             with open(STEAM_TEMP_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4)
+                json.dump(data, f, separators=(",", ":"))
             os.replace(STEAM_TEMP_FILE, STEAM_STATE_FILE)
+            self._last_saved_fingerprint = fingerprint
             logger.info("Successfully executed atomic save for Steam state.")
+            return True
         except Exception as e:
             logger.error(f"Failed to save Steam state: {e}")
+            return False
+
+    async def _save_state_async(self) -> None:
+        """Non-blocking persist — keeps Discord heartbeats/interactions alive."""
+        await asyncio.to_thread(self._save_state)
 
     # --------------------------------------------------------------------------
     # BACKGROUND TASK LOOP
@@ -159,7 +175,7 @@ class SteamReleasesTracker(discord.Cog):
             await asyncio.sleep(1.5)  # Throttling metric to stay within API bounds
 
         if new_items_found:
-            self._save_state()
+            await self._save_state_async()
 
     @release_scanner.before_loop
     async def before_scanner(self):
@@ -257,7 +273,7 @@ class SteamReleasesTracker(discord.Cog):
             for t in targets_to_remove:
                 if t in self.targets:
                     del self.targets[t]
-            self._save_state()
+            await self._save_state_async()
 
     def _parse_filter(self, metadata_filter: str) -> list:
         # Split the user's input by commas to allow multi-tag targeting
@@ -314,8 +330,8 @@ class SteamReleasesTracker(discord.Cog):
         target_id = str(ctx.channel.id)
         
         self.targets[target_id] = genre_filter
-        self._save_state()
-        
+        await self._save_state_async()
+
         msg = f"✅ Steam New Releases will now be routed to <#{target_id}>."
         if genre_filter:
             msg += f"\n🎯 Metadata Filter Active: **{genre_filter}**"
@@ -337,8 +353,8 @@ class SteamReleasesTracker(discord.Cog):
             return
 
         del self.targets[target_id]
-        self._save_state()
-        
+        await self._save_state_async()
+
         embed = discord.Embed(
             title="System Unbound",
             description=f"⛔ Steam New Releases have been detached from <#{target_id}>.",

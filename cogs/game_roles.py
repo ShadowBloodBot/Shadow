@@ -633,6 +633,10 @@ class GameRolesCog(commands.Cog):
 
             page = self._eph_page_from_interaction(interaction)
 
+            # ACK within 3s — role REST can exceed Discord's interaction window.
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True)
+
             had_role = role in member.roles
             try:
                 if had_role:
@@ -642,16 +646,16 @@ class GameRolesCog(commands.Cog):
                     await member.add_roles(role, reason="ShadowSyn Game Roles toggle")
                     action = f"Added **{role.name}**"
             except discord.Forbidden:
-                return await safe_reply(
+                await ephemeral_flash(
                     interaction,
                     "❌ I can't assign that role right now. Tell an admin.",
-                    ephemeral=True,
                 )
+                return
             except Exception as exc:
                 logger.error("Toggle failed for %s: %s", member.id, exc)
-                return await safe_reply(interaction, "⚠️ Something broke. Try again.", ephemeral=True)
+                await ephemeral_flash(interaction, "⚠️ Something broke. Try again.")
+                return
 
-            await interaction.response.defer(ephemeral=True)
             member = guild.get_member(member.id) or member
             await self._refresh_manage(interaction, page)
             await ephemeral_flash(interaction, f"✅ {action}")
