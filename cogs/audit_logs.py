@@ -29,8 +29,8 @@ class MinionView(View):
         self.add_item(b)
 
         profile_btn = Button(
-            label="View Profile (App)",
-            url=f"discord://-/users/{target_member_id}",
+            label="View Profile",
+            url=f"https://discord.com/users/{target_member_id}",
             style=discord.ButtonStyle.link,
             emoji="🔍",
         )
@@ -65,8 +65,8 @@ class DepartureView(View):
     def __init__(self, target_member_id):
         super().__init__(timeout=None)
         profile_btn = Button(
-            label="View Profile (App)",
-            url=f"discord://-/users/{target_member_id}",
+            label="View Profile",
+            url=f"https://discord.com/users/{target_member_id}",
             style=discord.ButtonStyle.link,
             emoji="🔍",
         )
@@ -120,10 +120,10 @@ class AuditLogsCog(commands.Cog):
             )
             em.set_thumbnail(url=avatar_url)
             em.add_field(name="👤 Username", value=f"`{member.name}`", inline=True)
-            em.add_field(name="🆔 User ID", value=f"`{member.id}`", inline=True)
-            em.add_field(name="📅 Account Created", value=f"<t:{created_ts}:R>", inline=False)
+            em.add_field(name="📅 Account Created", value=f"<t:{created_ts}:R>", inline=True)
+            em.add_field(name="🆔 User ID", value=f"`{member.id}`", inline=False)
 
-            await ch.send(embed=em, view=MinionView(member.id))
+            await ch.send(content=member.mention, embed=em, view=MinionView(member.id))
         except Exception as e:
             logger.error("Exception in on_member_join routing: %s", e)
 
@@ -162,8 +162,8 @@ class AuditLogsCog(commands.Cog):
             embed = discord.Embed(title=title, description=description, color=color, timestamp=now)
             embed.set_thumbnail(url=avatar_url)
             embed.add_field(name="👤 Username", value=f"`{member.name}`", inline=True)
-            embed.add_field(name="🆔 User ID", value=f"`{member.id}`", inline=True)
-            embed.add_field(name="📅 Account Created", value=f"<t:{created_ts}:R>", inline=False)
+            embed.add_field(name="📅 Account Created", value=f"<t:{created_ts}:R>", inline=True)
+            embed.add_field(name="🆔 User ID", value=f"`{member.id}`", inline=False)
             if joined_ts:
                 embed.add_field(name="📥 Joined Server", value=f"<t:{joined_ts}:R>", inline=True)
 
