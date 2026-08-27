@@ -162,24 +162,50 @@ async def purge_hof_threads(session: aiohttp.ClientSession, token: str, channel_
     return removed
 
 
-async def archive_gallery_threads(session: aiohttp.ClientSession, token: str, channel_id: int) -> int:
+async def archive_gallery_threads(
+    session: aiohttp.ClientSession,
+    token: str,
+    guild_id: int,
+    channel_id: int,
+) -> int:
     archived = 0
-    status, active = await discord_api(session, token, "GET", f"/channels/{channel_id}/threads/active")
-    if status == 200 and isinstance(active, dict):
-        for thread in active.get("threads") or []:
-            parent = thread.get("parent_id")
-            if parent and str(parent) != str(channel_id):
-                continue
-            st, _ = await discord_api(
-                session,
-                token,
-                "PATCH",
-                f"/channels/{thread['id']}",
-                {"archived": True, "locked": True},
-            )
-            if st in (200, 201):
-                archived += 1
+    status, active = await discord_api(session, token, "GET", f"/guilds/{guild_id}/threads/active")
+    if status != 200 or not isinstance(active, dict):
+        print(f"  WARNING: active threads fetch failed {status} {active}")
+        return 0
+    for thread in active.get("threads") or []:
+        if str(thread.get("parent_id")) != str(channel_id):
+            continue
+        st, body = await discord_api(
+            session,
+            token,
+            "PATCH",
+            f"/channels/{thread['id']}",
+            {"archived": True, "locked": True},
+        )
+        if st in (200, 201):
+            archived += 1
+        else:
+            print(f"  WARNING: archive {thread.get('id')} failed {st} {body}")
     return archived
+
+
+async def delete_pin_notices(session: aiohttp.ClientSession, token: str, channel_id: int) -> int:
+    status, batch = await discord_api(
+        session, token, "GET", f"/channels/{channel_id}/messages?limit=10"
+    )
+    if status != 200 or not isinstance(batch, list):
+        return 0
+    removed = 0
+    for item in batch:
+        if item.get("type") != 6:
+            continue
+        st, _ = await discord_api(
+            session, token, "DELETE", f"/channels/{channel_id}/messages/{item['id']}"
+        )
+        if st in (200, 204):
+            removed += 1
+    return removed
 
 
 async def lock_permissions(session: aiohttp.ClientSession, token: str, channel_id: int):
@@ -283,6 +309,9 @@ async def deploy_panel(session: aiohttp.ClientSession, token: str, channel_id: i
     )
     if pin_status not in (200, 204):
         print(f"  WARNING: pin failed {pin_status} {pin_body}")
+    notices = await delete_pin_notices(session, token, channel_id)
+    if notices:
+        print(f"  Removed {notices} pin notice(s)")
     print(f"  Header posted and pinned: {panel_id}")
     return panel_id
 
@@ -301,7 +330,7 @@ async def deploy_guild(
     hof_removed = await purge_hof_threads(session, token, channel_id)
     if hof_removed:
         print(f"  Purged {hof_removed} Hall of Fame thread(s)")
-    archived = await archive_gallery_threads(session, token, channel_id)
+    archived = await archive_gallery_threads(session, token, guild_id, channel_id)
     if archived:
         print(f"  Archived {archived} leftover clip thread(s)")
     await lock_permissions(session, token, channel_id)

@@ -154,8 +154,10 @@ def _cached_top_contributor_names(clips_data: dict) -> list[str]:
 
 def _ingest_panel_footer(clips_data: dict, contributor_names: list[str] | None = None) -> str:
     total = _total_clips(clips_data)
+    if total <= 0:
+        return "ShadowSyn"
     text = f"{INGEST_PANEL_FOOTER_PREFIX}{total:,} clips shared"
-    if total <= 0 or not contributor_names:
+    if not contributor_names:
         return text
     if len(contributor_names) == 1:
         return f"{text} [Top Contributor: {contributor_names[0]}]"
@@ -991,6 +993,12 @@ class ClipsCog(commands.Cog):
                 await panel_msg.pin()
             except Exception as e:
                 logger.warning(f"Could not pin clips header {panel_msg.id}: {e}")
+            try:
+                async for notice in channel.history(limit=8):
+                    if notice.type == discord.MessageType.pins_add:
+                        await notice.delete()
+            except Exception as e:
+                logger.warning(f"Could not delete clips pin notice: {e}")
             self._set_panel_id(gid, panel_msg.id)
             self._save()
             logger.info(f"Clips header pinned ({panel_msg.id}) guild {gid}.")
