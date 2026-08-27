@@ -141,8 +141,7 @@ class HubCog(commands.Cog):
         embed.add_field(
             name="🏆 Clips",
             value=(
-                f"Drop a link or video file in {_ch('clips')} — Medal, YouTube, Twitch, TikTok, and more. "
-                "Comments go in that clip's thread."
+                f"Drop a clip in {_ch('clips')} — link or file. React. Don't chat there."
             ),
             inline=False,
         )

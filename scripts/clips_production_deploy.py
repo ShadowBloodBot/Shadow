@@ -162,6 +162,26 @@ async def purge_hof_threads(session: aiohttp.ClientSession, token: str, channel_
     return removed
 
 
+async def archive_gallery_threads(session: aiohttp.ClientSession, token: str, channel_id: int) -> int:
+    archived = 0
+    status, active = await discord_api(session, token, "GET", f"/channels/{channel_id}/threads/active")
+    if status == 200 and isinstance(active, dict):
+        for thread in active.get("threads") or []:
+            parent = thread.get("parent_id")
+            if parent and str(parent) != str(channel_id):
+                continue
+            st, _ = await discord_api(
+                session,
+                token,
+                "PATCH",
+                f"/channels/{thread['id']}",
+                {"archived": True, "locked": True},
+            )
+            if st in (200, 201):
+                archived += 1
+    return archived
+
+
 async def lock_permissions(session: aiohttp.ClientSession, token: str, channel_id: int):
     status, ch = await discord_api(session, token, "GET", f"/channels/{channel_id}")
     if status != 200:
@@ -247,29 +267,23 @@ async def deploy_panel(session: aiohttp.ClientSession, token: str, channel_id: i
             )
         },
     }
-    components = [{
-        "type": 1,
-        "components": [{
-            "type": 2,
-            "style": 1,
-            "label": "Submit Clip",
-            "emoji": {"name": "🎬"},
-            "custom_id": "clips_submit_panel",
-        }],
-    }]
-
     await remove_old_panels(session, token, channel_id)
     status, panel = await discord_api(
         session,
         token,
         "POST",
         f"/channels/{channel_id}/messages",
-        {"embeds": [panel_embed], "components": components},
+        {"embeds": [panel_embed]},
     )
     if status not in (200, 201):
         raise RuntimeError(f"Panel post failed: {status} {panel}")
     panel_id = str(panel["id"])
-    print(f"  Panel posted: {panel_id}")
+    pin_status, pin_body = await discord_api(
+        session, token, "PUT", f"/channels/{channel_id}/pins/{panel_id}"
+    )
+    if pin_status not in (200, 204):
+        print(f"  WARNING: pin failed {pin_status} {pin_body}")
+    print(f"  Header posted and pinned: {panel_id}")
     return panel_id
 
 
@@ -287,6 +301,9 @@ async def deploy_guild(
     hof_removed = await purge_hof_threads(session, token, channel_id)
     if hof_removed:
         print(f"  Purged {hof_removed} Hall of Fame thread(s)")
+    archived = await archive_gallery_threads(session, token, channel_id)
+    if archived:
+        print(f"  Archived {archived} leftover clip thread(s)")
     await lock_permissions(session, token, channel_id)
     return await deploy_panel(session, token, channel_id)
 
