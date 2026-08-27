@@ -46,10 +46,7 @@ from cogs.utils import safe_reply
 THEME_PRIMARY = 0x2B0B35
 OWNER_ID = 482463400929263627
 INGEST_PANEL_TITLE = "🎬 Clips"
-INGEST_PANEL_DESCRIPTION = (
-    "Drop a clip — link or video file.\n"
-    "React. Don't chat here."
-)
+INGEST_PANEL_DESCRIPTION = "Drop a clip — link or video file."
 INGEST_PANEL_FOOTER_PREFIX = "ShadowSyn Clips · "
 HOF_THREAD_NAME = "🏛️ Hall of Fame"
 CLIP_REACT = "🔥"

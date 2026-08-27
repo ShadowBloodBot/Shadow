@@ -141,7 +141,7 @@ class HubCog(commands.Cog):
         embed.add_field(
             name="🏆 Clips",
             value=(
-                f"Drop a clip in {_ch('clips')} — link or file. React. Don't chat there."
+                f"Drop a clip in {_ch('clips')} — link or file."
             ),
             inline=False,
         )
