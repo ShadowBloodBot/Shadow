@@ -74,42 +74,12 @@ def build_welcome_embed(guild_id: int) -> discord.Embed:
         inline=False,
     )
     embed.add_field(
-        name="🛠️ Public Features",
-        value=(
-            "> `/poll` — live button poll with results\n"
-            "> `/remindme` — personal reminder (DM or this channel)\n"
-            "> `/countdown` — shared event timer with optional role ping"
-        ),
-        inline=False,
-    )
-    embed.add_field(
         name="Create Voice Channel",
         value=(
             f"> **Creating your own voice call:** In <#{jtc}> you'll get your own "
             "Control Panel that allows you to control your VC. Locking it from others, "
             "editing the bitrate, user limiting etc if you want a chill chat of just "
             "2 of you it's your choice."
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="\u200b",
-        value="---",
-        inline=False,
-    )
-    embed.add_field(
-        name="🤖 Member Commands Only",
-        value="*Feature List for the ShadowSyn Bot*",
-        inline=False,
-    )
-    embed.add_field(
-        name="🍌 Utility & Fun",
-        value=(
-            "> `/gamble` Play, Win & Redeem\n"
-            "> `/speak` TTS bot translate any language\n"
-            "> `/haste` Random Haste fact.\n"
-            "> `/play` Play any song, Music bot with buttons.\n"
-            "> `M!P` Any song search"
         ),
         inline=False,
     )
