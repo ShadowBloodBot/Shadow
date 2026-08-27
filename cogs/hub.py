@@ -141,8 +141,8 @@ class HubCog(commands.Cog):
         embed.add_field(
             name="🏆 Clips",
             value=(
-                f"Hit **Submit Clip** in {_ch('clips')} — Medal/YouTube link or file upload. "
-                "Drop a 🔥 on the ones that deserve it."
+                f"Drop a link or video file in {_ch('clips')} — Medal, YouTube, Twitch, TikTok, and more. "
+                "Comments go in that clip's thread."
             ),
             inline=False,
         )

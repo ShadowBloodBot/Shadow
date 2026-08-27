@@ -41,7 +41,8 @@ SEND_MESSAGES = 1 << 11
 CREATE_PUBLIC_THREADS = 1 << 35
 CREATE_PRIVATE_THREADS = 1 << 36
 SEND_MESSAGES_IN_THREADS = 1 << 38
-DENY_BITS = SEND_MESSAGES | CREATE_PUBLIC_THREADS | CREATE_PRIVATE_THREADS
+DENY_BITS = CREATE_PUBLIC_THREADS | CREATE_PRIVATE_THREADS
+ALLOW_BITS = SEND_MESSAGES | SEND_MESSAGES_IN_THREADS
 
 
 def railway_token() -> str:
@@ -170,8 +171,8 @@ async def lock_permissions(session: aiohttp.ClientSession, token: str, channel_i
             continue
         allow = int(ow.get("allow", 0))
         deny = int(ow.get("deny", 0))
-        allow = (allow | SEND_MESSAGES_IN_THREADS) & ~DENY_BITS
-        deny = deny | DENY_BITS
+        allow = (allow | ALLOW_BITS) & ~DENY_BITS
+        deny = (deny | DENY_BITS) & ~ALLOW_BITS
         patched.append({"id": ow["id"], "type": ow["type"], "allow": str(allow), "deny": str(deny)})
 
     guild_id = ch.get("guild_id")
@@ -179,7 +180,7 @@ async def lock_permissions(session: aiohttp.ClientSession, token: str, channel_i
         patched.append({
             "id": guild_id,
             "type": 0,
-            "allow": str(SEND_MESSAGES_IN_THREADS),
+            "allow": str(ALLOW_BITS),
             "deny": str(DENY_BITS),
         })
 
@@ -192,7 +193,7 @@ async def lock_permissions(session: aiohttp.ClientSession, token: str, channel_i
     )
     if status != 200:
         raise RuntimeError(f"Permission lock failed: {status} {updated}")
-    print(f"  Permissions locked ({len(patched)} targets)")
+    print(f"  Permissions updated ({len(patched)} targets, drop-in send enabled)")
 
 
 async def remove_old_panels(session: aiohttp.ClientSession, token: str, channel_id: int):

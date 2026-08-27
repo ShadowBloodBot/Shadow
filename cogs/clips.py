@@ -8,7 +8,7 @@ import logging
 import subprocess
 import tempfile
 from pathlib import Path
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import quote
 
 import aiohttp
 import discord
@@ -18,6 +18,17 @@ from discord.ext import commands
 
 logger = logging.getLogger("ShadowSyn.Clips")
 
+from cogs.clip_urls import (
+    clip_source,
+    extract_og,
+    extract_urls,
+    html_looks_like_video,
+    is_allowlisted_clip_url,
+    is_https_url,
+    medal_content_id,
+    normalize_clip_url as _normalize_clip_url,
+    youtube_id as _youtube_id,
+)
 from cogs.guild_registry import (
     PERSIST_ROOT,
     REGISTERED_GUILD_IDS,
@@ -38,36 +49,17 @@ THEME_PRIMARY = 0x2B0B35
 OWNER_ID = 482463400929263627
 INGEST_PANEL_TITLE = "🎬 Clips"
 INGEST_PANEL_DESCRIPTION = (
-    "Hit **Submit Clip** — paste a Medal / YouTube link or upload a file.\n"
-    "Each clip gets its own thread."
+    "Drop a link or video file here — Medal, YouTube, Twitch, TikTok, and more.\n"
+    "Comments go in that clip's thread. **Submit Clip** is optional."
 )
 INGEST_PANEL_FOOTER_PREFIX = "ShadowSyn Clips · "
 HOF_THREAD_NAME = "🏛️ Hall of Fame"
+CHATTER_HINT = "Drop a clip link or video here — comments go in that clip's thread."
 
 MEDAL_API_KEY = os.getenv("MEDAL_API_KEY")
 
 UA_HEADERS = {"User-Agent": "ShadowSyn/1.0 (+https://medal.tv)"}
 METADATA_TIMEOUT = aiohttp.ClientTimeout(total=8)
-
-MEDAL_HOST_RE = re.compile(r"^https?://(?:www\.)?medal\.tv/", re.I)
-MEDAL_CLIP_PATH_RE = re.compile(
-    r"(?:"
-    r"clip/[\w-]+"
-    r"|clips/[\w-]+"
-    r"|games/[\w-]+/clips?/[\w-]+"
-    r")",
-    re.I,
-)
-YOUTUBE_URL_RE = re.compile(
-    r"^https?://(?:www\.)?(?:youtube\.com/watch\?v=[\w-]{11}(?:&[^\s]*)?"
-    r"|youtu\.be/[\w-]{11}(?:\?[^\s]*)?"
-    r"|youtube\.com/shorts/[\w-]{11}(?:\?[^\s]*)?)$",
-    re.I,
-)
-YOUTUBE_ID_RE = re.compile(
-    r"(?:v=|youtu\.be/|shorts/)([\w-]{11})",
-    re.I,
-)
 UPLOAD_FALLBACK_BYTES = 25 * 1024 * 1024
 # PC upload transcode ceiling — ffmpeg fit won't process absurd sources.
 FFMPEG_SOURCE_MAX_BYTES = 512 * 1024 * 1024
@@ -172,25 +164,6 @@ def _ingest_panel_footer(clips_data: dict, contributor_names: list[str] | None =
     return f"{text} [Top Contributors: {joined}]"
 
 
-def _medal_path(url: str) -> str:
-    return url.split("medal.tv/", 1)[-1].split("?")[0].strip("/")
-
-
-def _medal_content_id(url: str) -> str | None:
-    """Extract Medal content hash from any supported clip URL shape."""
-    path = _medal_path(_normalize_clip_url(url))
-    if not path:
-        return None
-    for pat in (
-        r"games/[\w-]+/clips?/([\w-]+)$",
-        r"clips?/([\w-]+)$",
-    ):
-        m = re.search(pat, path, re.I)
-        if m:
-            return m.group(1)
-    return None
-
-
 MEDAL_VIDEO_KEYS = (
     "contentUrl240p",
     "contentUrl360p",
@@ -222,38 +195,36 @@ def _parse_medal_api_payload(data: dict) -> tuple[str | None, str | None, list[s
     return title, thumbnail, video_urls
 
 
-def _normalize_clip_url(url: str) -> str:
-    """Trim whitespace; drop Medal tracking params so links validate and store cleanly."""
-    url = url.strip()
-    if not MEDAL_HOST_RE.match(url):
-        return url
-    parsed = urlparse(url)
-    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+def _is_video_attachment(attachment: discord.Attachment) -> bool:
+    content_type = (attachment.content_type or "").split(";")[0].strip().lower()
+    if content_type in UPLOAD_VIDEO_TYPES:
+        return True
+    name = (attachment.filename or "").lower()
+    return name.endswith((".mp4", ".webm", ".mov", ".mkv", ".avi"))
 
 
-def _is_valid_medal_url(url: str) -> bool:
-    if not url:
-        return False
-    url = _normalize_clip_url(url)
-    if not MEDAL_HOST_RE.match(url):
-        return False
-    path = _medal_path(url)
-    return bool(path and MEDAL_CLIP_PATH_RE.search(path))
-
-
-def _is_valid_youtube_url(url: str) -> bool:
-    if not url:
-        return False
-    return bool(YOUTUBE_URL_RE.match(url.strip()))
-
-
-def _is_valid_clip_url(url: str) -> bool:
-    return _is_valid_medal_url(url) or _is_valid_youtube_url(url)
-
-
-def _youtube_id(url: str) -> str | None:
-    m = YOUTUBE_ID_RE.search(url)
-    return m.group(1) if m else None
+def _thread_name(author: discord.User | discord.Member, title: str | None) -> str:
+    """Thread label: clip title first, poster name if the title is generic."""
+    generic = {
+        "clip",
+        "untitled clip",
+        "medal clip",
+        "youtube clip",
+        "twitch clip",
+        "tiktok clip",
+        "streamable clip",
+        "kick clip",
+        "instagram clip",
+        "reddit clip",
+        "twitter clip",
+        "file clip",
+        "link clip",
+    }
+    cleaned = (title or "").strip()
+    if cleaned and cleaned.casefold() not in generic:
+        return cleaned[:100]
+    name = (getattr(author, "display_name", None) or str(author)).strip()
+    return (name or "Clip")[:100]
 
 
 def _format_mb(num_bytes: int) -> str:
@@ -325,28 +296,6 @@ def _ffmpeg_fit_to_cap_sync(src: bytes, max_bytes: int) -> bytes | None:
     return None
 
 
-def _thread_name(author: discord.User | discord.Member, title: str | None) -> str:
-    """Thread label: poster first, title as fallback."""
-    name = (getattr(author, "display_name", None) or str(author))[:90]
-    if name:
-        return name
-    return (title[:90] if title else "Clip") or "Clip"
-
-
-def _extract_og(html: str, prop: str):
-    patterns = [
-        rf'property="{prop}"[^>]+content="([^"]+)"',
-        rf'content="([^"]+)"[^>]+property="{prop}"',
-        rf"property='{prop}'[^>]+content='([^']+)'",
-        rf'name="{prop}"[^>]+content="([^"]+)"',
-    ]
-    for pat in patterns:
-        m = re.search(pat, html, re.I)
-        if m:
-            return m.group(1).strip()
-    return None
-
-
 # ==============================================================================
 # UI COMPONENTS
 # ==============================================================================
@@ -382,13 +331,23 @@ class ClipUploadButton(Button):
 
     async def callback(self, interaction: Interaction):
         self.cog._flow_track(self.user_id, interaction)
-        self.cog._flow_set_upload_pending(self.user_id)
         await interaction.response.defer(ephemeral=True)
 
         guild = interaction.guild or await self.cog._resolve_guild()
         max_bytes = self.cog._upload_limit_bytes(guild)
+        gid = guild.id if guild else SHADOW_MAIN_GUILD_ID
+        channel = await self.cog._clips_channel(guild_id=gid)
 
-        # Primary path: private upload thread in the gallery — no DMs required.
+        if channel is not None:
+            self.cog._flow_set_upload_pending(self.user_id)
+            await interaction.followup.send(
+                f"Drop your video in {channel.mention} — `mp4`, `webm`, or `mov` "
+                f"(max **{_format_mb(max_bytes)}MB**).",
+                ephemeral=True,
+            )
+            return
+
+        self.cog._flow_set_upload_pending(self.user_id)
         thread = await self.cog._open_upload_thread(interaction.user, max_bytes)
         if thread is not None:
             self.cog._flow_set_upload_thread(self.user_id, thread.id)
@@ -438,8 +397,8 @@ class ClipUrlModal(Modal):
         self.cog = cog
         self.user_id = user_id
         self.add_item(TextInput(
-            label="Medal or YouTube URL",
-            placeholder="https://medal.tv/... or https://youtu.be/...",
+            label="Clip URL",
+            placeholder="https://...",
             style=discord.InputTextStyle.short,
             required=True,
             max_length=400,
@@ -448,15 +407,21 @@ class ClipUrlModal(Modal):
     async def callback(self, interaction: Interaction):
         raw = self.children[0].value.strip()
         url = _normalize_clip_url(raw)
-        if not _is_valid_clip_url(url):
+        if not is_https_url(url):
             return await safe_reply(
                 interaction,
-                "❌ That doesn't look like a Medal or YouTube clip link.",
+                "❌ Need an https clip link.",
                 ephemeral=True,
             )
         self.cog._flow_track(self.user_id, interaction)
         await interaction.response.defer(ephemeral=True)
-        await self.cog.publish_clip(interaction, url)
+        if not await self.cog.is_clip_url(url):
+            await interaction.followup.send(
+                "❌ That doesn't look like a clip link.",
+                ephemeral=True,
+            )
+            return
+        await self.cog.publish_clip(url, interaction.user, reply_interaction=interaction)
 
 
 # ==============================================================================
@@ -468,7 +433,7 @@ class ClipsCog(commands.Cog):
         self.session = None
         self.data = {"panels": {}, "clips": {}}
         self._flow_sessions: dict[int, dict] = {}
-        self._panel_refresh_pending: dict[int, bool] = {}
+        self._panel_refresh_pending: dict[str, bool] = {}
         self._load_data()
 
     def cog_unload(self):
@@ -712,7 +677,7 @@ class ClipsCog(commands.Cog):
 
     async def _fetch_medal_link_metadata(self, url: str) -> tuple[str, str | None]:
         """Fast Medal lookup for link posts — API only, no HTML scrape."""
-        content_id = _medal_content_id(_normalize_clip_url(url))
+        content_id = medal_content_id(_normalize_clip_url(url))
         if not content_id:
             return "Medal Clip", None
         api_data = await self._fetch_medal_api(content_id)
@@ -728,7 +693,7 @@ class ClipsCog(commands.Cog):
         clean = _normalize_clip_url(url)
         api_data: dict | None = None
 
-        content_id = _medal_content_id(clean)
+        content_id = medal_content_id(clean)
         if content_id:
             api_data = await self._fetch_medal_api(content_id)
             if api_data:
@@ -748,9 +713,9 @@ class ClipsCog(commands.Cog):
                             thumbnail = thumbnail or th
                             video_urls = video_urls or vids
                 if not title:
-                    title = _extract_og(html, "og:title") or _extract_og(html, "twitter:title")
+                    title = extract_og(html, "og:title") or extract_og(html, "twitter:title")
                 if not thumbnail:
-                    thumbnail = _extract_og(html, "og:image") or _extract_og(html, "twitter:image")
+                    thumbnail = extract_og(html, "og:image") or extract_og(html, "twitter:image")
             except Exception as e:
                 logger.warning(f"Medal HTML scrape failed for {clean}: {e}")
 
@@ -795,16 +760,21 @@ class ClipsCog(commands.Cog):
         except Exception as e:
             logger.warning(f"Failed to create banter thread for clip {msg.id}: {e}")
 
-    def _schedule_ingest_panel_bump(self, channel: discord.TextChannel) -> None:
-        gid = channel.guild.id if channel.guild else 0
-        if self._panel_refresh_pending.get(gid):
+    def _schedule_ingest_panel_bump(self, channel: discord.TextChannel | None = None) -> None:
+        if self._panel_refresh_pending.get("all"):
             return
-        self._panel_refresh_pending[gid] = True
+        self._panel_refresh_pending["all"] = True
 
         async def _debounced():
             await asyncio.sleep(3)
-            self._panel_refresh_pending[gid] = False
-            await self._refresh_ingest_panel(channel)
+            self._panel_refresh_pending["all"] = False
+            for gid in REGISTERED_GUILD_IDS:
+                try:
+                    target = await self._clips_channel(gid)
+                    if target is not None:
+                        await self._refresh_ingest_panel(target)
+                except Exception as e:
+                    logger.warning(f"Ingest panel bump failed for guild {gid}: {e}")
 
         asyncio.create_task(_debounced())
 
@@ -899,42 +869,111 @@ class ClipsCog(commands.Cog):
                 pass
         return msg
 
-    async def publish_clip(self, interaction: discord.Interaction, url: str):
-        user = interaction.user
-        gid = user.guild.id if isinstance(user, discord.Member) and user.guild else SHADOW_MAIN_GUILD_ID
+    async def _fetch_html(self, url: str) -> str | None:
+        session = await self._get_session()
+        try:
+            async with session.get(
+                url, headers=UA_HEADERS, allow_redirects=True, timeout=METADATA_TIMEOUT
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                return await resp.text()
+        except Exception as e:
+            logger.warning(f"HTML fetch failed for {url}: {e}")
+            return None
+
+    async def is_clip_url(self, url: str) -> bool:
+        url = _normalize_clip_url(url)
+        if is_allowlisted_clip_url(url):
+            return True
+        if not is_https_url(url):
+            return False
+        html = await self._fetch_html(url)
+        return bool(html and html_looks_like_video(html))
+
+    async def _fetch_link_metadata(self, url: str, source: str) -> tuple[str, str | None]:
+        fallback = f"{source.replace('_', ' ').title()} Clip"
+        html = await self._fetch_html(url)
+        if not html:
+            return fallback, None
+        title = extract_og(html, "og:title") or extract_og(html, "twitter:title")
+        thumbnail = extract_og(html, "og:image") or extract_og(html, "twitter:image")
+        if title:
+            title = title[:80]
+        return title or fallback, thumbnail
+
+    async def _reject_chatter(self, message: discord.Message, hint: str | None = None) -> None:
+        try:
+            await message.delete()
+        except Exception:
+            return
+        text = hint or CHATTER_HINT
+        try:
+            await message.channel.send(
+                f"{message.author.mention} {text}",
+                delete_after=8,
+            )
+        except Exception:
+            pass
+
+    def _is_clips_parent(self, message: discord.Message) -> bool:
+        channel = message.channel
+        if isinstance(channel, discord.Thread):
+            return False
+        if not isinstance(channel, discord.TextChannel) or channel.guild is None:
+            return False
+        clips_id = ch_id(channel.guild.id, "clips")
+        return bool(clips_id) and channel.id == clips_id
+
+    async def publish_clip(
+        self,
+        url: str,
+        author: discord.User | discord.Member,
+        *,
+        reply_interaction: discord.Interaction | None = None,
+        reply_channel: discord.abc.Messageable | None = None,
+        cleanup_user_message: discord.Message | None = None,
+    ):
+        gid = SHADOW_MAIN_GUILD_ID
+        if cleanup_user_message and cleanup_user_message.guild:
+            gid = cleanup_user_message.guild.id
+        elif isinstance(author, discord.Member) and author.guild:
+            gid = author.guild.id
+        elif reply_interaction and reply_interaction.guild:
+            gid = reply_interaction.guild.id
+
         channel = await self._clips_channel(guild_id=gid)
         if channel is None:
-            return await safe_reply(
-                interaction,
-                "❌ Clips channel is unavailable. Tell an admin.",
-                ephemeral=True,
-            )
+            err = "❌ Clips channel is unavailable. Tell an admin."
+            if reply_interaction:
+                return await safe_reply(reply_interaction, err, ephemeral=True)
+            if reply_channel:
+                try:
+                    await reply_channel.send(err)
+                except Exception:
+                    pass
+            return None
 
-        if _is_valid_youtube_url(url):
+        source = clip_source(url)
+        if source == "youtube":
             title, thumbnail = await self._fetch_youtube_metadata(url)
-            await self._finalize_clip_post(
-                channel,
-                title,
-                interaction.user,
-                url=url,
-                thumbnail=thumbnail,
-                source="youtube",
-                content=url,
-                reply_interaction=interaction,
-            )
-            return
+        elif source == "medal":
+            title, thumbnail = await self._fetch_medal_link_metadata(url)
+        else:
+            title, thumbnail = await self._fetch_link_metadata(url, source)
 
-        title, thumbnail = await self._fetch_medal_link_metadata(url)
-        # URL only — custom embeds block Discord's native Medal/YouTube video unfurl.
-        await self._finalize_clip_post(
+        # URL only — custom embeds block Discord's native video unfurl.
+        return await self._finalize_clip_post(
             channel,
             title,
-            interaction.user,
+            author,
             url=url,
             thumbnail=thumbnail,
-            source="medal",
+            source=source,
             content=url,
-            reply_interaction=interaction,
+            reply_interaction=reply_interaction,
+            reply_channel=reply_channel,
+            cleanup_user_message=cleanup_user_message,
         )
 
     async def publish_clip_file(
@@ -995,34 +1034,84 @@ class ClipsCog(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
-        sess = self._flow_sessions.get(message.author.id)
-        if not sess or not sess.get("upload_pending"):
-            return
 
+        sess = self._flow_sessions.get(message.author.id)
         is_dm = isinstance(message.channel, discord.DMChannel)
-        is_upload_thread = (
-            sess.get("upload_thread_id") is not None
+        is_upload_thread = bool(
+            sess
+            and sess.get("upload_thread_id") is not None
             and message.channel.id == sess.get("upload_thread_id")
         )
-        if not (is_dm or is_upload_thread):
+        if sess and sess.get("upload_pending") and (is_dm or is_upload_thread):
+            if not message.attachments:
+                await message.channel.send("📎 Attach a video file.", delete_after=8)
+                return
+            videos = [a for a in message.attachments if _is_video_attachment(a)]
+            if not videos:
+                await message.channel.send("❌ Send a video file (`mp4`, `webm`, `mov`).", delete_after=8)
+                return
+            if len(videos) > 1:
+                await message.channel.send("❌ One file only.", delete_after=8)
+                return
+            try:
+                await self.publish_clip_file(
+                    message.author,
+                    videos[0],
+                    message.channel,
+                    user_message=message,
+                )
+            except Exception as e:
+                logger.error(f"Clip upload failed for {message.author.id}: {e}")
+                await message.channel.send("❌ Upload failed.", delete_after=8)
             return
 
-        if not message.attachments:
-            await message.channel.send("📎 Attach a video file.", delete_after=8)
+        if not self._is_clips_parent(message):
             return
-        if len(message.attachments) > 1:
-            await message.channel.send("❌ One file only.", delete_after=8)
+
+        videos = [a for a in message.attachments if _is_video_attachment(a)]
+        if videos:
+            if len(videos) > 1:
+                await message.channel.send("❌ One video file only.", delete_after=8)
+                return
+            try:
+                await self.publish_clip_file(
+                    message.author,
+                    videos[0],
+                    message.channel,
+                    user_message=message,
+                )
+            except Exception as e:
+                logger.error(f"Clip drop-in upload failed for {message.author.id}: {e}")
+                await message.channel.send("❌ Upload failed.", delete_after=8)
             return
-        try:
-            await self.publish_clip_file(
-                message.author,
-                message.attachments[0],
-                message.channel,
-                user_message=message,
-            )
-        except Exception as e:
-            logger.error(f"Clip upload failed for {message.author.id}: {e}")
-            await message.channel.send("❌ Upload failed.", delete_after=8)
+
+        if message.attachments:
+            await self._reject_chatter(message, "Send a video file (`mp4`, `webm`, `mov`).")
+            return
+
+        urls = extract_urls(message.content)
+        if urls:
+            chosen = None
+            for candidate in urls:
+                if await self.is_clip_url(candidate):
+                    chosen = candidate
+                    break
+            if chosen:
+                try:
+                    await self.publish_clip(
+                        chosen,
+                        message.author,
+                        reply_channel=message.channel,
+                        cleanup_user_message=message,
+                    )
+                except Exception as e:
+                    logger.error(f"Clip drop-in link failed for {message.author.id}: {e}")
+                    await message.channel.send("❌ Could not post that clip.", delete_after=8)
+                return
+            await self._reject_chatter(message, "That link isn't a clip I can share.")
+            return
+
+        await self._reject_chatter(message)
 
     # --------------------------------------------------------------------------
     # INGEST PANEL
@@ -1134,7 +1223,7 @@ class ClipsCog(commands.Cog):
         if me is None or not me.guild_permissions.manage_channels:
             return False, "Bot lacks **Manage Channels** to update permissions."
 
-        reason = "ShadowSyn clips: gallery is ingest-only (use Submit Clip)"
+        reason = "ShadowSyn clips: drop-in ingest (links/files in channel; comments in threads)"
         skip_ids: set[int] = {me.id}
         if me.top_role:
             skip_ids.add(me.top_role.id)
@@ -1151,14 +1240,14 @@ class ClipsCog(commands.Cog):
                 if getattr(target, "id", None) in skip_ids:
                     continue
                 ow = channel.overwrites_for(target)
-                ow.send_messages = False
+                ow.send_messages = True
                 ow.create_public_threads = False
                 ow.create_private_threads = False
                 ow.send_messages_in_threads = True
                 await channel.set_permissions(target, overwrite=ow, reason=reason)
                 updated += 1
-            logger.info(f"Gallery permissions locked for {updated} target(s) in {channel.id}.")
-            return True, f"Messaging locked for **{updated}** permission target(s)."
+            logger.info(f"Gallery drop-in permissions set for {updated} target(s) in {channel.id}.")
+            return True, f"Drop-in posting enabled for **{updated}** permission target(s)."
         except discord.Forbidden:
             logger.error("Forbidden while locking clips gallery permissions.")
             return False, "Forbidden — check bot **Manage Channels** and role hierarchy."
@@ -1195,7 +1284,7 @@ class ClipsCog(commands.Cog):
 
     @discord.slash_command(
         name="clips_deploy",
-        description="Deploy the clips ingest panel and lock the gallery.",
+        description="Deploy the clips ingest panel and enable drop-in posting.",
         guild_ids=REGISTERED_GUILD_IDS,
         default_member_permissions=discord.Permissions(administrator=True),
     )
