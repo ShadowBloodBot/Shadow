@@ -1241,6 +1241,8 @@ class ClipsCog(commands.Cog):
                     continue
                 ow = channel.overwrites_for(target)
                 ow.send_messages = True
+                ow.embed_links = True
+                ow.attach_files = True
                 ow.create_public_threads = False
                 ow.create_private_threads = False
                 ow.send_messages_in_threads = True
