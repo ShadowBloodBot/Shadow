@@ -17,12 +17,11 @@ sys.path.insert(0, str(ROOT))
 from cogs.game_roles import (  # noqa: E402
     MANAGE_PREFIX,
     PANEL_BLURB,
-    PANEL_NEXT_ID,
-    PANEL_PREV_ID,
     PANEL_TITLE,
-    PAGE_SIZE,
     THEME_PRIMARY,
     _is_denylisted,
+    _sorted_catalog,
+    public_panel_fields,
 )
 from cogs.guild_registry import (  # noqa: E402
     REGISTRY_PATH,
@@ -125,54 +124,22 @@ async def api(session, token, method, path, payload=None):
         return resp.status, data
 
 
-def _column_block(items: list[dict[str, Any]]) -> str:
-    if not items:
-        return "—"
-    return "\n".join(f"• **{e.get('label', '?')}**" for e in items)
-
-
-def _panel_embed_dict(catalog: list[dict[str, Any]], page: int = 0) -> dict[str, Any]:
-    total = len(catalog)
-    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-    page = max(0, min(page, total_pages - 1))
-    page_items = catalog[page * PAGE_SIZE : page * PAGE_SIZE + PAGE_SIZE]
-    left_col = page_items[0::2]
-    right_col = page_items[1::2]
-
-    embed: dict[str, Any] = {
+def _panel_embed_dict(catalog: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
         "title": PANEL_TITLE,
         "description": PANEL_BLURB,
         "color": THEME_PRIMARY,
-        "footer": {"text": "Sorted A → Z · Manage My Games to set yours"},
+        "footer": {"text": "A → Z · one tap to toggle"},
+        "fields": public_panel_fields(catalog),
     }
-    if total == 0:
-        embed["fields"] = [{
-            "name": "📋 Games",
-            "value": "*Nothing here yet — check back soon.*",
-            "inline": False,
-        }]
-    else:
-        embed["fields"] = [
-            {"name": "Games", "value": _column_block(left_col), "inline": True},
-            {"name": "\u200b", "value": _column_block(right_col) if right_col else "—", "inline": True},
-            {
-                "name": "\u200b",
-                "value": f"**Page {page + 1}** of **{total_pages}** · **{total}** game{'s' if total != 1 else ''}",
-                "inline": False,
-            },
-        ]
-    return embed
 
 
 def panel_payload(
     guild_id: int,
     *,
-    page: int = 0,
     catalog: list[dict[str, Any]] | None = None,
 ) -> dict:
-    catalog = catalog or []
-    total_pages = max(1, (len(catalog) + PAGE_SIZE - 1) // PAGE_SIZE)
-    embed = _panel_embed_dict(catalog, page)
+    embed = _panel_embed_dict(catalog or [])
     return {
         "embeds": [embed],
         "components": [
@@ -185,27 +152,6 @@ def panel_payload(
                     "emoji": {"name": "🎮"},
                     "custom_id": f"{MANAGE_PREFIX}{guild_id}",
                 }],
-            },
-            {
-                "type": 1,
-                "components": [
-                    {
-                        "type": 2,
-                        "style": 2,
-                        "label": "Prev",
-                        "emoji": {"name": "◀"},
-                        "custom_id": PANEL_PREV_ID,
-                        "disabled": page <= 0,
-                    },
-                    {
-                        "type": 2,
-                        "style": 2,
-                        "label": "Next",
-                        "emoji": {"name": "▶"},
-                        "custom_id": PANEL_NEXT_ID,
-                        "disabled": total_pages <= 1 or page >= total_pages - 1,
-                    },
-                ],
             },
         ],
     }
@@ -427,15 +373,40 @@ def update_game_roles_store(guild_id: int, channel_id: str, panel_id: str | None
             data = json.loads(store_path.read_text(encoding="utf-8"))
         except Exception:
             pass
+    existing = data.get(str(guild_id)) or {}
+    excluded = {str(x) for x in (existing.get("excluded") or [])}
+    by_id: dict[str, dict[str, Any]] = {}
+    for entry in existing.get("roles") or []:
+        if isinstance(entry, dict) and entry.get("id"):
+            by_id[str(entry["id"])] = entry
+    for entry in roles:
+        rid = str(entry.get("id") or "")
+        if not rid or rid in excluded:
+            continue
+        by_id[rid] = entry
+    merged = _sorted_catalog(list(by_id.values()))
     data[str(guild_id)] = {
-        "channel_id": channel_id,
-        "panel_message_id": panel_id,
+        "channel_id": channel_id or existing.get("channel_id"),
+        "panel_message_id": panel_id or existing.get("panel_message_id"),
         "panel_page": 0,
-        "roles": roles,
+        "roles": merged,
+        "excluded": list(existing.get("excluded") or []),
     }
     tmp = store_path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     tmp.replace(store_path)
+
+
+def load_store_catalog(guild_id: int) -> list[dict[str, Any]]:
+    store_path = ROOT / "data" / "game_roles.json"
+    if not store_path.exists():
+        return []
+    try:
+        data = json.loads(store_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    roles = (data.get(str(guild_id)) or {}).get("roles") or []
+    return [r for r in roles if isinstance(r, dict)]
 
 
 async def deploy_guild(
@@ -461,18 +432,18 @@ async def deploy_guild(
         await rename_channel_if_main(session, guild_id, cid)
 
     panel_id = None
-    roles: list[dict] = []
+    roles: list[dict] = load_store_catalog(guild_id)
     if seed:
-        roles = await seed_catalog_preview(session, guild_id)
-        print(f"  Catalog seed preview: {len(roles)} roles")
+        preview = await seed_catalog_preview(session, guild_id)
+        print(f"  Catalog seed preview: {len(preview)} scanned")
+        update_game_roles_store(guild_id, str(cid), None, preview)
+        roles = load_store_catalog(guild_id)
 
     if panel:
         removed = await purge_foreign_panels(session, shadow_token, cid)
         if removed:
             print(f"  Purged {removed} foreign panel(s)")
-        panel_id = await post_panel(session, shadow_token, guild_id, cid, roles or None)
-
-    if seed:
+        panel_id = await post_panel(session, shadow_token, guild_id, cid, roles)
         update_game_roles_store(guild_id, str(cid), panel_id, roles)
 
 

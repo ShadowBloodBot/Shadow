@@ -27,15 +27,15 @@ from cogs.utils import safe_reply
 logger = logging.getLogger("ShadowSyn.GameRoles")
 
 THEME_PRIMARY = 0x2B0B35
-PAGE_SIZE = 10
+PAGE_SIZE = 20
+PANEL_COLUMNS = 3
 FLASH_SECONDS = 1.0
 ADMIN_FLASH_SECONDS = 1.5
 
 PANEL_TITLE = "🎮 Game Roles"
 PANEL_BLURB = (
-    "This is where you grab your **game roles**.\n\n"
-    "Click **Manage My Games** to toggle what you play — "
-    "your roles update instantly. Use **Prev / Next** to browse the list."
+    "Tap **Manage My Games** and toggle what you play.\n"
+    "Green = on · Grey = off. Instant."
 )
 
 MANAGE_PREFIX = "game_roles_manage:"
@@ -196,10 +196,49 @@ def _sorted_catalog(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(entries, key=lambda e: str(e.get("label") or "").lower())
 
 
-class GameRolesPanelView(View):
-    """Persistent hub panel — interactions handled in on_interaction."""
+def _column_block(items: list[dict[str, Any]]) -> str:
+    if not items:
+        return "\u200b"
+    return "\n".join(f"• **{e.get('label', '?')}**" for e in items)
 
-    def __init__(self, guild_id: int, page: int = 0, total_pages: int = 1):
+
+def _split_columns(items: list[dict[str, Any]], n: int = PANEL_COLUMNS) -> list[list[dict[str, Any]]]:
+    if n < 1:
+        n = 1
+    if not items:
+        return [[] for _ in range(n)]
+    size = (len(items) + n - 1) // n
+    return [items[i * size:(i + 1) * size] for i in range(n)]
+
+
+def public_panel_fields(catalog: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    total = len(catalog)
+    if total == 0:
+        return [{
+            "name": "Games",
+            "value": "*Nothing here yet — add one with `/game_roles_add`.*",
+            "inline": False,
+        }]
+    cols = _split_columns(catalog, PANEL_COLUMNS)
+    fields: list[dict[str, Any]] = []
+    for idx, col in enumerate(cols):
+        fields.append({
+            "name": "Games" if idx == 0 else "\u200b",
+            "value": _column_block(col),
+            "inline": True,
+        })
+    fields.append({
+        "name": "\u200b",
+        "value": f"**{total}** game{'s' if total != 1 else ''}",
+        "inline": False,
+    })
+    return fields
+
+
+class GameRolesPanelView(View):
+    """Persistent hub panel — one manage button, full catalog in the embed."""
+
+    def __init__(self, guild_id: int):
         super().__init__(timeout=None)
         self.add_item(Button(
             label="Manage My Games",
@@ -207,22 +246,6 @@ class GameRolesPanelView(View):
             emoji="🎮",
             custom_id=f"{MANAGE_PREFIX}{guild_id}",
             row=0,
-        ))
-        self.add_item(Button(
-            label="Prev",
-            style=ButtonStyle.secondary,
-            emoji="◀",
-            custom_id=PANEL_PREV_ID,
-            disabled=page <= 0,
-            row=1,
-        ))
-        self.add_item(Button(
-            label="Next",
-            style=ButtonStyle.secondary,
-            emoji="▶",
-            custom_id=PANEL_NEXT_ID,
-            disabled=total_pages <= 1 or page >= total_pages - 1,
-            row=1,
         ))
 
 
@@ -251,8 +274,9 @@ class GameRolesManageView(View):
             rid = int(entry["id"])
             label = str(entry.get("label") or "Role")[:80]
             has_role = rid in member_ids
+            mark = "✓ " if has_role else ""
             self.add_item(Button(
-                label=label,
+                label=f"{mark}{label}"[:80],
                 style=ButtonStyle.success if has_role else ButtonStyle.secondary,
                 custom_id=f"{TOGGLE_PREFIX}{rid}",
                 row=idx // 5,
@@ -324,13 +348,28 @@ class GameRolesCog(commands.Cog):
                         if not entry.get("roles") and allowed_roles:
                             entry["roles"] = allowed_roles
                             changed = True
+                        else:
+                            existing_ids = {
+                                str(r.get("id"))
+                                for r in (entry.get("roles") or [])
+                                if isinstance(r, dict)
+                            }
+                            extra = [
+                                r for r in allowed_roles
+                                if str(r.get("id")) not in existing_ids
+                            ]
+                            if extra:
+                                entry["roles"] = _sorted_catalog(
+                                    list(entry.get("roles") or []) + extra
+                                )
+                                changed = True
                         for key in ("channel_id", "panel_message_id"):
                             if not entry.get(key) and repo_cfg.get(key):
                                 entry[key] = repo_cfg[key]
                                 changed = True
                     if changed:
                         _atomic_write(STORE_PATH, data)
-                        logger.info("Backfilled empty game_roles catalog from repo template.")
+                        logger.info("Merged game_roles catalog from repo template.")
             except Exception as exc:
                 logger.warning("game_roles repo backfill skipped: %s", exc)
 
@@ -369,16 +408,24 @@ class GameRolesCog(commands.Cog):
         cleaned: list[dict[str, Any]] = []
         changed = False
         for entry in raw:
-            if not entry.get("id"):
+            if not isinstance(entry, dict) or not entry.get("id"):
                 changed = True
                 continue
             if guild is not None:
-                role = guild.get_role(int(entry["id"]))
-                if role is None or _is_denylisted(role, guild_id):
+                try:
+                    rid = int(entry["id"])
+                except (TypeError, ValueError):
                     changed = True
                     continue
+                role = guild.get_role(rid)
+                if role is not None and _is_denylisted(role, guild_id):
+                    changed = True
+                    continue
+                if role is not None and entry.get("label") != role.name:
+                    entry = {**entry, "label": role.name}
+                    changed = True
             cleaned.append(entry)
-        if changed and guild is not None:
+        if changed:
             cfg["roles"] = cleaned
             self._save_store()
         return _sorted_catalog(cleaned)
@@ -422,58 +469,25 @@ class GameRolesCog(commands.Cog):
             "sort": role.position,
         }
 
-    def _column_block(self, items: list[dict[str, Any]]) -> str:
-        if not items:
-            return "—"
-        return "\n".join(f"• **{e.get('label', '?')}**" for e in items)
-
     def build_panel_embed(
         self,
         guild_id: int,
         page: int | None = None,
         guild: discord.Guild | None = None,
     ) -> discord.Embed:
-        if page is None:
-            page = self._current_panel_page(guild_id)
-        page = self._clamp_page(guild_id, page, guild)
-
         catalog = self._catalog(guild_id, guild)
-        total = len(catalog)
-        total_pages = self._page_count(guild_id, guild)
-        page_items = self._page_slice(guild_id, page, guild)
-        left_col = page_items[0::2]
-        right_col = page_items[1::2]
-
         embed = discord.Embed(
             title=PANEL_TITLE,
             description=PANEL_BLURB,
             color=THEME_PRIMARY,
         )
-
-        if total == 0:
+        for field in public_panel_fields(catalog):
             embed.add_field(
-                name="📋 Games",
-                value="*Nothing here yet — check back soon.*",
-                inline=False,
+                name=field["name"],
+                value=field["value"],
+                inline=bool(field.get("inline")),
             )
-        else:
-            embed.add_field(
-                name="Games",
-                value=self._column_block(left_col),
-                inline=True,
-            )
-            embed.add_field(
-                name="\u200b",
-                value=self._column_block(right_col) if right_col else "—",
-                inline=True,
-            )
-            embed.add_field(
-                name="\u200b",
-                value=f"**Page {page + 1}** of **{total_pages}** · **{total}** game{'s' if total != 1 else ''}",
-                inline=False,
-            )
-
-        embed.set_footer(text="Sorted A → Z · Manage My Games to set yours")
+        embed.set_footer(text="A → Z · one tap to toggle")
         return embed
 
     def _can_manage_role(
@@ -687,10 +701,8 @@ class GameRolesCog(commands.Cog):
         if channel is None:
             return
 
-        page_num = self._current_panel_page(gid)
-        total_pages = self._page_count(gid, guild)
-        view = GameRolesPanelView(gid, page_num, total_pages)
-        embed = self.build_panel_embed(gid, page_num, guild)
+        view = GameRolesPanelView(gid)
+        embed = self.build_panel_embed(gid, guild=guild)
 
         try:
             msg = await channel.fetch_message(int(panel_id))
@@ -724,8 +736,7 @@ class GameRolesCog(commands.Cog):
                         except Exception as exc:
                             logger.warning("Panel refresh after startup seed: %s", exc)
 
-                total = self._page_count(gid, guild)
-                self.bot.add_view(GameRolesPanelView(gid, 0, total))
+                self.bot.add_view(GameRolesPanelView(gid))
             logger.info("Game roles persistent views restored.")
         except Exception as exc:
             logger.error("Failed to restore game roles views on_ready: %s", exc)
@@ -740,28 +751,15 @@ class GameRolesCog(commands.Cog):
             await self._open_manage(interaction, page=0)
             return
 
-        if custom_id == PANEL_PREV_ID:
+        if custom_id in (PANEL_PREV_ID, PANEL_NEXT_ID):
             if not interaction.guild:
                 return
             gid = interaction.guild.id
-            new_page = self._clamp_page(gid, self._current_panel_page(gid) - 1, interaction.guild)
             try:
                 await interaction.response.defer()
-                await self._refresh_panel_message(interaction.channel, page=new_page, guild_id=gid)
+                await self._refresh_panel_message(interaction.channel, guild_id=gid)
             except Exception as exc:
-                logger.error("Game roles panel prev failed: %s", exc)
-            return
-
-        if custom_id == PANEL_NEXT_ID:
-            if not interaction.guild:
-                return
-            gid = interaction.guild.id
-            new_page = self._clamp_page(gid, self._current_panel_page(gid) + 1, interaction.guild)
-            try:
-                await interaction.response.defer()
-                await self._refresh_panel_message(interaction.channel, page=new_page, guild_id=gid)
-            except Exception as exc:
-                logger.error("Game roles panel next failed: %s", exc)
+                logger.error("Game roles panel pager (legacy) failed: %s", exc)
             return
 
         if custom_id.startswith(TOGGLE_PREFIX):
@@ -803,6 +801,62 @@ class GameRolesCog(commands.Cog):
             return f"**{role.name}** is at or above Minion tier."
         return None
 
+    def _upsert_catalog_role(self, guild: discord.Guild, role: discord.Role) -> bool:
+        """Add a role to this guild's catalog. Returns True if it was new."""
+        if self._validate_hub_role(guild, role):
+            return False
+        cfg = self._guild_store(guild.id)
+        cfg["excluded"] = [
+            x for x in (cfg.get("excluded") or []) if str(x) != str(role.id)
+        ]
+        roles: list[dict[str, Any]] = list(cfg.get("roles") or [])
+        if any(isinstance(e, dict) and str(e.get("id")) == str(role.id) for e in roles):
+            return False
+        roles.append(self._role_entry(role))
+        cfg["roles"] = _sorted_catalog(roles)
+        self._save_store()
+        return True
+
+    async def _mirror_game_role(self, source_guild: discord.Guild, source_role: discord.Role) -> None:
+        target_name = _normalize_role_name(source_role.name)
+        for gid in REGISTERED_GUILD_IDS:
+            if gid == source_guild.id:
+                continue
+            other = self.bot.get_guild(gid)
+            if other is None:
+                try:
+                    other = await self.bot.fetch_guild(gid)
+                except Exception as exc:
+                    logger.warning("Could not fetch guild %s to mirror %s: %s", gid, source_role.name, exc)
+                    continue
+            try:
+                role_list = list(other.roles)
+                if len(role_list) <= 1:
+                    role_list = list(await other.fetch_roles())
+            except Exception:
+                role_list = list(other.roles)
+            match = discord.utils.find(
+                lambda r, n=target_name: _normalize_role_name(r.name) == n,
+                role_list,
+            )
+            if match is None:
+                try:
+                    match = await other.create_role(
+                        name=source_role.name,
+                        colour=source_role.colour,
+                        hoist=False,
+                        mentionable=bool(source_role.mentionable),
+                        reason=f"Mirror game role from {source_guild.name}",
+                    )
+                except Exception as exc:
+                    logger.warning("Could not create %s on guild %s: %s", source_role.name, gid, exc)
+                    continue
+            if self._upsert_catalog_role(other, match):
+                try:
+                    await self._deploy_panel(other)
+                except Exception as exc:
+                    logger.warning("Panel refresh after mirror failed for guild %s: %s", gid, exc)
+
     async def _find_existing_panel(self, channel: discord.abc.Messageable) -> discord.Message | None:
         if hasattr(channel, "pins"):
             try:
@@ -838,10 +892,8 @@ class GameRolesCog(commands.Cog):
 
         cfg = self._guild_store(guild.id)
         cfg["channel_id"] = str(channel.id)
-        page = self._clamp_page(guild.id, self._current_panel_page(guild.id), guild)
-        total_pages = self._page_count(guild.id, guild)
-        embed = self.build_panel_embed(guild.id, page, guild)
-        view = GameRolesPanelView(guild.id, page, total_pages)
+        embed = self.build_panel_embed(guild.id, guild=guild)
+        view = GameRolesPanelView(guild.id)
 
         existing_id = cfg.get("panel_message_id")
         msg: discord.Message | None = None
@@ -863,7 +915,6 @@ class GameRolesCog(commands.Cog):
                 logger.warning("Could not pin game roles panel: %s", exc)
 
         cfg["panel_message_id"] = str(msg.id)
-        cfg["panel_page"] = page
         self._save_store()
         self.bot.add_view(view)
         return msg
@@ -994,9 +1045,13 @@ class GameRolesCog(commands.Cog):
             await asyncio.to_thread(self._save_store)
 
             try:
-                await self._refresh_panel_message(guild_id=ctx.guild.id)
+                await self._deploy_panel(ctx.guild)
             except Exception as exc:
                 logger.warning("Panel refresh after add failed: %s", exc)
+            try:
+                await self._mirror_game_role(ctx.guild, role)
+            except Exception as exc:
+                logger.warning("Sister-guild mirror after add failed: %s", exc)
 
             await ephemeral_flash_followup(
                 ctx,
