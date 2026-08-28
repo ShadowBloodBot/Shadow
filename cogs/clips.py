@@ -51,6 +51,7 @@ INGEST_PANEL_FOOTER_PREFIX = "ShadowSyn Clips · "
 HOF_THREAD_NAME = "🏛️ Hall of Fame"
 CLIP_REACT = "🔥"
 CHATTER_HINT = "This channel is clips only — react on the post."
+PANEL_BUMP_DELAY_SEC = 6.0
 
 MEDAL_API_KEY = os.getenv("MEDAL_API_KEY")
 
@@ -279,9 +280,13 @@ class ClipsCog(commands.Cog):
         self.session = None
         self.data = {"panels": {}, "clips": {}}
         self._flow_sessions: dict[int, dict] = {}
+        self._panel_refresh_tasks: dict[int, asyncio.Task] = {}
         self._load_data()
 
     def cog_unload(self):
+        for task in self._panel_refresh_tasks.values():
+            task.cancel()
+        self._panel_refresh_tasks.clear()
         if self.session and not self.session.closed:
             asyncio.create_task(self.session.close())
         logger.info("ClipsCog unloaded. aiohttp session scheduled for closure.")
@@ -423,31 +428,56 @@ class ClipsCog(commands.Cog):
         user_message: discord.Message | None = None,
     ):
         sess = self._flow_sessions.pop(user_id, None)
-        if not sess:
-            return
-        for inter in sess.get("interactions", []):
-            try:
-                await inter.delete_original_response()
-            except Exception:
-                pass
-        if dm_channel and sess.get("dm_prompt_id"):
-            try:
-                prompt = await dm_channel.fetch_message(sess["dm_prompt_id"])
-                await prompt.delete()
-            except Exception:
-                pass
+        if sess:
+            for inter in sess.get("interactions", []):
+                try:
+                    await inter.delete_original_response()
+                except Exception:
+                    pass
+            if dm_channel and sess.get("dm_prompt_id"):
+                try:
+                    prompt = await dm_channel.fetch_message(sess["dm_prompt_id"])
+                    await prompt.delete()
+                except Exception:
+                    pass
+            thread_id = sess.get("upload_thread_id")
+            if thread_id:
+                try:
+                    thread = self.bot.get_channel(thread_id) or await self.bot.fetch_channel(thread_id)
+                    await thread.delete()
+                except Exception:
+                    pass
         if user_message:
             try:
                 await user_message.delete()
-            except Exception:
-                pass
-        thread_id = sess.get("upload_thread_id")
-        if thread_id:
+            except Exception as e:
+                logger.warning(f"Could not delete original clip message {user_message.id}: {e}")
+
+    def _schedule_ingest_panel_bump(self, channel: discord.TextChannel) -> None:
+        if not isinstance(channel, discord.TextChannel) or channel.guild is None:
+            return
+        gid = channel.guild.id
+        old = self._panel_refresh_tasks.get(gid)
+        if old and not old.done():
+            old.cancel()
+
+        async def _debounced():
             try:
-                thread = self.bot.get_channel(thread_id) or await self.bot.fetch_channel(thread_id)
-                await thread.delete()
-            except Exception:
-                pass
+                await asyncio.sleep(PANEL_BUMP_DELAY_SEC)
+            except asyncio.CancelledError:
+                return
+            try:
+                target = await self._clips_channel(gid)
+                if target is not None:
+                    await self._refresh_ingest_panel(target)
+            except Exception as e:
+                logger.warning(f"Ingest panel bump failed for guild {gid}: {e}")
+            finally:
+                current = self._panel_refresh_tasks.get(gid)
+                if current is asyncio.current_task():
+                    self._panel_refresh_tasks.pop(gid, None)
+
+        self._panel_refresh_tasks[gid] = asyncio.create_task(_debounced())
 
     # --------------------------------------------------------------------------
     # METADATA
@@ -638,6 +668,7 @@ class ClipsCog(commands.Cog):
             "source": source,
         }
         self._save()
+        self._schedule_ingest_panel_bump(channel)
 
         await self._flow_cleanup(
             author.id,
