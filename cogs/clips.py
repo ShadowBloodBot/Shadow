@@ -278,7 +278,6 @@ class ClipsCog(commands.Cog):
         self.bot = bot
         self.session = None
         self.data = {"panels": {}, "clips": {}}
-        self._flow_sessions: dict[int, dict] = {}
         self._load_data()
 
     def cog_unload(self):
@@ -351,102 +350,6 @@ class ClipsCog(commands.Cog):
             except Exception as e:
                 logger.warning(f"Could not fetch guild {gid} for upload limit: {e}")
         return guild
-
-    async def _open_upload_thread(
-        self,
-        user: discord.User | discord.Member,
-        max_bytes: int,
-    ) -> discord.Thread | None:
-        """Private upload thread in the gallery — members can post there because
-        the gallery lock allows send_messages_in_threads."""
-        gid = user.guild.id if isinstance(user, discord.Member) and user.guild else SHADOW_MAIN_GUILD_ID
-        channel = await self._clips_channel(guild_id=gid)
-        if channel is None:
-            return None
-        try:
-            name = f"📤 {getattr(user, 'display_name', None) or user}"[:95]
-            thread = await channel.create_thread(
-                name=name,
-                type=discord.ChannelType.private_thread,
-                auto_archive_duration=60,
-                invitable=False,
-            )
-            await thread.add_user(user)
-            await thread.send(
-                f"{user.mention} drop your clip here — `mp4`, `webm`, or `mov` "
-                f"(max **{_format_mb(max_bytes)}MB**)."
-            )
-            return thread
-        except Exception as e:
-            logger.warning(f"Could not open upload thread for {user.id}: {e}")
-            return None
-
-    # --------------------------------------------------------------------------
-    # SUBMIT FLOW (ephemeral cleanup)
-    # --------------------------------------------------------------------------
-    def _flow_begin(self, user_id: int, interaction: discord.Interaction):
-        self._flow_sessions[user_id] = {
-            "upload_pending": False,
-            "interactions": [interaction],
-            "dm_prompt_id": None,
-            "upload_thread_id": None,
-        }
-
-    def _flow_track(self, user_id: int, interaction: discord.Interaction):
-        sess = self._flow_sessions.get(user_id)
-        if sess is not None:
-            sess["interactions"].append(interaction)
-
-    def _flow_set_upload_pending(self, user_id: int):
-        sess = self._flow_sessions.get(user_id)
-        if sess is not None:
-            sess["upload_pending"] = True
-
-    def _flow_set_dm_prompt(self, user_id: int, message_id: int):
-        sess = self._flow_sessions.get(user_id)
-        if sess is not None:
-            sess["dm_prompt_id"] = message_id
-
-    def _flow_set_upload_thread(self, user_id: int, thread_id: int):
-        sess = self._flow_sessions.get(user_id)
-        if sess is not None:
-            sess["upload_thread_id"] = thread_id
-
-    def _flow_clear(self, user_id: int):
-        self._flow_sessions.pop(user_id, None)
-
-    async def _flow_cleanup(
-        self,
-        user_id: int,
-        *,
-        dm_channel: discord.DMChannel | None = None,
-        user_message: discord.Message | None = None,
-    ):
-        sess = self._flow_sessions.pop(user_id, None)
-        if sess:
-            for inter in sess.get("interactions", []):
-                try:
-                    await inter.delete_original_response()
-                except Exception:
-                    pass
-            if dm_channel and sess.get("dm_prompt_id"):
-                try:
-                    prompt = await dm_channel.fetch_message(sess["dm_prompt_id"])
-                    await prompt.delete()
-                except Exception:
-                    pass
-            thread_id = sess.get("upload_thread_id")
-            if thread_id:
-                try:
-                    thread = self.bot.get_channel(thread_id) or await self.bot.fetch_channel(thread_id)
-                    await thread.delete()
-                except Exception:
-                    pass
-        if user_message:
-            try:
-                await user_message.delete()
-            except Exception as e:
-                logger.warning(f"Could not delete original clip message {user_message.id}: {e}")
 
     # --------------------------------------------------------------------------
     # METADATA
@@ -598,7 +501,6 @@ class ClipsCog(commands.Cog):
         source: str = "link",
         file: discord.File | None = None,
         content: str | None = None,
-        reply_interaction: discord.Interaction | None = None,
         reply_channel: discord.abc.Messageable | None = None,
         cleanup_user_message: discord.Message | None = None,
     ):
@@ -613,12 +515,9 @@ class ClipsCog(commands.Cog):
             msg = await channel.send(**kwargs)
         except Exception as e:
             logger.error(f"Failed to post clip embed: {e}")
-            err = "❌ Failed to post your clip. Try again shortly."
-            if reply_interaction:
-                await safe_reply(reply_interaction, err, ephemeral=True)
-            elif reply_channel:
+            if reply_channel:
                 try:
-                    await reply_channel.send(err)
+                    await reply_channel.send("❌ Failed to post your clip. Try again shortly.")
                 except Exception:
                     pass
             return None
@@ -638,21 +537,28 @@ class ClipsCog(commands.Cog):
         }
         self._save()
 
-        await self._flow_cleanup(
-            author.id,
-            dm_channel=reply_channel if isinstance(reply_channel, discord.DMChannel) else None,
-            user_message=cleanup_user_message,
-        )
-        if reply_interaction:
+        if cleanup_user_message:
             try:
-                await reply_interaction.followup.send(
-                    f"✅ Posted to {channel.mention}",
-                    ephemeral=True,
-                    delete_after=8,
-                )
-            except Exception:
-                pass
+                await cleanup_user_message.delete()
+            except Exception as e:
+                logger.warning(f"Could not delete original clip message {cleanup_user_message.id}: {e}")
+
+        await self._bump_panel_count(channel)
         return msg
+
+    async def _bump_panel_count(self, channel: discord.TextChannel):
+        """Edit the pinned header footer in place — no repost, no bounce."""
+        gid = channel.guild.id if channel.guild else SHADOW_MAIN_GUILD_ID
+        panel_id = self._panel_id(gid)
+        if not panel_id:
+            return
+        try:
+            panel_msg = await channel.fetch_message(panel_id)
+            await panel_msg.edit(embed=await self._build_ingest_panel_embed())
+        except discord.NotFound:
+            logger.warning(f"Clips header {panel_id} missing in guild {gid}; run /clips_deploy.")
+        except Exception as e:
+            logger.warning(f"Could not update clips header count in guild {gid}: {e}")
 
     async def _fetch_html(self, url: str) -> str | None:
         session = await self._get_session()
@@ -710,12 +616,21 @@ class ClipsCog(commands.Cog):
         clips_id = ch_id(channel.guild.id, "clips")
         return bool(clips_id) and channel.id == clips_id
 
+    def _find_duplicate_clip(self, url: str) -> dict | None:
+        norm = _normalize_clip_url(url)
+        if not norm:
+            return None
+        for clip in (self.data.get("clips") or {}).values():
+            stored = clip.get("url")
+            if stored and _normalize_clip_url(stored) == norm:
+                return clip
+        return None
+
     async def publish_clip(
         self,
         url: str,
         author: discord.User | discord.Member,
         *,
-        reply_interaction: discord.Interaction | None = None,
         reply_channel: discord.abc.Messageable | None = None,
         cleanup_user_message: discord.Message | None = None,
     ):
@@ -724,17 +639,30 @@ class ClipsCog(commands.Cog):
             gid = cleanup_user_message.guild.id
         elif isinstance(author, discord.Member) and author.guild:
             gid = author.guild.id
-        elif reply_interaction and reply_interaction.guild:
-            gid = reply_interaction.guild.id
 
         channel = await self._clips_channel(guild_id=gid)
         if channel is None:
-            err = "❌ Clips channel is unavailable. Tell an admin."
-            if reply_interaction:
-                return await safe_reply(reply_interaction, err, ephemeral=True)
             if reply_channel:
                 try:
-                    await reply_channel.send(err)
+                    await reply_channel.send("❌ Clips channel is unavailable. Tell an admin.")
+                except Exception:
+                    pass
+            return None
+
+        duplicate = self._find_duplicate_clip(url)
+        if duplicate:
+            if cleanup_user_message:
+                try:
+                    await cleanup_user_message.delete()
+                except Exception:
+                    pass
+            if reply_channel:
+                poster = duplicate.get("author_name") or "someone"
+                try:
+                    await reply_channel.send(
+                        f"{author.mention} that clip's already in the gallery (**{poster}** beat you to it).",
+                        delete_after=8,
+                    )
                 except Exception:
                     pass
             return None
@@ -748,6 +676,7 @@ class ClipsCog(commands.Cog):
             title, thumbnail = await self._fetch_link_metadata(url, source)
 
         # URL only — custom embeds block Discord's native video unfurl.
+        # Subtext line credits the poster since link posts carry no author bar.
         return await self._finalize_clip_post(
             channel,
             title,
@@ -755,8 +684,7 @@ class ClipsCog(commands.Cog):
             url=url,
             thumbnail=thumbnail,
             source=source,
-            content=url,
-            reply_interaction=reply_interaction,
+            content=f"{url}\n-# 🎬 {author.display_name}",
             reply_channel=reply_channel,
             cleanup_user_message=cleanup_user_message,
         )
@@ -818,36 +746,6 @@ class ClipsCog(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
-            return
-
-        sess = self._flow_sessions.get(message.author.id)
-        is_dm = isinstance(message.channel, discord.DMChannel)
-        is_upload_thread = bool(
-            sess
-            and sess.get("upload_thread_id") is not None
-            and message.channel.id == sess.get("upload_thread_id")
-        )
-        if sess and sess.get("upload_pending") and (is_dm or is_upload_thread):
-            if not message.attachments:
-                await message.channel.send("📎 Attach a video file.", delete_after=8)
-                return
-            videos = [a for a in message.attachments if _is_video_attachment(a)]
-            if not videos:
-                await message.channel.send("❌ Send a video file (`mp4`, `webm`, `mov`).", delete_after=8)
-                return
-            if len(videos) > 1:
-                await message.channel.send("❌ One file only.", delete_after=8)
-                return
-            try:
-                await self.publish_clip_file(
-                    message.author,
-                    videos[0],
-                    message.channel,
-                    user_message=message,
-                )
-            except Exception as e:
-                logger.error(f"Clip upload failed for {message.author.id}: {e}")
-                await message.channel.send("❌ Upload failed.", delete_after=8)
             return
 
         if not self._is_clips_parent(message):
