@@ -146,6 +146,14 @@ class HubCog(commands.Cog):
             inline=False,
         )
         embed.add_field(
+            name="🌟 Notices",
+            value=(
+                f"Game drops land in {_ch('notice')} — hit **⚔️ I'm In** to grab "
+                "the game role and join the squad counter."
+            ),
+            inline=False,
+        )
+        embed.add_field(
             name="🎮 Steam Codes",
             value=(
                 f"Open {_ch('steam_codes')} and hit **Add Steam Code** — "
@@ -191,6 +199,7 @@ class HubCog(commands.Cog):
             embed.add_field(
                 name="🛠️ Admin",
                 value=(
+                    "`/notice game|event|psa` · "
                     "`/welcome_deploy` · `/clips_deploy` · `/steam_codes_deploy` · `/casino_deploy` · "
                     "`/role_button` · `/send_custom` · `/edit_custom` · `/morehaste` · `/steam`"
                 ),

@@ -41,6 +41,7 @@ CHANNEL_KEYS = (
     "vc_category",
     "tts_history",
     "game_roles",
+    "notice",
 )
 
 ROLE_KEYS = ("minion", "member", "admin_shadow", "silhouette")
@@ -63,6 +64,7 @@ _SHADOW_MAIN_CHANNELS: dict[str, int] = {
     "vc_category": 908659586536468542,
     "tts_history": 1400048671973703690,
     "game_roles": 1516222122211672084,
+    "notice": 959711001626943489,
 }
 
 _SHADOW_MAIN_ROLES: dict[str, int] = {
