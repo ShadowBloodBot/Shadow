@@ -274,12 +274,20 @@ class NoticeActionView(View):
 class GameHypeModal(Modal):
     """Captures Joe's hype line before the notice ships — keeps his voice on it."""
 
-    def __init__(self, cog: "NoticeCog", appid: str, ping: str, scope: str):
+    def __init__(
+        self,
+        cog: "NoticeCog",
+        appid: str,
+        ping: str,
+        scope: str,
+        role: discord.Role | None = None,
+    ):
         super().__init__(title="Game Drop — add your hype line")
         self.cog = cog
         self.appid = appid
         self.ping = ping
         self.scope = scope
+        self.role = role
         self.add_item(TextInput(
             label="Hype line (optional)",
             style=discord.InputTextStyle.long,
@@ -291,7 +299,9 @@ class GameHypeModal(Modal):
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         hype = (self.children[0].value or "").strip()
-        await self.cog.post_game_notice(interaction, self.appid, hype, self.ping, self.scope)
+        await self.cog.post_game_notice(
+            interaction, self.appid, hype, self.ping, self.scope, role=self.role
+        )
 
 
 # ==============================================================================
@@ -386,7 +396,12 @@ class NoticeCog(commands.Cog):
         }
 
     # ── game role plumbing (reuses the game-roles hub) ──
-    async def _ensure_game_role(self, guild: discord.Guild, name: str) -> discord.Role | None:
+    async def _ensure_game_role(
+        self,
+        guild: discord.Guild,
+        name: str,
+        colour: discord.Colour | None = None,
+    ) -> discord.Role | None:
         target = _normalize_role_name(name)
         roles = list(guild.roles)
         if len(roles) <= 1:
@@ -402,7 +417,7 @@ class NoticeCog(commands.Cog):
         try:
             return await guild.create_role(
                 name=name,
-                colour=discord.Colour(THEME_PRIMARY),
+                colour=colour or discord.Colour(THEME_PRIMARY),
                 mentionable=True,
                 reason="ShadowSyn notice: game drop squad role",
             )
@@ -410,16 +425,28 @@ class NoticeCog(commands.Cog):
             logger.error("Could not create game role %s in guild %s: %s", name, guild.id, exc)
             return None
 
-    async def _ensure_roles_all_guilds(self, name: str) -> dict[int, discord.Role]:
-        """Create/find the game role on every registered guild and hub it."""
+    async def _ensure_roles_all_guilds(
+        self,
+        name: str,
+        preset_role: discord.Role | None = None,
+    ) -> dict[int, discord.Role]:
+        """Create/find the game role on every registered guild and hub it.
+
+        When Joe hands us an existing role (preset_role), that exact role is
+        used on its home guild and its name/colour drive the sister-guild copy.
+        """
         game_cog = self.bot.get_cog("GameRolesCog")
+        colour = preset_role.colour if preset_role is not None else None
         out: dict[int, discord.Role] = {}
         for gid in REGISTERED_GUILD_IDS:
             guild = self.bot.get_guild(gid)
             if guild is None:
                 logger.warning("Guild %s unavailable for game role %s", gid, name)
                 continue
-            role = await self._ensure_game_role(guild, name)
+            if preset_role is not None and preset_role.guild.id == gid:
+                role = preset_role
+            else:
+                role = await self._ensure_game_role(guild, name, colour=colour)
             if role is None:
                 continue
             out[gid] = role
@@ -491,6 +518,7 @@ class NoticeCog(commands.Cog):
         hype: str,
         ping: str,
         scope: str,
+        role: discord.Role | None = None,
     ) -> None:
         meta = await self.fetch_steam_meta(appid)
         if meta is None or not meta.get("name"):
@@ -499,7 +527,9 @@ class NoticeCog(commands.Cog):
                 ephemeral=True,
             )
 
-        role_map = await self._ensure_roles_all_guilds(meta["name"])
+        # Joe's picked role wins; otherwise auto-match/create by the Steam title.
+        role_name = role.name if role is not None else meta["name"]
+        role_map = await self._ensure_roles_all_guilds(role_name, preset_role=role)
         if not role_map:
             return await interaction.followup.send(
                 "❌ Could not create the game role on either guild. Check my role permissions.",
@@ -526,6 +556,7 @@ class NoticeCog(commands.Cog):
         self._store.setdefault("notices", {})[key] = {
             "kind": "game",
             "label": meta["name"],
+            "role_name": role_name,
             "appid": appid,
             "steam_url": meta["url"],
             "enlisted": enlisted,
@@ -589,7 +620,9 @@ class NoticeCog(commands.Cog):
             role_id_raw = (notice.get("roles") or {}).get(str(guild.id))
             role = guild.get_role(int(role_id_raw)) if role_id_raw else None
             if role is None:
-                role = await self._ensure_game_role(guild, notice.get("label") or "")
+                role = await self._ensure_game_role(
+                    guild, notice.get("role_name") or notice.get("label") or ""
+                )
                 if role is not None:
                     notice.setdefault("roles", {})[str(guild.id)] = str(role.id)
             if role is None:
@@ -667,6 +700,12 @@ class NoticeCog(commands.Cog):
         self,
         ctx: discord.ApplicationContext,
         steam_url: Option(str, "Steam store link (or app id)"),
+        role: Option(
+            discord.Role,
+            "Your game role for the I'm In button (otherwise auto-matched by game name)",
+            required=False,
+            default=None,
+        ),
         ping: Option(str, "Who to ping", choices=PING_CHOICES, default="everyone"),
         guild: Option(str, "Which guilds get it", choices=GUILD_SCOPE_CHOICES, default="all"),
     ):
@@ -681,7 +720,11 @@ class NoticeCog(commands.Cog):
                 "Expected `https://store.steampowered.com/app/<id>/...`.",
                 ephemeral=True,
             )
-        await ctx.send_modal(GameHypeModal(self, appid, ping, guild))
+        if role is not None and (role.is_default() or role.managed):
+            return await safe_reply(
+                ctx, "❌ That role can't be used as a squad role.", ephemeral=True
+            )
+        await ctx.send_modal(GameHypeModal(self, appid, ping, guild, role=role))
 
     @notice_group.command(
         name="event",
