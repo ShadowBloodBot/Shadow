@@ -6,7 +6,21 @@
     "HECS & Bonus Income — Lender Arbitrage",
     "Self-Employed NPR & Add-Back Architecture",
     "Cross-Collateralisation Exit Trap",
-    "IO Expiry Without Servicing Bridge"
+    "IO Expiry Without Servicing Bridge",
+    "Bucket Company Franking Trap",
+    "SMSF LRBA Bare Trust Choke Point",
+    "Debt Recycling Purpose Contamination",
+    "Part IVA Cash-Out Circularity",
+    "HECS Bonus Policy Servicing Split",
+    "LMI Arbitrage vs Stamp Duty Drag",
+    "Guarantor Exit and Cross-Security Lock",
+    "Unit Trust Debt Capacity Mismatch",
+    "Alt-Doc BAS Add-Back Ladder",
+    "Div 7A Loan Repayment Squeeze",
+    "Section 100A Family Split Audit",
+    "DTI Cap Equity Release Gridlock",
+    "Fixed Split Refix Shock",
+    "Land Tax Stamp Duty Stack"
   ],
   "weeks": [
     {
@@ -21,6 +35,32 @@
         "IO Expiry Without Servicing Bridge"
       ],
       "generated_at": "2026-06-09"
+    },
+    {
+      "week": "2026-W35",
+      "titles": [
+        "Bucket Company Franking Trap",
+        "SMSF LRBA Bare Trust Choke Point",
+        "Debt Recycling Purpose Contamination",
+        "Part IVA Cash-Out Circularity",
+        "HECS Bonus Policy Servicing Split",
+        "LMI Arbitrage vs Stamp Duty Drag",
+        "Guarantor Exit and Cross-Security Lock"
+      ],
+      "generated_at": "2026-08-23"
+    },
+    {
+      "week": "2026-W37",
+      "titles": [
+        "Unit Trust Debt Capacity Mismatch",
+        "Alt-Doc BAS Add-Back Ladder",
+        "Div 7A Loan Repayment Squeeze",
+        "Section 100A Family Split Audit",
+        "DTI Cap Equity Release Gridlock",
+        "Fixed Split Refix Shock",
+        "Land Tax Stamp Duty Stack"
+      ],
+      "generated_at": "2026-09-06"
     }
   ]
 }
