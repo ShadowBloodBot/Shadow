@@ -1,7 +1,8 @@
 """
-Deploy clips ingest panel on ShadowMain and/or ShadowBackup (mirrors /clips_deploy).
+Restore #clips to open posting on ShadowMain and/or ShadowBackup.
 
-Uses DISCORD_TOKEN from Railway (Shadow bot). Run with --discord-only after a normal deploy.
+Removes the cinema header and thread-create denies. Mirrors /clips_deploy.
+Uses DISCORD_TOKEN from Railway (Shadow bot).
 """
 
 import asyncio
@@ -17,11 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from cogs.clips import (  # noqa: E402
-    INGEST_PANEL_DESCRIPTION,
     INGEST_PANEL_TITLE,
-    THEME_PRIMARY,
-    _cached_top_contributor_names,
-    _ingest_panel_footer,
 )
 from cogs.guild_registry import (  # noqa: E402
     SHADOW_BACKUP_GUILD_ID,
@@ -34,7 +31,6 @@ ENV_FILE = ROOT / ".env.railway"
 PROJECT_ID = "b147a1c2-7073-4ba9-be34-14f30b200bb4"
 SERVICE_NAME = "Shadow"
 SHADOW_BOT_ID = "1401788343825727618"
-PERSIST_LOCAL = ROOT / "data" / "clips_repo.json"
 HOF_THREAD_NAME = "🏛️ Hall of Fame"
 
 SEND_MESSAGES = 1 << 11
@@ -42,9 +38,8 @@ EMBED_LINKS = 1 << 14
 ATTACH_FILES = 1 << 15
 CREATE_PUBLIC_THREADS = 1 << 35
 CREATE_PRIVATE_THREADS = 1 << 36
-SEND_MESSAGES_IN_THREADS = 1 << 38
-DENY_BITS = CREATE_PUBLIC_THREADS | CREATE_PRIVATE_THREADS
-ALLOW_BITS = SEND_MESSAGES | EMBED_LINKS | ATTACH_FILES | SEND_MESSAGES_IN_THREADS
+THREAD_BITS = CREATE_PUBLIC_THREADS | CREATE_PRIVATE_THREADS
+ALLOW_BITS = SEND_MESSAGES | EMBED_LINKS | ATTACH_FILES
 
 
 def railway_token() -> str:
@@ -162,34 +157,6 @@ async def purge_hof_threads(session: aiohttp.ClientSession, token: str, channel_
     return removed
 
 
-async def archive_gallery_threads(
-    session: aiohttp.ClientSession,
-    token: str,
-    guild_id: int,
-    channel_id: int,
-) -> int:
-    archived = 0
-    status, active = await discord_api(session, token, "GET", f"/guilds/{guild_id}/threads/active")
-    if status != 200 or not isinstance(active, dict):
-        print(f"  WARNING: active threads fetch failed {status} {active}")
-        return 0
-    for thread in active.get("threads") or []:
-        if str(thread.get("parent_id")) != str(channel_id):
-            continue
-        st, body = await discord_api(
-            session,
-            token,
-            "PATCH",
-            f"/channels/{thread['id']}",
-            {"archived": True, "locked": True},
-        )
-        if st in (200, 201):
-            archived += 1
-        else:
-            print(f"  WARNING: archive {thread.get('id')} failed {st} {body}")
-    return archived
-
-
 async def delete_pin_notices(session: aiohttp.ClientSession, token: str, channel_id: int) -> int:
     status, batch = await discord_api(
         session, token, "GET", f"/channels/{channel_id}/messages?limit=10"
@@ -208,7 +175,7 @@ async def delete_pin_notices(session: aiohttp.ClientSession, token: str, channel
     return removed
 
 
-async def lock_permissions(session: aiohttp.ClientSession, token: str, channel_id: int):
+async def restore_permissions(session: aiohttp.ClientSession, token: str, channel_id: int):
     status, ch = await discord_api(session, token, "GET", f"/channels/{channel_id}")
     if status != 200:
         raise RuntimeError(f"Channel fetch failed: {status} {ch}")
@@ -219,8 +186,8 @@ async def lock_permissions(session: aiohttp.ClientSession, token: str, channel_i
             continue
         allow = int(ow.get("allow", 0))
         deny = int(ow.get("deny", 0))
-        allow = (allow | ALLOW_BITS) & ~DENY_BITS
-        deny = (deny | DENY_BITS) & ~ALLOW_BITS
+        allow = (allow | ALLOW_BITS) & ~THREAD_BITS
+        deny = deny & ~ALLOW_BITS & ~THREAD_BITS
         patched.append({"id": ow["id"], "type": ow["type"], "allow": str(allow), "deny": str(deny)})
 
     guild_id = ch.get("guild_id")
@@ -229,7 +196,7 @@ async def lock_permissions(session: aiohttp.ClientSession, token: str, channel_i
             "id": guild_id,
             "type": 0,
             "allow": str(ALLOW_BITS),
-            "deny": str(DENY_BITS),
+            "deny": "0",
         })
 
     status, updated = await discord_api(
@@ -240,8 +207,8 @@ async def lock_permissions(session: aiohttp.ClientSession, token: str, channel_i
         {"permission_overwrites": patched},
     )
     if status != 200:
-        raise RuntimeError(f"Permission lock failed: {status} {updated}")
-    print(f"  Permissions updated ({len(patched)} targets, drop-in send enabled)")
+        raise RuntimeError(f"Permission restore failed: {status} {updated}")
+    print(f"  Permissions restored ({len(patched)} targets, open posting)")
 
 
 async def remove_old_panels(session: aiohttp.ClientSession, token: str, channel_id: int):
@@ -275,66 +242,26 @@ async def remove_old_panels(session: aiohttp.ClientSession, token: str, channel_
         print(f"  Removed {len(removed)} old panel(s)")
 
 
-async def deploy_panel(session: aiohttp.ClientSession, token: str, channel_id: int) -> str:
-    clips_data: dict = {}
-    if PERSIST_LOCAL.exists():
-        try:
-            clips_data = json.loads(PERSIST_LOCAL.read_text(encoding="utf-8"))
-        except Exception:
-            clips_data = {}
-    panel_embed = {
-        "title": INGEST_PANEL_TITLE,
-        "description": INGEST_PANEL_DESCRIPTION,
-        "color": THEME_PRIMARY,
-        "footer": {
-            "text": _ingest_panel_footer(
-                clips_data,
-                _cached_top_contributor_names(clips_data) or None,
-            )
-        },
-    }
-    await remove_old_panels(session, token, channel_id)
-    status, panel = await discord_api(
-        session,
-        token,
-        "POST",
-        f"/channels/{channel_id}/messages",
-        {"embeds": [panel_embed]},
-    )
-    if status not in (200, 201):
-        raise RuntimeError(f"Panel post failed: {status} {panel}")
-    panel_id = str(panel["id"])
-    pin_status, pin_body = await discord_api(
-        session, token, "PUT", f"/channels/{channel_id}/pins/{panel_id}"
-    )
-    if pin_status not in (200, 204):
-        print(f"  WARNING: pin failed {pin_status} {pin_body}")
-    notices = await delete_pin_notices(session, token, channel_id)
-    if notices:
-        print(f"  Removed {notices} pin notice(s)")
-    print(f"  Header posted and pinned: {panel_id}")
-    return panel_id
-
-
-async def deploy_guild(
+async def restore_guild(
     session: aiohttp.ClientSession,
     token: str,
     label: str,
     guild_id: int,
-) -> str | None:
+) -> None:
     channel_id = ch_id(guild_id, "clips")
     if not channel_id:
         print(f"  SKIP — no clips channel in registry")
-        return None
+        return
     print(f"\n=== {label} ({guild_id}) — #{channel_id} ===")
     hof_removed = await purge_hof_threads(session, token, channel_id)
     if hof_removed:
         print(f"  Purged {hof_removed} Hall of Fame thread(s)")
-    archived = await archive_gallery_threads(session, token, guild_id, channel_id)
-    if archived:
-        print(f"  Archived {archived} leftover clip thread(s)")
-    await lock_permissions(session, token, channel_id)
-    return await deploy_panel(session, token, channel_id)
+    await restore_permissions(session, token, channel_id)
+    await remove_old_panels(session, token, channel_id)
+    notices = await delete_pin_notices(session, token, channel_id)
+    if notices:
+        print(f"  Removed {notices} pin notice(s)")
+    print("  Open posting restored — cinema header removed")
 
 
 async def main():
@@ -355,24 +282,18 @@ async def main():
     if args.guild in ("backup", "all"):
         targets.append(("ShadowBackup", SHADOW_BACKUP_GUILD_ID))
 
-    panel_ids: dict[str, str] = {}
     async with aiohttp.ClientSession() as session:
         status, me = await discord_api(session, discord_token, "GET", "/users/@me")
         if status != 200:
             raise RuntimeError(f"Bot auth failed: {status} {me}")
-        print(f"Deploying as {me.get('username')} ({me.get('id')})")
+        print(f"Restoring as {me.get('username')} ({me.get('id')})")
         if str(me.get("id")) != SHADOW_BOT_ID:
             print("WARNING: expected Shadow production bot")
 
         for label, gid in targets:
-            pid = await deploy_guild(session, discord_token, label, gid)
-            if pid:
-                panel_ids[str(gid)] = pid
+            await restore_guild(session, discord_token, label, gid)
 
-    print("\nDone.")
-    for gid, pid in panel_ids.items():
-        print(f"  guild {gid} panel_message_id={pid}")
-    print("Run /clips_deploy once per guild in Discord to sync Railway /data panel ids (optional).")
+    print("\nDone. #clips is open posting on both guilds.")
 
 
 if __name__ == "__main__":

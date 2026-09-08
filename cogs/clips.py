@@ -19,7 +19,6 @@ logger = logging.getLogger("ShadowSyn.Clips")
 from cogs.clip_urls import (
     clip_source,
     extract_og,
-    extract_urls,
     html_looks_like_video,
     is_allowlisted_clip_url,
     is_https_url,
@@ -743,62 +742,12 @@ class ClipsCog(commands.Cog):
             cleanup_user_message=user_message,
         )
 
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        if message.author.bot:
-            return
-
-        if not self._is_clips_parent(message):
-            return
-
-        videos = [a for a in message.attachments if _is_video_attachment(a)]
-        if videos:
-            if len(videos) > 1:
-                await message.channel.send("❌ One video file only.", delete_after=8)
-                return
-            try:
-                await self.publish_clip_file(
-                    message.author,
-                    videos[0],
-                    message.channel,
-                    user_message=message,
-                )
-            except Exception as e:
-                logger.error(f"Clip drop-in upload failed for {message.author.id}: {e}")
-                await message.channel.send("❌ Upload failed.", delete_after=8)
-            return
-
-        if message.attachments:
-            await self._reject_chatter(message, "Send a video file (`mp4`, `webm`, `mov`).")
-            return
-
-        urls = extract_urls(message.content)
-        if urls:
-            chosen = None
-            for candidate in urls:
-                if await self.is_clip_url(candidate):
-                    chosen = candidate
-                    break
-            if chosen:
-                try:
-                    await self.publish_clip(
-                        chosen,
-                        message.author,
-                        reply_channel=message.channel,
-                        cleanup_user_message=message,
-                    )
-                except Exception as e:
-                    logger.error(f"Clip drop-in link failed for {message.author.id}: {e}")
-                    await message.channel.send("❌ Could not post that clip.", delete_after=8)
-                return
-            await self._reject_chatter(message, "That link isn't a clip I can share.")
-            return
-
-        await self._reject_chatter(message)
-
     # --------------------------------------------------------------------------
     # INGEST PANEL
     # --------------------------------------------------------------------------
+    # Cinema ingest is retired: people post clips themselves. Keep helpers
+    # for /clips_deploy cleanup (header purge + permission restore).
+
     async def _resolve_contributor_name(self, author_id: int) -> str:
         name = _author_name_from_clips(self.data, author_id)
         if name:
@@ -876,33 +825,18 @@ class ClipsCog(commands.Cog):
         except Exception as e:
             logger.warning(f"Could not scan history for ingest panels: {e}")
 
-    async def _refresh_ingest_panel(self, channel: discord.TextChannel):
+    async def _retire_cinema_header(self, channel: discord.TextChannel):
         gid = channel.guild.id if channel.guild else SHADOW_MAIN_GUILD_ID
         await self._purge_ingest_panels(channel)
         await self._delete_ingest_panel(channel, self._panel_id(gid))
-
-        try:
-            panel_msg = await channel.send(embed=await self._build_ingest_panel_embed())
-            try:
-                await panel_msg.pin()
-            except Exception as e:
-                logger.warning(f"Could not pin clips header {panel_msg.id}: {e}")
-            try:
-                async for notice in channel.history(limit=8):
-                    if notice.type == discord.MessageType.pins_add:
-                        await notice.delete()
-            except Exception as e:
-                logger.warning(f"Could not delete clips pin notice: {e}")
-            self._set_panel_id(gid, panel_msg.id)
-            self._save()
-            logger.info(f"Clips header pinned ({panel_msg.id}) guild {gid}.")
-        except Exception as e:
-            logger.error(f"Failed to refresh ingest panel: {e}")
+        self.data.setdefault("panels", {}).pop(str(gid), None)
+        self._save()
+        logger.info("Clips cinema header removed for guild %s.", gid)
 
     # --------------------------------------------------------------------------
-    # GALLERY PERMISSION LOCK
+    # OPEN POSTING
     # --------------------------------------------------------------------------
-    async def _lock_gallery_permissions(self, channel: discord.TextChannel):
+    async def _restore_open_permissions(self, channel: discord.TextChannel):
         if not isinstance(channel, discord.TextChannel):
             return False, "Not a text channel."
 
@@ -914,7 +848,7 @@ class ClipsCog(commands.Cog):
         if me is None or not me.guild_permissions.manage_channels:
             return False, "Bot lacks **Manage Channels** to update permissions."
 
-        reason = "ShadowSyn clips: cinema gallery (drop clips, react, no chat)"
+        reason = "ShadowSyn clips: restore open posting"
         skip_ids: set[int] = {me.id}
         if me.top_role:
             skip_ids.add(me.top_role.id)
@@ -934,18 +868,18 @@ class ClipsCog(commands.Cog):
                 ow.send_messages = True
                 ow.embed_links = True
                 ow.attach_files = True
-                ow.create_public_threads = False
-                ow.create_private_threads = False
-                ow.send_messages_in_threads = True
+                ow.create_public_threads = None
+                ow.create_private_threads = None
+                ow.send_messages_in_threads = None
                 await channel.set_permissions(target, overwrite=ow, reason=reason)
                 updated += 1
-            logger.info(f"Gallery drop-in permissions set for {updated} target(s) in {channel.id}.")
-            return True, f"Drop-in posting enabled for **{updated}** permission target(s)."
+            logger.info("Clips open posting restored for %s target(s) in %s.", updated, channel.id)
+            return True, f"Open posting restored for **{updated}** permission target(s)."
         except discord.Forbidden:
-            logger.error("Forbidden while locking clips gallery permissions.")
+            logger.error("Forbidden while restoring clips permissions.")
             return False, "Forbidden — check bot **Manage Channels** and role hierarchy."
         except Exception as e:
-            logger.error(f"Gallery permission lock failed: {e}")
+            logger.error(f"Clips permission restore failed: {e}")
             return False, str(e)
 
     # --------------------------------------------------------------------------
@@ -993,7 +927,7 @@ class ClipsCog(commands.Cog):
 
     @discord.slash_command(
         name="clips_deploy",
-        description="Deploy the clips cinema header.",
+        description="Restore #clips to open posting (no cinema header).",
         guild_ids=REGISTERED_GUILD_IDS,
         default_member_permissions=discord.Permissions(administrator=True),
     )
@@ -1001,7 +935,7 @@ class ClipsCog(commands.Cog):
         if not has_admin_shadow(ctx.author, ctx.guild.id if ctx.guild else None):
             return await safe_reply(ctx, "🚫 Admin clearance required.", ephemeral=True)
 
-        await safe_reply(ctx, "🛠️ Deploying clips system...", ephemeral=True)
+        await safe_reply(ctx, "🛠️ Restoring clips channel...", ephemeral=True)
 
         channel = await self._clips_channel(ctx.guild.id)
         if channel is None:
@@ -1012,33 +946,31 @@ class ClipsCog(commands.Cog):
             if cid:
                 channel = await ctx.guild.fetch_channel(cid)
         except Exception as e:
-            logger.warning(f"Could not refresh clips channel before permission lock: {e}")
+            logger.warning(f"Could not refresh clips channel before permission restore: {e}")
 
-        perm_ok, perm_status = await self._lock_gallery_permissions(channel)
+        perm_ok, perm_status = await self._restore_open_permissions(channel)
         if not perm_ok:
             return await safe_reply(
                 ctx,
-                f"❌ Could not lock gallery permissions: {perm_status}",
+                f"❌ Could not restore clips permissions: {perm_status}",
                 ephemeral=True,
             )
 
         try:
-            await self._refresh_ingest_panel(channel)
+            await self._retire_cinema_header(channel)
         except Exception as e:
-            logger.error(f"Failed to deploy ingest panel: {e}")
-            return await safe_reply(ctx, f"❌ Failed to deploy ingest panel: {e}", ephemeral=True)
+            logger.error(f"Failed to remove clips header: {e}")
+            return await safe_reply(ctx, f"❌ Failed to remove clips header: {e}", ephemeral=True)
 
         purged = await self._purge_hof_threads(channel)
-        archived = await self._archive_gallery_threads(channel)
         self._save()
 
         await safe_reply(
             ctx,
-            f"✅ Clips live in {channel.mention}.\n"
+            f"✅ {channel.mention} is open posting again.\n"
             f"• {perm_status}\n"
-            f"• Header ID `{self._panel_id(ctx.guild.id)}`\n"
-            f"• Stale Hall of Fame threads removed: **{purged}**\n"
-            f"• Leftover clip threads archived: **{archived}**",
+            f"• Cinema header removed\n"
+            f"• Stale Hall of Fame threads removed: **{purged}**",
             ephemeral=True,
         )
 
