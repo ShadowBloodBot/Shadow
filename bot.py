@@ -92,7 +92,6 @@ cogs_list = [
     "cogs.member_backup",
     "cogs.hub",
     "cogs.game_roles",
-    "cogs.notice",
     "cogs.welcome",
     "cogs.sand",
 ]
