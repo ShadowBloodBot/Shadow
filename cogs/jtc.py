@@ -266,25 +266,25 @@ class VCControlPanel(View):
         if not await self._check(i): return
         await i.response.defer(ephemeral=True)
         try:
-            _sem = asyncio.Semaphore(3)
+            overwrites = dict(self.vc.overwrites)
 
-            async def _set(target, **kwargs):
-                async with _sem:
-                    await self.vc.set_permissions(target, **kwargs)
+            def _merge(target, **perms):
+                ow = overwrites.get(target) or discord.PermissionOverwrite()
+                ow.update(**perms)
+                overwrites[target] = ow
 
-            tasks = []
             for m in self.vc.members:
-                tasks.append(_set(m, connect=True, speak=True))
+                _merge(m, connect=True, speak=True)
             for oid in MASTER_OWNERS:
                 owner = i.guild.get_member(oid)
                 if owner and owner not in self.vc.members:
-                    tasks.append(_set(owner, connect=True, speak=True))
-            tasks.append(_set(i.guild.default_role, connect=False))
+                    _merge(owner, connect=True, speak=True)
+            _merge(i.guild.default_role, connect=False)
             if self.vc.category:
                 for target, overwrite in self.vc.category.overwrites.items():
                     if isinstance(target, discord.Role) and target != i.guild.default_role and not target.permissions.administrator:
-                        tasks.append(_set(target, connect=False))
-            await asyncio.gather(*tasks)
+                        _merge(target, connect=False)
+            await self.vc.edit(overwrites=overwrites)
             await i.followup.send("🔒 Locked.", ephemeral=True)
         except Exception as e:
             await i.followup.send(f"❌ Failed to lock: {e}", ephemeral=True)
@@ -293,19 +293,9 @@ class VCControlPanel(View):
         if not await self._check(i): return
         await i.response.defer(ephemeral=True)
         try:
-            _sem = asyncio.Semaphore(3)
-
-            async def _clear(target):
-                async with _sem:
-                    await self.vc.set_permissions(target, overwrite=None)
-
-            tasks = [_clear(i.guild.default_role)]
-            for target in list(self.vc.overwrites.keys()):
-                if isinstance(target, discord.Member):
-                    tasks.append(_clear(target))
-                elif isinstance(target, discord.Role) and target != i.guild.default_role:
-                    tasks.append(_clear(target))
-            await asyncio.gather(*tasks)
+            # One edit replaces every role/member overwrite (same targets as
+            # the old per-target set_permissions(overwrite=None) loop).
+            await self.vc.edit(overwrites={})
             await i.followup.send("🔓 Unlocked.", ephemeral=True)
         except Exception as e:
             await i.followup.send(f"❌ Failed to unlock: {e}", ephemeral=True)
@@ -458,7 +448,6 @@ class JTCCog(commands.Cog):
             return
         self._healing.add(key)
         try:
-            await asyncio.sleep(1.0)
             voice = member.voice
             if not voice or not voice.channel or voice.channel.id != vc.id:
                 return
@@ -495,7 +484,10 @@ class JTCCog(commands.Cog):
                 and (before.channel is None or before.channel.id != after.channel.id)
                 and (not jtc_id or after.channel.id != jtc_id)):
             await self._auto_grant_locked_vc(member, after.channel)
-            await self._heal_suppress(member, after.channel)
+            if member.voice and member.voice.suppress:
+                heal_task = asyncio.create_task(self._heal_suppress(member, after.channel))
+                self._panel_tasks.add(heal_task)
+                heal_task.add_done_callback(self._panel_tasks.discard)
 
         if after.channel and jtc_id and after.channel.id == jtc_id:
             try:
