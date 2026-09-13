@@ -6,7 +6,14 @@
     "HECS & Bonus Income — Lender Arbitrage",
     "Self-Employed NPR & Add-Back Architecture",
     "Cross-Collateralisation Exit Trap",
-    "IO Expiry Without Servicing Bridge"
+    "IO Expiry Without Servicing Bridge",
+    "Trust Vesting Date Serviceability Cliff",
+    "SMSF Pension-Phase LRBA Compression",
+    "PAYG Bonus Shading Income Split",
+    "NPR Add-Back Director Wage Loop",
+    "Bucket Company UPE Div 7A Spill",
+    "APRA DTI Card Limit Guillotine",
+    "Land Tax Entity Threshold Mismatch"
   ],
   "weeks": [
     {
@@ -21,6 +28,19 @@
         "IO Expiry Without Servicing Bridge"
       ],
       "generated_at": "2026-06-09"
+    },
+    {
+      "week": "2026-W38",
+      "titles": [
+        "Trust Vesting Date Serviceability Cliff",
+        "SMSF Pension-Phase LRBA Compression",
+        "PAYG Bonus Shading Income Split",
+        "NPR Add-Back Director Wage Loop",
+        "Bucket Company UPE Div 7A Spill",
+        "APRA DTI Card Limit Guillotine",
+        "Land Tax Entity Threshold Mismatch"
+      ],
+      "generated_at": "2026-09-13"
     }
   ]
 }
