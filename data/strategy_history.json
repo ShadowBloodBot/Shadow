@@ -6,7 +6,14 @@
     "HECS & Bonus Income — Lender Arbitrage",
     "Self-Employed NPR & Add-Back Architecture",
     "Cross-Collateralisation Exit Trap",
-    "IO Expiry Without Servicing Bridge"
+    "IO Expiry Without Servicing Bridge",
+    "SMSF LRBA Liquidity Covenant",
+    "Bucket Company Franking Drag",
+    "Part IVA Redraw Contamination",
+    "Guarantor DTI Shadow Liability",
+    "Alt-Doc BAS Income Gap",
+    "LMI Arbitrage at 88 LVR",
+    "Land Tax Stamp Duty Stack"
   ],
   "weeks": [
     {
@@ -21,6 +28,19 @@
         "IO Expiry Without Servicing Bridge"
       ],
       "generated_at": "2026-06-09"
+    },
+    {
+      "week": "2026-W29",
+      "titles": [
+        "SMSF LRBA Liquidity Covenant",
+        "Bucket Company Franking Drag",
+        "Part IVA Redraw Contamination",
+        "Guarantor DTI Shadow Liability",
+        "Alt-Doc BAS Income Gap",
+        "LMI Arbitrage at 88 LVR",
+        "Land Tax Stamp Duty Stack"
+      ],
+      "generated_at": "2026-07-12"
     }
   ]
 }
