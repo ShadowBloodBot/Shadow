@@ -6,7 +6,14 @@
     "HECS & Bonus Income — Lender Arbitrage",
     "Self-Employed NPR & Add-Back Architecture",
     "Cross-Collateralisation Exit Trap",
-    "IO Expiry Without Servicing Bridge"
+    "IO Expiry Without Servicing Bridge",
+    "Trust Loss Quarantine and Servicing",
+    "SMSF LRBA Liquidity Wall",
+    "Part IVA Debt Recycling Boundary",
+    "Bucket Company Franking Drag",
+    "NPR Add-Back Without Audit Noise",
+    "LMI Arbitrage Without Cross-Security",
+    "Alt-Doc BAS vs DTI Ceiling"
   ],
   "weeks": [
     {
@@ -21,6 +28,19 @@
         "IO Expiry Without Servicing Bridge"
       ],
       "generated_at": "2026-06-09"
+    },
+    {
+      "week": "2026-W40",
+      "titles": [
+        "Trust Loss Quarantine and Servicing",
+        "SMSF LRBA Liquidity Wall",
+        "Part IVA Debt Recycling Boundary",
+        "Bucket Company Franking Drag",
+        "NPR Add-Back Without Audit Noise",
+        "LMI Arbitrage Without Cross-Security",
+        "Alt-Doc BAS vs DTI Ceiling"
+      ],
+      "generated_at": "2026-09-27"
     }
   ]
 }
