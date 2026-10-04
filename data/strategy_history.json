@@ -6,7 +6,14 @@
     "HECS & Bonus Income — Lender Arbitrage",
     "Self-Employed NPR & Add-Back Architecture",
     "Cross-Collateralisation Exit Trap",
-    "IO Expiry Without Servicing Bridge"
+    "IO Expiry Without Servicing Bridge",
+    "SMSF LRBA Liquidity Haircut",
+    "Bucket Company Servicing Mirage",
+    "Section 100A Distribution Fallout",
+    "LMI Premium Equity Arbitrage",
+    "Alt-Doc BAS Income Mismatch",
+    "Land Tax Stamp Duty Stack",
+    "Guarantor Release LVR Snare"
   ],
   "weeks": [
     {
@@ -21,6 +28,19 @@
         "IO Expiry Without Servicing Bridge"
       ],
       "generated_at": "2026-06-09"
+    },
+    {
+      "week": "2026-W41",
+      "titles": [
+        "SMSF LRBA Liquidity Haircut",
+        "Bucket Company Servicing Mirage",
+        "Section 100A Distribution Fallout",
+        "LMI Premium Equity Arbitrage",
+        "Alt-Doc BAS Income Mismatch",
+        "Land Tax Stamp Duty Stack",
+        "Guarantor Release LVR Snare"
+      ],
+      "generated_at": "2026-10-04"
     }
   ]
 }
