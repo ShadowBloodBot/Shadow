@@ -94,6 +94,7 @@ cogs_list = [
     "cogs.game_roles",
     "cogs.welcome",
     "cogs.sand",
+    "cogs.wardogs",
 ]
 
 for cog in cogs_list:
