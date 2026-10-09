@@ -96,7 +96,7 @@ def build_gold_embed(payload: dict[str, Any], *, from_cache: bool = False) -> di
     embed.add_field(name=f"Last {HISTORY_DAYS} days", value=_history_line(payload), inline=False)
     if updated is not None:
         embed.add_field(name="Updated", value=f"<t:{int(updated.timestamp())}:R>", inline=False)
-    embed.set_footer(text="wardogs.market · resets 00:00 UTC")
+    embed.set_footer(text="Gravy Loves Men")
     return embed
 
 
