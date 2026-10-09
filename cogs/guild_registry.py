@@ -153,6 +153,20 @@ def load_registry(force: bool = False) -> dict[str, Any]:
     for key, val in _SHADOW_MAIN_ROLES.items():
         main_ro.setdefault(key, str(val))
 
+    # Layer the shipped repo template under the live /data file so new keys
+    # (e.g. a role added in a release) reach Backup without a manual reseed.
+    if source_path != _REPO_REGISTRY and _REPO_REGISTRY.exists():
+        try:
+            template = json.loads(_REPO_REGISTRY.read_text(encoding="utf-8"))
+            for gid, tentry in (template.get("guilds") or {}).items():
+                entry = guilds.setdefault(str(gid), {"channels": {}, "roles": {}})
+                for section in ("channels", "roles"):
+                    live = entry.setdefault(section, {})
+                    for key, val in (tentry.get(section) or {}).items():
+                        live.setdefault(key, str(val))
+        except Exception as exc:
+            logger.warning("guild_registry template merge skipped: %s", exc)
+
     _registry = data
     return data
 
