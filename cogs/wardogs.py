@@ -61,9 +61,12 @@ def _history_line(payload: dict[str, Any]) -> str:
     points: dict[str, int] = {}
     if isinstance(history, dict):
         for key, val in history.items():
+            # Site data is hand-edited upstream (seen: "2026-10-l0"); only accept real dates.
             try:
-                if isinstance(key, str) and len(key) == 10:
-                    points[key] = int(val)
+                if not isinstance(key, str):
+                    continue
+                datetime.strptime(key, "%Y-%m-%d")
+                points[key] = int(val)
             except (TypeError, ValueError):
                 continue
     updated = _parse_updated(payload.get("updated"))
@@ -93,7 +96,12 @@ def build_gold_embed(payload: dict[str, Any], *, from_cache: bool = False) -> di
     embed.add_field(name="Today's Value", value=f"**{_fmt_money(current)}**", inline=False)
     embed.add_field(name="Yesterday", value=_fmt_money(previous), inline=True)
     embed.add_field(name="Change", value=_change_text(current, previous), inline=True)
-    embed.add_field(name=f"Last {HISTORY_DAYS} days", value=_history_line(payload), inline=False)
+    try:
+        history_line = _history_line(payload)
+    except Exception as exc:
+        logger.warning("Wardogs history line skipped: %s", exc)
+        history_line = "—"
+    embed.add_field(name=f"Last {HISTORY_DAYS} days", value=history_line, inline=False)
     if updated is not None:
         embed.add_field(name="Updated", value=f"<t:{int(updated.timestamp())}:R>", inline=False)
     embed.set_footer(text="Gravy Loves Men")
