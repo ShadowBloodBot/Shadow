@@ -18,6 +18,9 @@ logger = logging.getLogger("ShadowSyn.JTC")
 THEME_PRIMARY             = 0x2B0B35
 ROLE_ADMIN_ID             = 1214794734770323466
 MASTER_OWNERS             = [132451058961219584, 482463400929263627]
+# Creators whose rooms are hidden from everyone except themselves, MASTER_OWNERS
+# and the bot. Guests only gain access when dragged in, and lose it on leave.
+ISOLATED_CREATOR_IDS      = {480746585110740992}
 VC_DEFAULT_BITRATE        = 64000
 
 # --- PERSISTENCE ---
@@ -64,6 +67,41 @@ def _to_sans_bold_italic(text: str) -> str:
 
 def _limit_channel_name(name: str, limit: int = 100) -> str:
     return name[:limit] if len(name) > limit else name
+
+def _is_isolated_creator(creator_id) -> bool:
+    try:
+        return int(creator_id) in ISOLATED_CREATOR_IDS
+    except (TypeError, ValueError):
+        return False
+
+def _isolation_overwrites(guild: discord.Guild, creator, extra_members=()) -> dict:
+    """Baseline overwrites for an isolated room.
+
+    @everyone cannot see or connect. Creator, MASTER_OWNERS, the bot and any
+    listed occupants are explicitly allowed. The bot entry matters on guilds
+    where it is not Administrator (ShadowBackup) — without it the bot loses
+    sight of its own channel.
+    """
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False, connect=False),
+    }
+    if creator is not None:
+        overwrites[creator] = discord.PermissionOverwrite(
+            view_channel=True, connect=True, speak=True, move_members=True
+        )
+    for oid in MASTER_OWNERS:
+        owner = guild.get_member(oid)
+        if owner and owner not in overwrites:
+            overwrites[owner] = discord.PermissionOverwrite(view_channel=True, connect=True, speak=True)
+    if guild.me:
+        overwrites[guild.me] = discord.PermissionOverwrite(
+            view_channel=True, connect=True, speak=True,
+            manage_channels=True, move_members=True, send_messages=True,
+        )
+    for m in extra_members:
+        if m not in overwrites:
+            overwrites[m] = discord.PermissionOverwrite(view_channel=True, connect=True, speak=True)
+    return overwrites
 
 # =============================================================================
 # UI COMPONENTS
@@ -273,8 +311,12 @@ class VCControlPanel(View):
                 ow.update(**perms)
                 overwrites[target] = ow
 
+            isolated = _is_isolated_creator(self.creator_id)
             for m in self.vc.members:
-                _merge(m, connect=True, speak=True)
+                if isolated:
+                    _merge(m, view_channel=True, connect=True, speak=True)
+                else:
+                    _merge(m, connect=True, speak=True)
             for oid in MASTER_OWNERS:
                 owner = i.guild.get_member(oid)
                 if owner and owner not in self.vc.members:
@@ -295,7 +337,15 @@ class VCControlPanel(View):
         try:
             # One edit replaces every role/member overwrite (same targets as
             # the old per-target set_permissions(overwrite=None) loop).
-            await self.vc.edit(overwrites={})
+            if _is_isolated_creator(self.creator_id):
+                # Isolated rooms never open up — reset to the hidden baseline
+                # while keeping whoever is currently inside.
+                creator = i.guild.get_member(self.creator_id)
+                await self.vc.edit(
+                    overwrites=_isolation_overwrites(i.guild, creator, extra_members=self.vc.members)
+                )
+            else:
+                await self.vc.edit(overwrites={})
             await i.followup.send("🔓 Unlocked.", ephemeral=True)
         except Exception as e:
             await i.followup.send(f"❌ Failed to unlock: {e}", ephemeral=True)
@@ -427,14 +477,30 @@ class JTCCog(commands.Cog):
         """Grant connect+speak to a member who was force-moved into a locked temp VC."""
         try:
             everyone_ow = vc.overwrites_for(vc.guild.default_role)
-            if everyone_ow.connect is not False:
+            hidden   = everyone_ow.view_channel is False
+            if everyone_ow.connect is not False and not hidden:
                 return
             existing = vc.overwrites_for(member)
-            if existing.connect is True and existing.speak is True:
+            if (existing.connect is True and existing.speak is True
+                    and (not hidden or existing.view_channel is True)):
                 return
-            await vc.set_permissions(member, connect=True, speak=True)
+            grant = {"connect": True, "speak": True}
+            if hidden:
+                grant["view_channel"] = True
+            await vc.set_permissions(member, **grant)
         except Exception as exc:
             logger.warning("JTC: auto-grant on locked join failed for %s: %s", member.id, exc)
+
+    async def _revoke_isolated_guest(self, member: discord.Member, vc: discord.VoiceChannel) -> None:
+        """Remove a guest's overwrite from an isolated room after they leave."""
+        try:
+            if member not in vc.overwrites:
+                return
+            await vc.set_permissions(member, overwrite=None, reason="JTC: isolated room guest left")
+        except discord.NotFound:
+            pass
+        except Exception as exc:
+            logger.warning("JTC: isolated revoke failed for %s in %s: %s", member.id, vc.id, exc)
 
     async def _heal_suppress(self, member: discord.Member, vc: discord.VoiceChannel) -> None:
         """Clear a stuck suppress voice-state by re-moving the member.
@@ -492,13 +558,17 @@ class JTCCog(commands.Cog):
         if after.channel and jtc_id and after.channel.id == jtc_id:
             try:
                 cat    = get(guild.categories, id=vc_cat_id) or after.channel.category
+                if _is_isolated_creator(member.id):
+                    room_overwrites = _isolation_overwrites(guild, member)
+                else:
+                    room_overwrites = {
+                        member: discord.PermissionOverwrite(connect=True, speak=True),
+                    }
                 new_vc = await guild.create_voice_channel(
                     name=_limit_channel_name(_to_sans_bold_italic(f"{member.display_name}'s Room")),
                     category=cat,
                     bitrate=VC_DEFAULT_BITRATE,
-                    overwrites={
-                        member: discord.PermissionOverwrite(connect=True, speak=True),
-                    }
+                    overwrites=room_overwrites,
                 )
                 self.active_temp_vcs[new_vc.id] = member.id
                 _save_active_vcs(self.active_temp_vcs)
@@ -542,6 +612,17 @@ class JTCCog(commands.Cog):
 
             except Exception as e:
                 logger.error("JTC: VC creation failed for %s: %s", member.display_name, e)
+
+        # Guest left an isolated room — revoke their overwrite so the room
+        # disappears for them again. Creator, owners and the bot keep theirs.
+        if (before.channel
+                and before.channel.id in self.active_temp_vcs
+                and (after.channel is None or after.channel.id != before.channel.id)
+                and _is_isolated_creator(self.active_temp_vcs.get(before.channel.id))
+                and member.id != self.active_temp_vcs.get(before.channel.id)
+                and member.id not in MASTER_OWNERS
+                and member.id != guild.me.id):
+            await self._revoke_isolated_guest(member, before.channel)
 
         if (before.channel
                 and before.channel.id in self.active_temp_vcs
