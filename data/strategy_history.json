@@ -6,7 +6,14 @@
     "HECS & Bonus Income — Lender Arbitrage",
     "Self-Employed NPR & Add-Back Architecture",
     "Cross-Collateralisation Exit Trap",
-    "IO Expiry Without Servicing Bridge"
+    "IO Expiry Without Servicing Bridge",
+    "Trust UPE Servicing Contamination",
+    "SMSF Related-Party Lease Dead Zone",
+    "Redraw Debt Recycling Pollution",
+    "Div 7A Minimum Repayment Drag",
+    "Part IVA Round-Robin Refinance",
+    "HECS Bonus Shading Split",
+    "Fixed-Variable IO Cliff"
   ],
   "weeks": [
     {
@@ -21,6 +28,19 @@
         "IO Expiry Without Servicing Bridge"
       ],
       "generated_at": "2026-06-09"
+    },
+    {
+      "week": "2026-W44",
+      "titles": [
+        "Trust UPE Servicing Contamination",
+        "SMSF Related-Party Lease Dead Zone",
+        "Redraw Debt Recycling Pollution",
+        "Div 7A Minimum Repayment Drag",
+        "Part IVA Round-Robin Refinance",
+        "HECS Bonus Shading Split",
+        "Fixed-Variable IO Cliff"
+      ],
+      "generated_at": "2026-10-25"
     }
   ]
 }
