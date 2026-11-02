@@ -90,6 +90,7 @@ cogs_list = [
     "cogs.role_assign",
     "cogs.admin_secure",
     "cogs.member_backup",
+    "cogs.server_tag",
     "cogs.hub",
     "cogs.game_roles",
     "cogs.welcome",

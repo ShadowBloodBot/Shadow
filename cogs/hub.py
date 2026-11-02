@@ -178,6 +178,14 @@ class HubCog(commands.Cog):
             inline=False,
         )
         embed.add_field(
+            name="🏷️ Server tag",
+            value=(
+                "Wear this server's tag and you get **Member**. "
+                "Take the tag off and Member comes off."
+            ),
+            inline=False,
+        )
+        embed.add_field(
             name="🛠️ Member Tools",
             value=(
                 "`/poll` — live poll (option1, option2, + up to 3 more)\n"
@@ -192,7 +200,8 @@ class HubCog(commands.Cog):
                 name="🛠️ Admin",
                 value=(
                     "`/welcome_deploy` · `/clips_deploy` · `/steam_codes_deploy` · `/casino_deploy` · "
-                    "`/role_button` · `/send_custom` · `/edit_custom` · `/morehaste` · `/steam`"
+                    "`/role_button` · `/send_custom` · `/edit_custom` · `/morehaste` · `/steam` · "
+                    "`/tag_sync`"
                 ),
                 inline=False,
             )
