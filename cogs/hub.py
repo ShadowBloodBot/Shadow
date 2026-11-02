@@ -7,6 +7,7 @@ from discord.ext import commands
 
 from cogs.guild_registry import (
     REGISTERED_GUILD_IDS,
+    SHADOW_MAIN_GUILD_ID,
     ch_id,
     has_admin_shadow,
     is_registered_guild,
@@ -177,14 +178,15 @@ class HubCog(commands.Cog):
             ),
             inline=False,
         )
-        embed.add_field(
-            name="🏷️ Server tag",
-            value=(
-                "Wear this server's tag and you get **Member**. "
-                "Take the tag off and Member comes off."
-            ),
-            inline=False,
-        )
+        if gid == SHADOW_MAIN_GUILD_ID:
+            embed.add_field(
+                name="🏷️ Server tag",
+                value=(
+                    "Wear this server's tag and you get **Member**. "
+                    "Take the tag off and Member comes off."
+                ),
+                inline=False,
+            )
         embed.add_field(
             name="🛠️ Member Tools",
             value=(
@@ -196,13 +198,15 @@ class HubCog(commands.Cog):
         )
         member = ctx.author
         if ctx.guild and has_admin_shadow(member, ctx.guild.id):
+            admin_cmds = (
+                "`/welcome_deploy` · `/clips_deploy` · `/steam_codes_deploy` · `/casino_deploy` · "
+                "`/role_button` · `/send_custom` · `/edit_custom` · `/morehaste` · `/steam`"
+            )
+            if ctx.guild.id == SHADOW_MAIN_GUILD_ID:
+                admin_cmds += " · `/tag_sync`"
             embed.add_field(
                 name="🛠️ Admin",
-                value=(
-                    "`/welcome_deploy` · `/clips_deploy` · `/steam_codes_deploy` · `/casino_deploy` · "
-                    "`/role_button` · `/send_custom` · `/edit_custom` · `/morehaste` · `/steam` · "
-                    "`/tag_sync`"
-                ),
+                value=admin_cmds,
                 inline=False,
             )
         await safe_reply(ctx, embed=embed, ephemeral=True)

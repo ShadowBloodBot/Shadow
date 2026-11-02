@@ -82,7 +82,7 @@ This is **Shadow**, a Discord bot for **ShadowSyn** — a private **multi-game**
 | `tts.py` | `/speak` — gTTS + deep-translator, FFmpeg, auto-disconnect |
 | `member_utils.py` | Polls, countdowns, member utilities |
 | `member_backup.py` | Roster backup/sync (Main → shared `/data`; disaster re-invite on Backup) |
-| `server_tag.py` | Server tag equip/unequip grants or removes the Member role |
+| `server_tag.py` | ShadowMain only — server tag equip/unequip grants or removes the Member role. Joseph opted Backup out. |
 | `admin_secure.py` | Owner-gated secure admin slash commands |
 | `audit_logs.py` | Join/leave/kick + voice-state audit trail |
 | `content_filter.py` | Message content moderation |

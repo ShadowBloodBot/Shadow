@@ -1,6 +1,6 @@
-# cogs/server_tag.py — Member role follows this guild's server tag.
+# cogs/server_tag.py — ShadowMain only. Member follows that guild's server tag.
 # Grant on equip, remove on an observed unequip. Never sweep people who
-# simply are not wearing the tag.
+# simply are not wearing the tag. ShadowBackup is untouched.
 
 import asyncio
 import json
@@ -13,9 +13,8 @@ from discord.ext import commands
 
 from cogs.guild_registry import (
     PERSIST_ROOT,
-    REGISTERED_GUILD_IDS,
+    SHADOW_MAIN_GUILD_ID,
     has_admin_shadow,
-    is_registered_guild,
     resolve_role,
 )
 
@@ -268,21 +267,26 @@ class ServerTagCog(commands.Cog):
             )
             return None
 
-    async def _reconcile_user(self, user_id: int, primary_guild, event_guild_id: int) -> None:
-        for gid in REGISTERED_GUILD_IDS:
-            guild = self.bot.get_guild(gid)
-            if guild is None:
-                continue
-            fetch = gid == event_guild_id or self._is_holder(gid, user_id)
-            member = await self._member_for(guild, user_id, fetch=fetch)
-            if member is None:
-                continue
-            await self._live_apply(member, wears_target(primary_guild, gid))
+    def _main_guild(self) -> discord.Guild | None:
+        return self.bot.get_guild(SHADOW_MAIN_GUILD_ID)
+
+    async def _reconcile_user(self, user_id: int, primary_guild) -> None:
+        guild = self._main_guild()
+        if guild is None:
+            return
+        member = await self._member_for(
+            guild,
+            user_id,
+            fetch=True,
+        )
+        if member is None:
+            return
+        await self._live_apply(member, wears_target(primary_guild, SHADOW_MAIN_GUILD_ID))
 
     @commands.Cog.listener()
     async def on_raw_member_update(self, payload) -> None:
         guild_id = getattr(payload, "guild_id", None)
-        if not is_registered_guild(guild_id):
+        if guild_id != SHADOW_MAIN_GUILD_ID:
             return
         data = getattr(payload, "data", None)
         user = data.get("user") if isinstance(data, dict) else None
@@ -293,21 +297,21 @@ class ServerTagCog(commands.Cog):
         except (TypeError, ValueError, AttributeError):
             return
         async with self._user_lock(user_id):
-            await self._reconcile_user(user_id, user.get("primary_guild"), int(guild_id))
+            await self._reconcile_user(user_id, user.get("primary_guild"))
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
-        if member.bot or not is_registered_guild(member.guild.id):
+        if member.bot or member.guild.id != SHADOW_MAIN_GUILD_ID:
             return
         primary_guild = getattr(member, "primary_guild", None)
         if primary_guild is None:
             return
         async with self._user_lock(member.id):
-            await self._reconcile_user(member.id, primary_guild, member.guild.id)
+            await self._reconcile_user(member.id, primary_guild)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
-        if not is_registered_guild(member.guild.id):
+        if member.guild.id != SHADOW_MAIN_GUILD_ID:
             return
         async with self._user_lock(member.id):
             if not self._is_holder(member.guild.id, member.id):
@@ -335,11 +339,11 @@ class ServerTagCog(commands.Cog):
     @discord.slash_command(
         name="tag_sync",
         description="Grant Member to people already wearing this server's tag. Does not remove.",
-        guild_ids=REGISTERED_GUILD_IDS,
+        guild_ids=[SHADOW_MAIN_GUILD_ID],
         default_member_permissions=discord.Permissions(administrator=True),
     )
     async def tag_sync(self, ctx: discord.ApplicationContext):
-        if ctx.guild is None or not is_registered_guild(ctx.guild.id):
+        if ctx.guild is None or ctx.guild.id != SHADOW_MAIN_GUILD_ID:
             await ctx.respond("This command is not available here.", ephemeral=True)
             return
         if not isinstance(ctx.author, discord.Member) or not has_admin_shadow(
