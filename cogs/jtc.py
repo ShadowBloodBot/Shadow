@@ -22,6 +22,8 @@ MASTER_OWNERS             = [132451058961219584, 482463400929263627]
 # and the bot. Guests only gain access when dragged in, and lose it on leave.
 ISOLATED_CREATOR_IDS      = {480746585110740992}
 VC_DEFAULT_BITRATE        = 64000
+# Seconds to let a client finish connecting before the suppress heal re-moves it.
+HEAL_SETTLE_SEC           = 1.0
 
 # --- PERSISTENCE ---
 ACTIVE_VCS_STORE = PERSIST_ROOT / "active_vcs.json"
@@ -122,10 +124,30 @@ class VCNameModal(Modal):
             await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
 
 class KickMemberDropdown(Select):
-    def __init__(self, vc: discord.VoiceChannel, members):
+    def __init__(self, vc: discord.VoiceChannel, members, creator_id: int = 0):
         self.vc = vc
+        self.creator_id = creator_id
         options = [SelectOption(label=m.display_name, value=str(m.id)) for m in members]
         super().__init__(placeholder="Select member to kick...", options=options, min_values=1, max_values=1)
+
+    async def _revoke_access(self, member: discord.Member) -> None:
+        """Drop a kicked member's overwrite so a locked room stays closed to them.
+
+        Creator, MASTER_OWNERS and the bot keep theirs.
+        """
+        guild = self.vc.guild
+        if (member.id == self.creator_id
+                or member.id in MASTER_OWNERS
+                or (guild.me and member.id == guild.me.id)):
+            return
+        try:
+            if member not in self.vc.overwrites:
+                return
+            await self.vc.set_permissions(member, overwrite=None, reason="JTC: kicked from room")
+        except discord.NotFound:
+            pass  # room was deleted because the kick emptied it
+        except Exception as exc:
+            logger.warning("JTC: kick revoke failed for %s in %s: %s", member.id, self.vc.id, exc)
 
     async def callback(self, interaction: Interaction):
         try:
@@ -134,14 +156,16 @@ class KickMemberDropdown(Select):
                 await member.move_to(None)
                 await interaction.response.send_message(f"👢 Kicked {member.display_name}.", ephemeral=True)
             else:
-                await interaction.response.send_message("⚠️ Member not found in channel.", ephemeral=True)
+                return await interaction.response.send_message("⚠️ Member not found in channel.", ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+            return await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+        # After the reply so a slow permission call cannot blow the 3s deadline.
+        await self._revoke_access(member)
 
 class KickMemberView(View):
-    def __init__(self, vc: discord.VoiceChannel, members):
+    def __init__(self, vc: discord.VoiceChannel, members, creator_id: int = 0):
         super().__init__(timeout=30)
-        self.add_item(KickMemberDropdown(vc, members))
+        self.add_item(KickMemberDropdown(vc, members, creator_id))
 
 class RoleRestrictSelect(Select):
     """Native role select — searchable over every guild role, always current."""
@@ -184,6 +208,14 @@ class RoleRestrictSelect(Select):
 
             _merge(interaction.guild.default_role, connect=False)
             _merge(role, connect=True)
+            # Keep whoever is already inside (same as Lock). Without this they
+            # keep talking until their next reconnect, then cannot speak or rejoin.
+            isolated = _is_isolated_creator(self.creator_id)
+            for m in self.vc.members:
+                if isolated:
+                    _merge(m, view_channel=True, connect=True, speak=True)
+                else:
+                    _merge(m, connect=True, speak=True)
             creator = interaction.guild.get_member(self.creator_id)
             if creator:
                 _merge(creator, connect=True)
@@ -371,7 +403,11 @@ class VCControlPanel(View):
         members = [m for m in self.vc.members if m != i.guild.me]
         if not members:
             return await i.response.send_message("⚠️ No one to kick.", ephemeral=True)
-        await i.response.send_message("Select a member to kick:", view=KickMemberView(self.vc, members), ephemeral=True)
+        await i.response.send_message(
+            "Select a member to kick:",
+            view=KickMemberView(self.vc, members, self.creator_id),
+            ephemeral=True,
+        )
 
     async def _restrict(self, i: Interaction):
         if not await self._check(i): return
@@ -423,6 +459,7 @@ class JTCCog(commands.Cog):
         self._startup_done   = False
         self._panel_tasks: set = set()
         self._healing: set   = set()
+        self._creating: set  = set()   # member ids with a room creation in flight
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -473,23 +510,28 @@ class JTCCog(commands.Cog):
         if orphan_del or orphan_add:
             logger.info("JTC: orphan sweep — %d deleted, %d adopted.", orphan_del, orphan_add)
 
-    async def _auto_grant_locked_vc(self, member: discord.Member, vc: discord.VoiceChannel) -> None:
-        """Grant connect+speak to a member who was force-moved into a locked temp VC."""
+    async def _auto_grant_locked_vc(self, member: discord.Member, vc: discord.VoiceChannel) -> bool:
+        """Grant connect+speak to a member who was force-moved into a locked temp VC.
+
+        Returns True when an overwrite was actually written.
+        """
         try:
             everyone_ow = vc.overwrites_for(vc.guild.default_role)
             hidden   = everyone_ow.view_channel is False
             if everyone_ow.connect is not False and not hidden:
-                return
+                return False
             existing = vc.overwrites_for(member)
             if (existing.connect is True and existing.speak is True
                     and (not hidden or existing.view_channel is True)):
-                return
+                return False
             grant = {"connect": True, "speak": True}
             if hidden:
                 grant["view_channel"] = True
             await vc.set_permissions(member, **grant)
+            return True
         except Exception as exc:
             logger.warning("JTC: auto-grant on locked join failed for %s: %s", member.id, exc)
+            return False
 
     async def _revoke_isolated_guest(self, member: discord.Member, vc: discord.VoiceChannel) -> None:
         """Remove a guest's overwrite from an isolated room after they leave."""
@@ -514,6 +556,11 @@ class JTCCog(commands.Cog):
             return
         self._healing.add(key)
         try:
+            # Let the client finish connecting first. Re-moving mid-handshake
+            # drops the voice connection, and Discord often clears suppress on
+            # its own once the granted overwrite lands. This runs in a
+            # background task, so the voice-state handler is never blocked.
+            await asyncio.sleep(HEAL_SETTLE_SEC)
             voice = member.voice
             if not voice or not voice.channel or voice.channel.id != vc.id:
                 return
@@ -549,13 +596,33 @@ class JTCCog(commands.Cog):
                 and after.channel.id in self.active_temp_vcs
                 and (before.channel is None or before.channel.id != after.channel.id)
                 and (not jtc_id or after.channel.id != jtc_id)):
-            await self._auto_grant_locked_vc(member, after.channel)
-            if member.voice and member.voice.suppress:
+            granted    = await self._auto_grant_locked_vc(member, after.channel)
+            suppressed = bool(member.voice and member.voice.suppress)
+            if suppressed:
                 heal_task = asyncio.create_task(self._heal_suppress(member, after.channel))
                 self._panel_tasks.add(heal_task)
                 heal_task.add_done_callback(self._panel_tasks.discard)
+            # One line per arrival so a reported voice drop can be matched to
+            # what the bot did (or did not do) to that member.
+            everyone_ow = after.channel.overwrites_for(guild.default_role)
+            actions = [a for a, on in (("grant", granted), ("heal", suppressed)) if on]
+            logger.info(
+                "JTC move: member=%s from=%s to=%s locked=%s hidden=%s suppress=%s action=%s",
+                member.id,
+                before.channel.id if before.channel else None,
+                after.channel.id,
+                everyone_ow.connect is False,
+                everyone_ow.view_channel is False,
+                suppressed,
+                "+".join(actions) or "none",
+            )
 
-        if after.channel and jtc_id and after.channel.id == jtc_id:
+        # Only on a real arrival in the trigger. Mute/deafen/stream toggles while
+        # standing there used to spawn a second room and a second move.
+        if (after.channel and jtc_id and after.channel.id == jtc_id
+                and (before.channel is None or before.channel.id != jtc_id)
+                and member.id not in self._creating):
+            self._creating.add(member.id)
             try:
                 cat    = get(guild.categories, id=vc_cat_id) or after.channel.category
                 if _is_isolated_creator(member.id):
@@ -612,6 +679,8 @@ class JTCCog(commands.Cog):
 
             except Exception as e:
                 logger.error("JTC: VC creation failed for %s: %s", member.display_name, e)
+            finally:
+                self._creating.discard(member.id)
 
         # Guest left an isolated room — revoke their overwrite so the room
         # disappears for them again. Creator, owners and the bot keep theirs.
