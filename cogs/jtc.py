@@ -10,7 +10,13 @@ from discord.ui import View, Button, Modal, TextInput, Select
 from discord.ext import commands, tasks
 from discord.utils import get
 
-from cogs.guild_registry import ch_id, is_registered_guild, PERSIST_ROOT
+from cogs.guild_registry import (
+    ch_id,
+    has_admin_shadow,
+    is_registered_guild,
+    resolve_channel,
+    PERSIST_ROOT,
+)
 
 logger = logging.getLogger("ShadowSyn.JTC")
 
@@ -24,6 +30,13 @@ ISOLATED_CREATOR_IDS      = {480746585110740992}
 VC_DEFAULT_BITRATE        = 64000
 # Seconds to let a client finish connecting before the suppress heal re-moves it.
 HEAL_SETTLE_SEC           = 1.0
+# A room this young is still being set up (create -> move in flight). The
+# sweeps skip it: an empty room seconds old is not an orphan.
+NEW_ROOM_GRACE_SEC        = 30
+# Wait before each attempt to create the room and move its creator into it.
+MOVE_RETRY_DELAYS         = (0.0, 0.5, 1.5)
+# How long the "couldn't open your room" notice stays in the trigger chat.
+STRAND_NOTICE_TTL_SEC     = 30
 
 # --- PERSISTENCE ---
 ACTIVE_VCS_STORE = PERSIST_ROOT / "active_vcs.json"
@@ -69,6 +82,22 @@ def _to_sans_bold_italic(text: str) -> str:
 
 def _limit_channel_name(name: str, limit: int = 100) -> str:
     return name[:limit] if len(name) > limit else name
+
+def _is_new_room(channel) -> bool:
+    age = (discord.utils.utcnow() - channel.created_at).total_seconds()
+    return age < NEW_ROOM_GRACE_SEC
+
+def _in_channel(member: discord.Member, channel_id: int) -> bool:
+    voice = member.voice
+    return bool(voice and voice.channel and voice.channel.id == channel_id)
+
+def _describe_error(exc: BaseException) -> str:
+    """Exception type plus Discord HTTP status/code — enough to tell causes apart."""
+    text = (
+        f"{type(exc).__name__} status={getattr(exc, 'status', None)} "
+        f"code={getattr(exc, 'code', None)}: {exc}"
+    )
+    return text[:300]
 
 def _is_isolated_creator(creator_id) -> bool:
     try:
@@ -116,12 +145,15 @@ class VCNameModal(Modal):
         self.add_item(TextInput(label="New VC Name", placeholder="Enter name...", required=True, max_length=50))
 
     async def callback(self, interaction: Interaction):
+        # Defer first — Discord rate-limits channel renames hard, so the edit
+        # can sit well past the 3s interaction deadline.
+        await interaction.response.defer(ephemeral=True)
         try:
             new_name = _limit_channel_name(_to_sans_bold_italic(self.children[0].value))
             await self.vc.edit(name=new_name)
-            await interaction.response.send_message("✅ Renamed.", ephemeral=True)
+            await interaction.followup.send("✅ Renamed.", ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+            await interaction.followup.send(f"❌ Failed: {e}", ephemeral=True)
 
 class KickMemberDropdown(Select):
     def __init__(self, vc: discord.VoiceChannel, members, creator_id: int = 0):
@@ -327,7 +359,8 @@ class VCControlPanel(View):
         if i.user.id == self.creator_id:
             return True
         if i.data.get("custom_id") == f"jtc_delete_{self.vc.id}":
-            if any(r.id == ROLE_ADMIN_ID for r in i.user.roles):
+            # Registry role, so the bypass works on both guilds.
+            if has_admin_shadow(i.user, i.guild.id):
                 return True
         await i.response.send_message("🚫 Only the channel creator can do that.", ephemeral=True)
         return False
@@ -384,15 +417,19 @@ class VCControlPanel(View):
 
     async def _delete(self, i: Interaction):
         if not await self._check(i): return
+        await i.response.defer(ephemeral=True)
         try:
             await self.vc.delete()
         except discord.NotFound:
             pass
         except Exception as e:
-            return await i.response.send_message(f"❌ Failed to delete: {e}", ephemeral=True)
+            return await i.followup.send(f"❌ Failed to delete: {e}", ephemeral=True)
         self.cog.active_temp_vcs.pop(self.vc.id, None)
         _save_active_vcs(self.cog.active_temp_vcs)
-        await i.response.send_message("🗑️ Deleted.", ephemeral=True)
+        try:
+            await i.followup.send("🗑️ Deleted.", ephemeral=True)
+        except discord.HTTPException:
+            pass  # the panel's channel is the one that was just deleted
 
     async def _rename(self, i: Interaction):
         if not await self._check(i): return
@@ -434,19 +471,21 @@ class VCControlPanel(View):
 
     async def _bitrate(self, i: Interaction):
         if not await self._check(i): return
+        await i.response.defer(ephemeral=True)
         try:
             await self.vc.edit(bitrate=int(i.data["values"][0]))
-            await i.response.send_message("📶 Bitrate updated.", ephemeral=True)
+            await i.followup.send("📶 Bitrate updated.", ephemeral=True)
         except Exception as e:
-            await i.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+            await i.followup.send(f"❌ Failed: {e}", ephemeral=True)
 
     async def _limit(self, i: Interaction):
         if not await self._check(i): return
+        await i.response.defer(ephemeral=True)
         try:
             await self.vc.edit(user_limit=int(i.data["values"][0]))
-            await i.response.send_message("👥 User limit updated.", ephemeral=True)
+            await i.followup.send("👥 User limit updated.", ephemeral=True)
         except Exception as e:
-            await i.response.send_message(f"❌ Failed: {e}", ephemeral=True)
+            await i.followup.send(f"❌ Failed: {e}", ephemeral=True)
 
 # =============================================================================
 # COG
@@ -486,7 +525,9 @@ class JTCCog(commands.Cog):
                     logger.warning("JTC: Could not fetch channel %s: %s", channel_id, e)
                     continue
 
-            if len(channel.members) == 0:
+            # A room seconds old belongs to a creation that is still in flight
+            # (voice events are handled while startup runs) — leave it alone.
+            if len(channel.members) == 0 and not _is_new_room(channel):
                 try:
                     await channel.delete()
                 except Exception:
@@ -578,6 +619,141 @@ class JTCCog(commands.Cog):
         finally:
             self._healing.discard(key)
 
+    async def _open_room(self, member: discord.Member, trigger, category) -> None:
+        """Create a room for ``member`` and move them out of the trigger into it.
+
+        The trigger only fires on arrival. A single failed move used to delete
+        the room and leave the creator sitting in the trigger with no room and
+        no message — everyone dragged "to them" then got split into rooms of
+        their own. So: retry, and if it still fails, say so.
+        """
+        guild  = member.guild
+        new_vc = None
+        error  = None
+        moved  = False
+
+        for attempt, delay in enumerate(MOVE_RETRY_DELAYS, start=1):
+            if delay:
+                await asyncio.sleep(delay)
+            if not _in_channel(member, trigger.id):
+                break  # left the trigger (or voice) — nobody to move
+            try:
+                if new_vc is None:
+                    if _is_isolated_creator(member.id):
+                        room_overwrites = _isolation_overwrites(guild, member)
+                    else:
+                        room_overwrites = {
+                            member: discord.PermissionOverwrite(connect=True, speak=True),
+                        }
+                    new_vc = await guild.create_voice_channel(
+                        name=_limit_channel_name(_to_sans_bold_italic(f"{member.display_name}'s Room")),
+                        category=category,
+                        bitrate=VC_DEFAULT_BITRATE,
+                        overwrites=room_overwrites,
+                    )
+                    self.active_temp_vcs[new_vc.id] = member.id
+                    _save_active_vcs(self.active_temp_vcs)
+                await member.move_to(new_vc)
+                moved = True
+                if attempt > 1:
+                    logger.info("JTC: room for %s opened on attempt %d.", member.id, attempt)
+                break
+            except Exception as exc:
+                error = exc
+                logger.warning(
+                    "JTC: room attempt %d/%d failed for %s (%s) — %s",
+                    attempt, len(MOVE_RETRY_DELAYS), member.display_name, member.id,
+                    _describe_error(exc),
+                )
+                # The room itself is gone (Unknown Channel) — make a new one next attempt.
+                if new_vc is not None and (
+                    getattr(exc, "code", None) == 10003
+                    or guild.get_channel(new_vc.id) is None
+                ):
+                    self.active_temp_vcs.pop(new_vc.id, None)
+                    _save_active_vcs(self.active_temp_vcs)
+                    new_vc = None
+
+        if not moved and new_vc is not None and _in_channel(member, new_vc.id):
+            moved = True  # the move landed even though the call raised
+
+        if not moved:
+            if new_vc is not None:
+                try:
+                    await new_vc.delete()
+                except discord.NotFound:
+                    pass
+                except Exception as exc:
+                    logger.warning("JTC: could not delete unused room %s: %s", new_vc.id, exc)
+                self.active_temp_vcs.pop(new_vc.id, None)
+                _save_active_vcs(self.active_temp_vcs)
+            if error is not None and _in_channel(member, trigger.id):
+                await self._report_strand(member, trigger, error)
+            return
+
+        # Creator may have entered the lobby suppressed (dragged in,
+        # or lacking a lobby Connect role) — the stuck state can carry
+        # into the new room. Heal in the background.
+        heal_task = asyncio.create_task(self._heal_suppress(member, new_vc))
+        self._panel_tasks.add(heal_task)
+        heal_task.add_done_callback(self._panel_tasks.discard)
+
+        async def send_control_panel(vc: discord.VoiceChannel, creator_id: int):
+            await asyncio.sleep(1)
+            embed = discord.Embed(
+                title="🎛️ Voice Control",
+                description=f"Manage **{vc.name}**",
+                color=THEME_PRIMARY
+            )
+            try:
+                view = VCControlPanel(vc, creator_id, self)
+                await vc.send(embed=embed, view=view)
+                self.bot.add_view(view)
+            except Exception as e:
+                logger.warning("JTC: Failed to send control panel: %s", e)
+
+        task = asyncio.create_task(send_control_panel(new_vc, member.id))
+        self._panel_tasks.add(task)
+        task.add_done_callback(self._panel_tasks.discard)
+
+    async def _report_strand(self, member: discord.Member, trigger, error: BaseException) -> None:
+        """A creator is still in the trigger with no room — tell them and the audit trail."""
+        detail = _describe_error(error)
+        logger.error(
+            "JTC: no room opened for %s (%s) after %d attempts — %s",
+            member.display_name, member.id, len(MOVE_RETRY_DELAYS), detail,
+        )
+        try:
+            notice = discord.Embed(
+                description=(
+                    f"⚠️ I couldn't open your room. Leave **{trigger.name}** and join it again."
+                ),
+                color=THEME_PRIMARY,
+            )
+            await trigger.send(
+                content=member.mention,
+                embed=notice,
+                delete_after=STRAND_NOTICE_TTL_SEC,
+                allowed_mentions=discord.AllowedMentions(users=[member]),
+            )
+        except Exception as exc:
+            logger.warning("JTC: strand notice failed for %s: %s", member.id, exc)
+        try:
+            audit = await resolve_channel(self.bot, member.guild.id, "voice_audit")
+            if audit:
+                embed = discord.Embed(
+                    title="⚠️ JTC room not opened",
+                    description=(
+                        f"{member.mention} was left in **{trigger.name}** — "
+                        f"{len(MOVE_RETRY_DELAYS)} attempts failed.\n`{detail}`"
+                    ),
+                    color=THEME_PRIMARY,
+                )
+                embed.set_footer(text=f"User ID: {member.id}")
+                await audit.send(embed=embed)
+        except Exception as exc:
+            logger.warning("JTC: strand audit post failed for %s: %s", member.id, exc)
+
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         guild = member.guild
@@ -624,59 +800,8 @@ class JTCCog(commands.Cog):
                 and member.id not in self._creating):
             self._creating.add(member.id)
             try:
-                cat    = get(guild.categories, id=vc_cat_id) or after.channel.category
-                if _is_isolated_creator(member.id):
-                    room_overwrites = _isolation_overwrites(guild, member)
-                else:
-                    room_overwrites = {
-                        member: discord.PermissionOverwrite(connect=True, speak=True),
-                    }
-                new_vc = await guild.create_voice_channel(
-                    name=_limit_channel_name(_to_sans_bold_italic(f"{member.display_name}'s Room")),
-                    category=cat,
-                    bitrate=VC_DEFAULT_BITRATE,
-                    overwrites=room_overwrites,
-                )
-                self.active_temp_vcs[new_vc.id] = member.id
-                _save_active_vcs(self.active_temp_vcs)
-
-                try:
-                    await member.move_to(new_vc)
-                except Exception as e:
-                    logger.warning("JTC: move_to failed for %s — deleting orphaned VC: %s", member.display_name, e)
-                    try:
-                        await new_vc.delete()
-                    except Exception:
-                        pass
-                    self.active_temp_vcs.pop(new_vc.id, None)
-                    _save_active_vcs(self.active_temp_vcs)
-                    return
-
-                # Creator may have entered the lobby suppressed (dragged in,
-                # or lacking a lobby Connect role) — the stuck state can carry
-                # into the new room. Heal in the background.
-                heal_task = asyncio.create_task(self._heal_suppress(member, new_vc))
-                self._panel_tasks.add(heal_task)
-                heal_task.add_done_callback(self._panel_tasks.discard)
-
-                async def send_control_panel(vc: discord.VoiceChannel, creator_id: int):
-                    await asyncio.sleep(1)
-                    embed = discord.Embed(
-                        title="🎛️ Voice Control",
-                        description=f"Manage **{vc.name}**",
-                        color=THEME_PRIMARY
-                    )
-                    try:
-                        view = VCControlPanel(vc, creator_id, self)
-                        await vc.send(embed=embed, view=view)
-                        self.bot.add_view(view)
-                    except Exception as e:
-                        logger.warning("JTC: Failed to send control panel: %s", e)
-
-                task = asyncio.create_task(send_control_panel(new_vc, member.id))
-                self._panel_tasks.add(task)
-                task.add_done_callback(self._panel_tasks.discard)
-
+                cat = get(guild.categories, id=vc_cat_id) or after.channel.category
+                await self._open_room(member, after.channel, cat)
             except Exception as e:
                 logger.error("JTC: VC creation failed for %s: %s", member.display_name, e)
             finally:
@@ -733,6 +858,8 @@ class JTCCog(commands.Cog):
                 if vc.id in self.active_temp_vcs:
                     continue
                 if len(vc.members) == 0:
+                    if _is_new_room(vc):
+                        continue  # mid-creation, not an orphan
                     try:
                         await vc.delete()
                         deleted += 1
@@ -760,6 +887,8 @@ class JTCCog(commands.Cog):
                 stale.append(cid)
                 continue
             if len(channel.members) == 0:
+                if _is_new_room(channel):
+                    continue  # creator is still being moved in
                 try:
                     await channel.delete()
                 except Exception:
