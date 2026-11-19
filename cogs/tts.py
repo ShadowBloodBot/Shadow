@@ -3,6 +3,7 @@
 import os
 import asyncio
 import html
+import importlib.metadata
 import logging
 import uuid
 import shutil
@@ -18,6 +19,14 @@ import edge_tts
 from cogs.guild_registry import REGISTERED_GUILD_IDS, ch_id, is_owner, resolve_channel, role_id
 
 logger = logging.getLogger("ShadowSyn.TTS")
+
+# Reported with every clip: a davey release py-cord cannot drive leaves the
+# DAVE session unready and the bot silent, and the build log is the only
+# other place the installed version shows up.
+try:
+    DAVEY_VERSION = importlib.metadata.version("davey")
+except importlib.metadata.PackageNotFoundError:
+    DAVEY_VERSION = "not installed"
 
 # --- CONSTANTS ---
 THEME_PRIMARY       = 0x2B0B35
@@ -195,10 +204,17 @@ class TTSCog(commands.Cog):
 
     async def _ensure_voice(self, guild: discord.Guild, channel: discord.VoiceChannel):
         vc = guild.voice_client
-        if not vc or not vc.is_connected():
-            vc = await channel.connect(timeout=20.0)
-        elif vc.channel.id != channel.id:
-            await vc.move_to(channel)
+        if vc and vc.is_connected() and vc.channel.id == channel.id:
+            return vc
+        if vc:
+            # Wrong channel, or a link that is no longer connected. Hopping with
+            # move_to hung for its full 30s timeout in production and left the
+            # client unusable, so drop the link and connect fresh instead.
+            try:
+                await vc.disconnect(force=True)
+            except Exception as exc:
+                logger.warning("TTS: dropping the old voice link failed in guild %s: %s", guild.id, exc)
+        vc = await channel.connect(timeout=20.0)
         if not vc.is_connected():
             raise RuntimeError("Voice connection failed")
         return vc
@@ -323,7 +339,7 @@ class TTSCog(commands.Cog):
         waited, dave = await self._wait_voice_ready(vc)
         if not vc.is_connected():
             return "Not played — voice connection dropped"
-        voice_note = f"voice ready after {waited:.1f}s · DAVE {dave}"
+        voice_note = f"voice ready after {waited:.1f}s · DAVE {dave} · davey {DAVEY_VERSION}"
 
         # asyncio.Event lets us block here until the clip finishes
         done   = asyncio.Event()

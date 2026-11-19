@@ -4,5 +4,9 @@ edge-tts==7.3.1
 yt-dlp==2024.11.4
 pynacl>=1.5.0
 py-cord[voice]==2.8.0
+# py-cord 2.8.0 is written against the davey 0.1.x API. davey 0.2.0
+# (2026-11-02) added prepare_transition/execute_transition steps py-cord never
+# calls; on the build that floated to it the DAVE session never reported ready.
+davey==0.1.7
 httpx>=0.28.0
 rapidfuzz>=3.9.0
